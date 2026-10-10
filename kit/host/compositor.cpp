@@ -198,7 +198,7 @@ void draw(Pass &pass, const CompositorInput &in, gpu::Texture tex, CompositeRect
     pass.device->set_bytes(pass.cb, gpu::Stage::Vertex, 0, &q, sizeof q);
     pass.device->set_bytes(pass.cb, gpu::Stage::Fragment, 0, &q, sizeof q);
     if (pass.format == gpu::Format::RGBA16F) { // Test86
-        const float hdr[4] = {float(hdr_mode), std::max(1.0f, in.hdr_headroom), in.hdr_knee, 0.0f};
+        const float hdr[4] = {float(hdr_mode), std::max(1.0f, in.hdr_headroom), in.hdr_knee, in.hdr_desat};
         pass.device->set_bytes(pass.cb, gpu::Stage::Fragment, 1, hdr, sizeof hdr);
     }
     pass.device->set_texture(pass.cb, gpu::Stage::Fragment, 0, tex);
@@ -371,7 +371,7 @@ void compositor_compose(gpu::Device *device, const CompositorInput *in, gpu::Tex
     };
     if (in->legacy) {
         draw(pass, *in, in->legacy_frame, pixel_rect(whole_rect(*in, false)), full_uv, Opaque,
-             in->hdr_linear ? 2 : in->hdr_scene ? 1 : 0);
+             in->hdr_linear ? 2 : in->hdr_float ? (in->hdr_scene ? (in->hdr_pattern ? 5 : 3) : 4) : in->hdr_scene ? 1 : 0);   // item 10: 3/4 (5: TEST bars)
         if (in->settings_page)
             draw(pass, *in, in->settings_page, drawn_settings_page_rect(*in), full_uv, Straight);
         finish();

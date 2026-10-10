@@ -70,15 +70,21 @@ buttons* in the companion guide).
 same text is in the Setup app (**Read Me** button, top right), and the guides are on the project's GitHub page.
 
 **No sound in 5.1, or voices from the wrong speakers** — use *Stereo* in the game's Audio Mode, or turn on *Dolby
-Digital (for TVs and receivers)* in F10 → Mods → Audio. Some TV/soundbar HDMI chains scramble 6-channel PCM.
+Digital (for TVs and receivers)* in F10 → Audio. Some TV/soundbar HDMI chains scramble 6-channel PCM.
 
-**Texture pack not used** — the log says why: look for `texture pack:`. The folder must be
-`TRACKS/TexWizardX360/` in the game folder the setup was run on, and the setup must be run again after adding it.
+**Xbox 360 textures not used** — the setup log says what it found (`Xbox 360 textures:`), and the game log says
+`Xbox texture map absent` when the setup found none. The folder must be `TRACKS/TexWizardX360/` in the game folder
+the setup was run on, and the setup must be run again after adding it. F10 → Xbox 360 → *Xbox 360 textures* must be
+on, and the *PC* look shows the original textures.
+
+**A short hitch the first time you see something new** — each new shader is prepared the first time it is needed and
+then kept in your profile folder (`ShaderWarm/`), so it happens once per build. A later release prepares them during
+the setup.
 
 **Sparks and light trails missing** — the log line starting `core.nfsmw: sparks and light trails` says why; usually
 `XenonEffects.tpk` wasn't in the game folder's `scripts` folder when the setup ran (add it and build again).
 
-**Light pools missing** — F10 → Graphics → *Light pools from lamps* must be on and the look must be *Definitive*;
+**Light pools missing** — F10 → Xbox 360 → *Light pools from lamps* must be on;
 the log line starting `core.nfsmw: light pools` says whether the setup built them.
 
 ## Reporting a bug

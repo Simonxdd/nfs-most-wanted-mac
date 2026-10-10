@@ -1,9 +1,12 @@
-/* Narrow draw trace for watched scenery (setting scenery_trace, or NFSMW_TEST_SCENERY_LOD): for one model only - by
- * default the Rosewood College sign (XS_RW_RosewoodCollege_1); NFSMW_SIGN_WATCH=<text> picks another SceneryInfo name -
- * its render entries (solid, effect type, the entry's texture/material words) and whether every entry it submitted was
- * actually drawn, and with the light-pool pass or not. The scenery probe adds an instance to the watch when it first
- * sees one whose name contains the text. Hooks used: world_lights.h's render-item and draw-entry hooks (installed with
- * the light pools or with scenery_trace on). Lines are written only on a change:
+/* Test145 (3 Oct 2026): narrow draw trace for watched scenery - the Rosewood College sign (XS_RW_RosewoodCollege_1).
+ * review: if the scenery probe says the sign was DRAWN on the frame the owner saw it flicker, look one layer
+ * down, for this model only: its render entries (solid, effect type, the entry's texture/material words) and whether
+ * every entry it submitted was actually drawn, and with which extra pass (Xbox light pools / scenery lights).
+ * On only with the owner switch scenery_trace (or NFSMW_TEST_SCENERY_LOD). The scenery probe adds an instance to the
+ * watch when it first sees one whose SceneryInfo name contains "RosewoodCollege" (NFSMW_SIGN_WATCH=<text> changes
+ * it). Hooks used: x3sl_render_item (006da9b0 at 00724203: the instance's entries [before, after) in the render
+ * list 0093e878, stride 0x44) and x3sl_draw_entry (006c6d10 at 006e03e1: each entry drawn). Both are installed only
+ * with the Xbox 360 scenery lights on (the owner's setup). Lines are written only on a change:
  *   SIGN items: the instance's parts changed (count, solid, effect type, +0x24; +0x1c printed) - with the time;
  *   SIGN drawn: the previous submission drew fewer entries than it submitted, or the extra-pass flags changed.
  * Read only. Up to 4000 lines. */
@@ -91,7 +94,7 @@ static void sign_trace_item(const PopModApi *api, uint32_t inst, uint32_t before
     }
     g_st_sig[k] = sig; g_st_parts[k] = n;
 }
-/* From wl_draw_entry: render entry `index` is being drawn; extra = bit0 light-pool pass. */
+/* From x3sl_draw_entry: render entry `index` is being drawn; extra = bit0 Xbox light-pool pass, bit1 scenery-light set. */
 /* Counted once per entry, and only while the entry still holds the solid this instance submitted: the render list
  * is reused by every view's flush, so an index alone would also count other objects (Test145 first run). */
 static void sign_trace_draw(uint32_t index, uint32_t solid, uint32_t extra) {

@@ -1,7 +1,7 @@
-# Pad regression with the default keyboard bindings, at a 2420x1668
+# Pad regression with the default keyboard bindings, at the iPad 2420x1668
 # drawable (guest frame 1568x1080). Use an isolated profile.
 # Triangle confirms, dpad navigates, cross accelerates, square brakes,
-# left stick steers and Start pauses/backs out of the Quit dialog.
+# left stick steers and Start pauses/backs out of the touch-opened Quit dialog.
 # Inspect the dumped frames; successful script delivery alone is not proof
 # that the intended menu/race was reached.
 wait 20000

@@ -312,6 +312,11 @@ struct PopModApi {
      * The game mix changes at the next output period; a movie uses the value
      * current when it opens. Thread-safe; any thread. */
     PopModStatus (*audio_output)(const PopModApi *api, uint32_t mode, uint32_t flags);
+    /* Optional v1 tail (NFSMW Remaster A1). Gives the Direct3D 9 2D texture behind `tex_iface` (an
+     * IDirect3DTexture9 interface pointer the guest holds) an opaque 64-bit key the host uses for texture
+     * dumps and replacement. The pointer is resolved to the device's own object id at once; no guest address
+     * is kept. Guest thread only. POP_E_NOTFOUND when it is not a live 2D texture of this device. */
+    PopModStatus (*d3d9_texture_tag)(const PopModApi *api, uint32_t tex_iface, uint64_t key);
 };
 
 #define POP_AUDIO_OUTPUT_MIXER 0u
@@ -322,7 +327,7 @@ struct PopModApi {
  * chain verified (by a listening test) to swap them after the OS layout. */
 #define POP_AUDIO_SWAP_CENTER_LFE 1u
 /* Send the mix as a Dolby Digital 5.1 bitstream (AC-3 over HDMI/optical)
- * where the device accepts one, as game consoles do; roles then travel in the
+ * where the device accepts one, as the Xbox 360 does; roles then travel in the
  * bitstream, so SWAP_CENTER_LFE does not apply. Movies join that mix. The
  * output reopens when this flag changes; PCM is used whenever it cannot. */
 #define POP_AUDIO_DOLBY_DIGITAL 2u

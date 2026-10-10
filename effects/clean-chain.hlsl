@@ -603,25 +603,27 @@ float4 EDofParams       : register(c24);
 //   Distance r is measured in half-frame-heights from the view point
 //   (0.5, z) in uv, aspect-corrected (so the mid-left/right edges at 16:9 are
 //   r = 1.78 and the mid-top/bottom edges are about r = 1).
-//   x = r^2 inside which motion blur is zero (0.16, r = 0.4)
-//   y = r^2 at which motion blur reaches full weight (1.21, r = 1.1)
-//   z = view-point uv y (0.48, slightly above centre, toward the road ahead)
+//   x = r^2 inside which motion blur is zero (run 16: 0.64, r = 0.8; was 0.16)
+//   y = r^2 at which motion blur reaches full weight (run 16: 4.0, r = 2.0; was 1.21)
+//   z = view-point uv y (run 16: 0.45, the road ahead above the car; was 0.48)
 //   w = residual weight kept inside the clear zone, 0..1 (0.0; all views)
 float4 EMotionEdge      : register(c25);
 
 // EMotionEdgeCar (E.3 [O]; per-pass constant on clean_motion_dof; in-car
 // views, cameraFlags.y = 0; same distance measure as EMotionEdge):
-//   x = r^2 inside which motion blur is zero (0.36, r = 0.6: 50% larger)
-//   y = r^2 at which motion blur reaches full weight (3.24, r = 1.8)
-//   z = view-point uv y (0.48)
-//   w = ease-in amount 0..1 (1.0): profile = smoothstep(t) * (1 - w + w*t)
+//   x = r^2 inside which motion blur is zero (run 16: 0.64, r = 0.8; was 0.36)
+//   y = r^2 at which motion blur reaches full weight (run 16: 4.0, r = 2.0; was 3.24)
+//   z = view-point uv y (run 16: 0.52, the road ahead of the hood; was 0.48)
+//   w = ease-in amount 0..1 (run 16: 0.5, ALL views; was 1.0 in-car only):
+//       profile = smoothstep(t) * (1 - w + w*t)
 float4 EMotionEdgeCar   : register(c26);
 
 // ERigCar (E.3 [O]; per-pass constant on clean_motion_dof; in-car views):
 //   x,y = near suppression: full nearer than x m, none beyond y m (3.5, 5.5);
 //         replaces ERigDepth.xy in the in-car views so the hood stays sharp
 //   z = in-car motion-blur strength multiplier, 0..1 (0.85)
-//   w unused
+//   w = run 16, all views: clear-zone ellipse, the vertical distance from the
+//       view point counts (1 + w) times (0.25: wider than tall; 0 = circle)
 float4 ERigCar          : register(c27);
 
 float ESmoothStep01(float t)
@@ -765,9 +767,10 @@ float4 PS_MotionDof(VS_OUT input) : COLOR0
     // Chase: E.2 disc and smoothstep ramp. In-car (E.3): larger disc, wider
     // ramp and an ease-in profile so no ring edge is visible.
     float3 edgeP = EMotionEdge.xyz + inCar * (EMotionEdgeCar.xyz - EMotionEdge.xyz);
-    float ease = inCar * saturate(EMotionEdgeCar.w);
+    // Run 16 (blurzone): the ease-in profile and the ellipse (ERigCar.w) apply in every view.
+    float ease = saturate(EMotionEdgeCar.w);
     float aspect = DstTexelSize.z * DstTexelSize.y;
-    float2 q = float2((uv.x - 0.5) * aspect, uv.y - edgeP.z) * 2.0;
+    float2 q = float2((uv.x - 0.5) * aspect, (uv.y - edgeP.z) * (1.0 + ERigCar.w)) * 2.0;
     float edgeLin = ELinearStep(dot(q, q), edgeP.x, edgeP.y);
     float edgeT = ESmoothStep01(edgeLin) * (1.0 - ease + ease * edgeLin);
     float edgeFloor = saturate(EMotionEdge.w);
@@ -828,3 +831,67 @@ float4 PS_MotionDof(VS_OUT input) : COLOR0
     float3 rgb = EApplyFinish(blended, uv);
     return float4(rgb, saturate(wSum));
 }
+
+// ---------------------------------------------------------------------------
+// Module G (R2 N4, 7 Oct 2026): screen-space sun rays + sun glare. Public technique: post-process light
+// scattering (GPU Gems 3 ch. 13): an occlusion source of bright sky pixels around the sun's screen position,
+// three radial-blur passes toward the sun (spans 1, 1/8, 1/64), an additive composite with the sun colour, plus a
+// glare lobe and a small disc on sky pixels. Hand-written SM3 assembly (clean-chain.PS_Sun*.asm); our own code.
+//   SunParams.xy = sun uv (0..1, y down), .z = intensity (0 = module skipped by the host), .w = aspect (w/h)
+//   SunColour.rgb = sun colour, .w = 1 / mask radius^2 (aspect-corrected uv units)
+//   SunShape  = (sky depth threshold, sky depth scale, bright key, bright key scale)
+//   SunBlur   = (span, decay per tap, weight, 0)   (per pass); in clean_sun_add .w = split x (rays where uv.x >= w)
+//   glare (literals in PS_SunAdd, c94/c95): strength 0.30, 1/radius 2.5, disc 0.9, 1/disc radius 40, disc exponent 8
+//   Uniforms sit in c28-c31: the D3D9 layer keeps 32 pixel-shader constants (kit dx/d3d9.cpp Dev_SetPixelShaderConstantF).
+float4 SunParams : register(c28);
+float4 SunColour : register(c29);
+float4 SunShape  : register(c30);
+float4 SunBlur   : register(c31);
+// technique clean_sun_mask: vs=VS_Pass ps=PS_SunMask
+// technique clean_sun_blur: vs=VS_Pass ps=PS_SunBlur
+// technique clean_sun_add:  vs=VS_Pass ps=PS_SunAdd
+// ---------------------------------------------------------------------------
+// Module H (R2 run 8, 7 Oct 2026): lamp glow - analytic single scattering of the 8 nearest clean-pool lamps along
+// the view ray up to the scene depth, at frame/2, faded where the frame is already bright (tunnels and night show
+// it, daylight does not). Generated by tools/effects/gen_glow.py; our own code. Host inputs (clean_glow.h):
+float4 GlowLamps[16]  : register(c32);   // per lamp: (view pos xyz, core^2), (rgb x intensity, 0)
+float4 GlowDepth      : register(c48);   // (near*far, far, far - near, 0)
+float4 GlowParams     : register(c49);   // (tan half-FOV x, tan half-FOV y, strength, darkness power)
+// technique clean_glow:     vs=VS_Pass ps=PS_Glow
+// technique clean_glow_add: vs=VS_Pass ps=PS_GlowAdd
+
+// ---------------------------------------------------------------------------
+// SSAO v1 (run 13, 8 Oct 2026; review/run13/ssao-ssr-design.md section 2): horizon-based ambient occlusion from the
+// scene depth at frame/2 (public HBAO technique, reduced: depth-derived normals, 4 directions x 3 steps rotated by a
+// 2x2 pattern), a depth-aware 5-tap blur and the apply pass (luma guard, sky test, darkening cap). Generated by
+// tools/effects/gen_ssao.py; our own code. Host inputs (clean_ao.h): AoProj, AoDepth every frame the module runs;
+// AoParams.z (strength) and AoBlur.zw (TEST views) override the manifest. Setting ssao off -> every pass skipped.
+// gen_ssao.py --fx builds the effect with these five constants only in the Ao programs' constant tables.
+float4 AoProj   : register(c50);   // (tan half-FOV x, tan half-FOV y, near*far, far)
+float4 AoDepth  : register(c51);   // (far - near, sky device-depth cut, 1/far, 0)
+float4 AoParams : register(c52);   // (radius m, bias, strength, max darkening)
+float4 AoFade   : register(c53);   // (fade start m, fade end m, max screen radius in frame heights, luma guard lo)
+float4 AoBlur   : register(c54);   // (blur depth tolerance, luma guard hi, TEST view, TEST normals)
+// technique clean_ao:        vs=VS_Pass ps=PS_Ao
+// technique clean_ao_blur_h: vs=VS_Pass ps=PS_AoBlurH
+// technique clean_ao_blur_v: vs=VS_Pass ps=PS_AoBlurV
+// technique clean_ao_apply:  vs=VS_Pass ps=PS_AoApply
+
+// ---- G2 golden colour filter (run 13, 8 Oct 2026; review/run13/golden-filter-plan.md). Host: clean_grade.h; LUT
+// twin and offline model: tools/effects/grade_lut.py. When on, clean_exposure_bloom writes its alt target GradeInput
+// and clean_grade grades it into FinishInput through the 256x1 GradeLut (rgb = T(L), a = k * 128/255).
+float4 GradeParams  : register(c86);   // (strength w, vt route: saturation 1 - Desaturation, 0, 0)
+// technique clean_grade:        vs=VS_Pass ps=PS_Grade
+// ---- G2 vt route (run 13, owner 8 Oct: the 360 visual treatment's stage order and formulas, our own programs).
+// clean_exposure -> GradeInput (no bloom); clean_grade_down -> GradeLuma (frame/4 local luminance s); clean_grade_vt:
+// curve(s) = C0 + C1 s + C2 s^2 + C3 s^3 (x black bloom, yzw colour bloom, x brightness), o = desat(c) curve.x +
+// curve.yzw c, then + bloom. Host: clean_grade.h (cc_vt_coeffs); twin: tools/effects/grade_lut.py.
+float4 GradeC0      : register(c92);   // cubic, s^0 (x black bloom, yzw colour bloom rgb)
+float4 GradeC1      : register(c93);   // s^1
+float4 GradeC2      : register(c94);   // s^2
+float4 GradeC3      : register(c95);   // s^3
+// technique clean_grade_down:   vs=VS_Pass ps=PS_GradeDown
+// technique clean_grade_vt:     vs=VS_Pass ps=PS_GradeVt
+// ---- Mirror grade + glass (run 13; review/run13/mirror-parity-design.md M1/M2). Host: clean_grade.h.
+float4 MirrorParams : register(c87);   // (grade on 0/1, glass 0..1, mirror width px, mirror height px)
+// technique clean_mirror_grade: vs=VS_Pass ps=PS_MirrorGrade

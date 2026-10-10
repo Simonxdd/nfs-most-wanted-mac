@@ -21,6 +21,8 @@ class D9Backend {
 
     virtual void define(const HostD9TextureDesc &d) = 0;
     virtual void drop(uint32_t id) = 0;
+    // Remaster A1: a defined texture's key changed (see host_d9_texture_tag).
+    virtual void tag(uint32_t id, uint64_t key) { (void)id; (void)key; }
     virtual void upload(uint32_t id, uint32_t face, uint32_t level, const uint8_t *bytes,
                         uint32_t pitch) = 0;
     virtual bool read(uint32_t id, uint32_t face, uint32_t level, uint8_t *bytes,
@@ -60,6 +62,13 @@ class D9Backend {
     virtual void query_drop(uint32_t id) = 0;
 
     virtual void probe_next(const char *tag) = 0;
+
+    // Remaster run 13 MetalFX upscaling: host_d9_scene_split, in queue order. No-op unless the backend upscales.
+    virtual void scene_split(uint32_t phase, uint32_t bb, uint32_t ds) { (void)phase, (void)bb, (void)ds; }
+    // Remaster run 14 foundation F1: host_d9_scene_camera (16 + 16 words), in queue order. No-op by default.
+    virtual void scene_camera(const float *view, const float *info) { (void)view, (void)info; }
+    // Remaster run 14 B1 height fog: host_d9_atmosphere (16 + 16 floats), in queue order. No-op by default.
+    virtual void atmosphere(const float *a, const float *b) { (void)a, (void)b; }
 };
 
 // Each returns nullptr when `device` is not its API's, or when the renderer

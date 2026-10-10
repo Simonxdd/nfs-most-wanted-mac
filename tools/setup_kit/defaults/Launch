@@ -11,7 +11,7 @@ for setting in registry.json mod-settings.json NativeOptions.ini; do
     fi
 done
 # Test-only variables are never inherited by normal play.
-unset RECOMP_CORE_MODS_DIR RECOMP_MODS_DIR RECOMP_TEST_SCRIPTS
+unset RECOMP_CORE_MODS_DIR RECOMP_MODS_DIR RECOMP_TEST_SCRIPTS RECOMP_HOST_DUMP_DIR RECOMP_SMOKE_SECONDS
 export RECOMP_PROFILE_DIR="$app_profile"
 export RECOMP_REGISTRY="$app_profile/registry.json"
 export RECOMP_EXE="$app_resources/Game/speed.exe"

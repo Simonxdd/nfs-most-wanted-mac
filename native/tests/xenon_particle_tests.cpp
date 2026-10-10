@@ -1,4 +1,4 @@
-// The sparks and light trails particle list (xenon_particles.h). Physical checks of the ported XenonEffects
+// Test119/145: the Xbox 360 particle list (xenon_particles.h). Physical checks of the ported XenonEffects
 // (MIT) ageing, impact-time and bounce routines, and the routines' exact formulas on hand-worked cases.
 #include "../../mods/core/nfsmw/xenon_particles.h"
 #include <cmath>
@@ -111,16 +111,15 @@ int main() {
         d.num_particles_variance = 0.002f; n = 0;                  // a fractional count stops at zero, not the limit
         CHECK(xp_spawn(&e, 0.1f, 1.0f, 1, l, &n, 8, &seed, nullptr, nullptr) == 4);
     }
-    // the reference's contrail intensity: lerp(0.1, 0.75, (|v| - 44) / 44), step clamped to 0..1, all four components
+    // the Xbox 360's contrail intensity (USA 8245a5f8): (|v| - 44) / 30, clamped to 0.1..0.75, all four components
     {
-        const float a[4] = {0, 0, 0, 0}, b[4] = {55.0f, 0, 0, 0}, c[4] = {0, 66.0f, 0, 0}, e[4] = {0, 0, 100.0f, 0};
+        const float a[4] = {0, 0, 0, 0}, b[4] = {50.0f, 0, 0, 0}, c[4] = {0, 60.0f, 0, 0}, e[4] = {0, 0, 100.0f, 0};
         const float d[4] = {44.0f, 0, 0, 30.0f};
-        const auto lerp = [](float t) { return 0.1f + 0.65f * t; };
         CHECK(xp_contrail_intensity(a) == 0.1f);                                     // NOS at a standstill: the minimum
-        CHECK(std::fabs(xp_contrail_intensity(b) - lerp(11.0f / 44.0f)) < 1e-6f);
-        CHECK(std::fabs(xp_contrail_intensity(c) - lerp(0.5f)) < 1e-6f);
-        CHECK(std::fabs(xp_contrail_intensity(e) - 0.75f) < 1e-6f);                 // capped
-        CHECK(std::fabs(xp_contrail_intensity(d) - lerp((std::sqrt(44.0f * 44.0f + 900.0f) - 44.0f) / 44.0f)) < 1e-5f);   // w counts
+        CHECK(std::fabs(xp_contrail_intensity(b) - 0.2f) < 1e-6f);                  // 6 / 30
+        CHECK(std::fabs(xp_contrail_intensity(c) - 16.0f / 30.0f) < 1e-6f);
+        CHECK(xp_contrail_intensity(e) == 0.75f);                                    // capped
+        CHECK(std::fabs(xp_contrail_intensity(d) - (std::sqrt(44.0f * 44.0f + 900.0f) - 44.0f) / 30.0f) < 1e-5f);   // w counts
     }
     std::printf("xenon_particle_tests: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

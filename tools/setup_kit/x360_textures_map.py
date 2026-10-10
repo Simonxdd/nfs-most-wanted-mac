@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Convert a TexWizard texture pack's name list (TRACKS/TexWizardX360/meta.json in the game folder, as the Xbox 360
-Stuff Pack installs it) to texture-pack.map, the sorted name-hash pairs the core mod's texture_pack.h reads.
-Name hash: the game's bStringHash (seed 0xffffffff, x 33 + byte; case sensitive); "0x..." names are hashes already.
-usage: texture_pack_map.py <game folder> <out texture-pack.map>"""
+Stuff Pack installs it) to x360-textures.map, the sorted name-hash pairs the core mod's x360_textures.h reads
+(setting "Xbox 360 textures"). Name hash: the game's bStringHash (seed 0xffffffff, x 33 + byte; case sensitive);
+"0x..." names are hashes already.
+usage: x360_textures_map.py <game folder> <out x360-textures.map>"""
 import json
 import re
 import sys
 from pathlib import Path
 
-LIMIT = 8192  # TP_MAP_LIMIT in texture_pack.h
+LIMIT = 8192  # X360_MAP_LIMIT in x360_textures.h
 
 
 def b_hash(name):
@@ -45,12 +46,12 @@ def main():
     game, out = Path(sys.argv[1]), Path(sys.argv[2])
     folder = next((p for p in (game / "TRACKS").iterdir() if p.name.lower() == "texwizardx360"), None) if (game / "TRACKS").is_dir() else None
     if folder is None or not (folder / "meta.json").is_file() or not (folder / "textures.bin").is_file():
-        print("texture pack: none found (TRACKS/TexWizardX360 with meta.json and textures.bin); skipped")
+        print("Xbox 360 textures: none found (TRACKS/TexWizardX360 with meta.json and textures.bin); skipped")
         return 2
     pairs = read_mapping(folder / "meta.json")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("NFSMW-TEXPACK-MAP-1\n" + "".join(f"{a:08x} {b:08x}\n" for a, b in sorted(pairs.items())))
-    print(f"texture pack: {len(pairs)} names -> {out}")
+    out.write_text("NFSMW-X360-MAP-1\n" + "".join(f"{a:08x} {b:08x}\n" for a, b in sorted(pairs.items())))
+    print(f"Xbox 360 textures: {len(pairs)} names -> {out}")
     return 0
 
 

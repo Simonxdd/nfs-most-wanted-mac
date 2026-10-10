@@ -170,17 +170,17 @@ std::atomic<unsigned> g_hdr_switches{0};
 std::atomic<int> g_hdr_failures{0};
 std::atomic<double> g_hdr_next_look{0};
 std::atomic<bool> g_hdr_marker_checked{false};
-// Test91: HDR at 60 Hz. At 4K 120 Hz the HDR signal (10-bit) is at the limit of the test TV's HDMI link:
+// Test91: HDR at 60 Hz. At 4K 120 Hz the HDR signal (10-bit) is at the limit of some HDMI links:
 // sparkles in a fixed column, gone at 60 Hz. The game runs at 60 fps, so with hdr_refresh_60 on the display
 // drops to the same size at 60 Hz while in HDR. The change is made for this process only
 // (kCGConfigureForAppOnly): macOS puts the display's own rate back when the game quits, even after a crash.
-// Test96b (abnormal-exit test): switching HDR with SkyLight saves the display's CURRENT mode as its permanent
-// setting. Lowering the rate before HDR on (or turning HDR off while still lowered) therefore made 60 Hz the player's
+// Test96b (owner's abnormal-exit test): switching HDR with SkyLight saves the display's CURRENT mode as its permanent
+// setting. Lowering the rate before HDR on (or turning HDR off while still lowered) therefore made 60 Hz the owner's
 // saved rate, and "back to the display's own rate" became 60 Hz. Order now: HDR on, then the rate; on the way out the
 // rate back first, then HDR off. Verified with a standalone probe (verification/test96-appearance/probe-p*.out).
 std::atomic<bool> g_hdr_want_60{true};
 std::atomic<bool> g_hdr_refresh_ours{false};
-std::atomic<bool> g_hdr_refresh_tried{false};   // once per HDR period: never fights a rate the player picks
+std::atomic<bool> g_hdr_refresh_tried{false};   // once per HDR period: never fights a rate the owner picks
 
 bool sls_ok() {
     std::call_once(g_sls_once, [] {
@@ -341,7 +341,7 @@ void hdr_take_ownership(uint32_t d) {
 void hdr_turn_on() {
     const uint32_t d = CGMainDisplayID();
     int state = 0;
-    double next = hdr_clock() + 10;    // look again in 10 s (the TV or the player may change it)
+    double next = hdr_clock() + 10;    // look again in 10 s (the TV or the owner may change it)
     if (!g_sls_supports(d)) {
         state = -1;
         next = hdr_clock() + 60;

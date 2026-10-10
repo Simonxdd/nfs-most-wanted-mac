@@ -2384,7 +2384,7 @@ static void test_audio_dolby() {
 // then half a second of silence, in L/R/C/LFE/Ls/Rs order. It traverses the
 // real offline mixer, the exact sink interleaver, and SDL's six-channel stream.
 // No output device is opened. WAVEFORMATEXTENSIBLE declares the speaker mask;
-// physical routing remains a listening test with six actual speakers.
+// physical routing remains an owner test with six actual speakers.
 static void test_audio_identification(const char *path) {
     constexpr uint32_t rate = 48000, slot = 72000, frames = slot * 6;
     std::vector<int16_t> input(size_t(frames) * 6, 0);

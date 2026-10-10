@@ -1,18 +1,21 @@
-/* Appearance recipes with a truthful Custom state (Appearance and Quality are separate recipe domains; a single edit
- * is respected; a recipe is applied once when chosen, never re-asserted).
+/* Test96 (RC review, approved 2 Oct): Appearance recipes with a truthful Custom state, as the
+ * settings plan specifies (Appearance and Quality are separate recipe domains; a single edit is respected; a recipe
+ * is applied once when chosen, never re-asserted). Reshaped 2 Oct 2026 (owner): one Definitive version - the best of
+ * the Xbox 360, the PC and the community mods - with independent switches instead of separate looks.
  *   0 Definitive (default)    hybrid_exposure 50, hybrid_vignette 0, hybrid_shadows 0
- *   1 (retired)               an earlier look; read as Definitive
+ *   1 (retired)               was Xbox 360 - Original: now Definitive + `xbox_colour_filter` on
  *   2 PC - Original           no adjustable appearance values
  *   3 Definitive - Custom     Definitive with any of its tuning values changed
- *   4 (retired)               an earlier custom look; read as Definitive
- * Motion blur and cinematic depth of field are separate switches, not part of the recipe. A profile holding 1 or 4
- * moves, once, to Definitive, and the log says so. The menu steps over the empty choice label of slot 1. Choosing
- * Definitive writes its recipe values; choosing Definitive - Custom keeps the current values. The label then follows
- * the actual values (twice a second): an edited value turns Definitive into Custom, values equal to the recipe turn
- * Custom back. */
-#define APP_RETIRED_LOOK 1
+ *   4 (retired)               was Xbox 360 - Custom: now Definitive + `xbox_colour_filter` on (its values kept)
+ * The switches (Xbox 360 colour filter with its highlights/bloom/shadow sliders; motion blur and cinematic depth of
+ * field as they arrive) are separate choices, not part of the recipe: turning one on keeps the Definitive label.
+ * A profile holding 1 or 4 moves, once, to Definitive (the colour filter left as it is, off by default; Test128), and
+ * the log says so. The menu steps over the empty choice label of slot 1. Choosing Definitive writes its recipe
+ * values; choosing Definitive - Custom keeps the current values. The label then follows the actual values (twice a
+ * second): an edited value turns Definitive into Custom, values equal to the recipe turn Custom back. */
+#define APP_RETIRED_XBOX 1
 #define APP_HYBRID_CUSTOM 3
-#define APP_RETIRED_CUSTOM 4
+#define APP_RETIRED_XBOX_CUSTOM 4
 static int64_t g_app_seen = -1;
 static uint64_t g_app_tick;
 static int app_definitive_original(void) {
@@ -24,14 +27,19 @@ static void app_definitive_recipe(const PopModApi *api) {
     api->settings_set(api, "hybrid_shadows", 0);
 }
 static void appearance_recipe(const PopModApi *api) {
-    static const char *const names[] = {"Definitive", "(retired)", "PC - Original", "Definitive - Custom",
-                                        "(retired custom)"};
+    static const char *const names[] = {"Definitive", "(retired Xbox 360)", "PC - Original", "Definitive - Custom",
+                                        "(retired Xbox 360 - Custom)"};
     int64_t v = LOOK_HYBRID;
     api->settings_get(api, "appearance", &v);
-    if (v == APP_RETIRED_LOOK || v == APP_RETIRED_CUSTOM || v < 0 || v > APP_RETIRED_CUSTOM) {
+    if (v == APP_RETIRED_XBOX || v == APP_RETIRED_XBOX_CUSTOM || v < 0 || v > APP_RETIRED_XBOX_CUSTOM) {
+        /* Test128 (owner's Development 61 session, 2 Oct 2026): the move used to turn the colour filter on at the
+         * console's values (highlights 100, bloom 100 = x4), which blew out the front end. Now the filter stays off
+         * (its default) and its values are left as they are; turning it on stays the player's choice. */
+        const int was_xbox = v == APP_RETIRED_XBOX || v == APP_RETIRED_XBOX_CUSTOM;
         api->settings_set(api, "appearance", LOOK_HYBRID);
         char line[220];
-        snprintf(line, sizeof line, "core.nfsmw: appearance %lld (retired) moved to Definitive", (long long)v);
+        snprintf(line, sizeof line, "core.nfsmw: appearance %lld moved to Definitive%s (2 Oct 2026: one version, the Xbox 360 "
+                 "colour filter is a switch)", (long long)v, was_xbox ? "; the Xbox 360 colour filter stays a separate switch" : "");
         api->log(api, line);
         g_app_seen = LOOK_HYBRID;
         return;

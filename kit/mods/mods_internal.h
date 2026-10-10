@@ -174,6 +174,13 @@ bool mods_settings_save(void);
 void mods_settings_reset(void);
 PopModStatus mods_settings_get(uint32_t owner, const char *key, int64_t *out);
 PopModStatus mods_settings_set(uint32_t owner, const char *key, int64_t v);
+// Remaster run 16 (settings.cpp top): mods_settings_set is the player's choice (an explicit override, kept even
+// when it equals the default). The mod API's settings_set is a derived write: the declared default makes the key
+// follow the default again, any other value is held. Restore defaults removes the override (inherit).
+PopModStatus mods_settings_set_derived(uint32_t owner, const char *key, int64_t v);
+PopModStatus mods_settings_inherit(uint32_t owner, const char *key);
+// "mod_id/key" holds an explicit override (it is in the profile file).
+bool mods_settings_is_override(const char *mod_id_slash_key);
 void mods_settings_remove_all(uint32_t owner);
 // One transaction per mod init: restore puts back both the declarations and
 // the persisted values as they were before that mod touched them.

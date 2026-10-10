@@ -3,6 +3,22 @@
 // Values are 64-bit integers; a toggle is 0 or 1. That is the whole type
 // system the settings page needs and a type a mod cannot misread.
 //
+// Remaster run 16 (external review of runs 11-15, "sparse saving should preserve intent"): three concepts.
+//  - declared default: Entry::def, from the manifest/declare call; it may change between builds.
+//  - explicit override: a key present in stored() (and so in the file). A player's choice is kept even when it
+//    equals today's default, so a later default change never moves it.
+//  - effective value: Entry::value, the override when there is one, otherwise the default (inherited).
+// Who writes decides what the write means:
+//  - the player (menus, settings page, game options, controls): mods_settings_set -> always an override;
+//  - Restore defaults (whole page or one section): mods_settings_inherit -> the override is removed;
+//  - mod code (presets, labels that follow other values, migrations, NativeOptions.ini; the mod API's
+//    settings_set): mods_settings_set_derived -> a write of the declared default returns the key to the default
+//    (a migration or preset never manufactures intent for the default), any other value is held as an override
+//    (the only way to keep it; a key the player chose stays chosen, with the new value).
+// The file stays {"mod/key": value}; "kit.settings/format": 2 marks this format. A file without it is a legacy
+// snapshot (runs <= 14 saved every value, run 15 only the non-default ones): once, entries equal to the CURRENT
+// default are read as inherited and the others as explicit, then the marker is written (g_legacy below).
+//
 // A transaction covers one mod's init: begin before it runs, roll back if it
 // fails. Rollback restores BOTH the declarations and the persisted values,
 // because a mod that changed another mod's setting and then failed must leave
@@ -13,6 +29,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,11 +61,34 @@ std::map<std::string, int64_t> &stored() {
     return m;
 }
 std::string g_path;
+// The format marker (see the top). Read like any key, so older builds keep it as an unknown key.
+const char *const kFormatKey = "kit.settings/format";
+constexpr int64_t kFormat = 2;
+// The loaded file was a legacy snapshot: a value equal to its declared default meant nothing more than "the
+// default when it was saved", so it is read as inherited. Set by mods_settings_load for the whole session (every
+// key is read this way once, when first declared; a later re-declaration after a mod reload is not); the marker
+// written by the first save means the next session reads the file as overrides. A key whose mod is not loaded in
+// that session keeps its value, as explicit.
+bool g_legacy = false;
+std::set<std::string> g_legacy_done;
+
+std::string skey(const Entry &e) {
+    return e.mod_id + "/" + e.key;
+}
+// Legacy snapshot reading for one declared entry (idempotent; nothing once the marker exists).
+void legacy_inherit(const Entry &e) {
+    if (!g_legacy || !g_legacy_done.insert(skey(e)).second)
+        return;
+    auto it = stored().find(skey(e));
+    if (it != stored().end() && it->second == e.def)
+        stored().erase(it);
+}
 
 // Transaction snapshot.
 bool g_in_txn = false;
 std::vector<Entry> g_txn_entries;
 std::map<std::string, int64_t> g_txn_stored;
+std::set<std::string> g_txn_legacy_done;
 
 Entry *find(uint32_t owner, const char *key) {
     for (Entry &e : entries())
@@ -76,6 +116,8 @@ void mods_settings_reset() {
     stored().clear();
     g_path.clear();
     g_in_txn = false;
+    g_legacy = false;
+    g_legacy_done.clear();
 }
 
 bool mods_settings_load(const char *path) {
@@ -104,8 +146,14 @@ bool mods_settings_load(const char *path) {
         if (i == std::string::npos)
             break;
     }
+    auto marker = stored().find(kFormatKey);
+    g_legacy = marker == stored().end() ? !stored().empty() : marker->second < kFormat;
+    if (g_legacy)
+        printf("mods: settings: %s has no format marker (a full or run-15 snapshot): values equal to today's "
+               "defaults now follow the defaults, the others stay as chosen (once)\n", path);
     for (Entry &e : entries()) {
-        auto it = stored().find(e.mod_id + "/" + e.key);
+        legacy_inherit(e);
+        auto it = stored().find(skey(e));
         if (it != stored().end())
             e.value = it->second;
     }
@@ -115,8 +163,14 @@ bool mods_settings_load(const char *path) {
 bool mods_settings_save() {
     if (g_in_txn)
         return false; // an init rollback must never reach disk
-    for (const Entry &e : entries())
-        stored()[e.mod_id + "/" + e.key] = e.value;
+    // Remaster run 16: stored() is the set of explicit overrides; nothing is inferred from equality here. An override
+    // follows its entry's value (a range change may have clamped it); keys of mods not loaded now stay as they were.
+    for (const Entry &e : entries()) {
+        auto it = stored().find(skey(e));
+        if (it != stored().end())
+            it->second = e.value;
+    }
+    stored()[kFormatKey] = kFormat;
     const std::string path = mods_settings_path();
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
@@ -155,9 +209,14 @@ void mods_settings_declare(uint32_t owner, const char *mod_id, const char *key, 
         return;
     Entry e{owner, mod_id ? mod_id : "", key, label && *label ? label : key, kind, def, min, max};
     e.def = def;
-    auto it = stored().find(e.mod_id + "/" + e.key);
-    if (it != stored().end() && it->second >= min && it->second <= max)
-        e.value = it->second;
+    legacy_inherit(e);
+    auto it = stored().find(skey(e));
+    if (it != stored().end()) {
+        if (it->second >= min && it->second <= max)
+            e.value = it->second;
+        else
+            stored().erase(it); // unusable here: the default applies (run 15 dropped it at the next save)
+    }
     entries().push_back(e);
     sort_entries();
 }
@@ -172,6 +231,9 @@ void mods_settings_set_range(uint32_t owner, const char *key, int64_t min, int64
         e->value = min;
     if (e->value > max)
         e->value = max;
+    auto it = stored().find(skey(*e));
+    if (it != stored().end())
+        it->second = e->value;
 }
 
 // Test85: last-known-good graphics. Apply in the settings menu records the values it replaces in
@@ -208,8 +270,11 @@ void mods_cpp_settings_mark_pending(const std::vector<std::pair<std::string, int
     if (!f)
         return;
     fprintf(f, "{\n");
+    // Run 16: a key that only followed its default is recorded as "~mod/key", so a recovery returns it to the
+    // default rather than turning the old value into a choice. Older pending files have no "~" keys.
     for (size_t i = 0; i < previous.size(); ++i)
-        fprintf(f, "%s \"%s\": %lld", i ? ",\n" : "", previous[i].first.c_str(), (long long)previous[i].second);
+        fprintf(f, "%s \"%s%s\": %lld", i ? ",\n" : "", stored().count(previous[i].first) ? "" : "~",
+                previous[i].first.c_str(), (long long)previous[i].second);
     fprintf(f, "\n}\n");
     fclose(f);
 }
@@ -232,12 +297,17 @@ int mods_settings_recover_pending() {
     fclose(f);
     const auto previous = parse_values(text);
     std::string list;
-    for (const auto &[key, value] : previous) {
-        stored()[key] = value;
+    for (const auto &[raw, value] : previous) {
+        const bool inherited = !raw.empty() && raw[0] == '~';
+        const std::string key = inherited ? raw.substr(1) : raw;
+        if (inherited)
+            stored().erase(key);
+        else
+            stored()[key] = value;
         for (Entry &e : entries())
-            if (e.mod_id + "/" + e.key == key && value >= e.min && value <= e.max)
-                e.value = value;
-        list += " " + key + "=" + std::to_string(value);
+            if (skey(e) == key && (inherited || (value >= e.min && value <= e.max)))
+                e.value = inherited ? std::clamp(e.def, e.min, e.max) : value;
+        list += " " + key + (inherited ? "=default" : "=" + std::to_string(value));
     }
     std::error_code ec;
     std::filesystem::remove(pending_path(), ec);
@@ -300,6 +370,36 @@ PopModStatus mods_settings_get(uint32_t owner, const char *key, int64_t *out) {
     return POP_OK;
 }
 
+namespace {
+// One write of an entry's value and override state, saved at once; the old state comes back if the save fails.
+PopModStatus commit(Entry *e, int64_t v, bool override_after) {
+    const std::string k = skey(*e);
+    auto it = stored().find(k);
+    const bool had = it != stored().end();
+    const int64_t had_value = had ? it->second : 0;
+    if (v == e->value && had == override_after && (!had || had_value == v))
+        return POP_OK;
+    const int64_t previous = e->value;
+    e->value = v;
+    if (override_after)
+        stored()[k] = v;
+    else
+        stored().erase(k);
+    if (!g_in_txn && !mods_settings_save()) {
+        e->value = previous;
+        if (had)
+            stored()[k] = had_value;
+        else
+            stored().erase(k);
+        LOGW("settings: could not save %s", mods_settings_path());
+        return POP_E_STATE;
+    }
+    return POP_OK;
+}
+} // namespace
+
+// The player's choice: always an explicit override, even when it equals the default. A write of the value already
+// there changes nothing (kit code re-sends values, e.g. the controls' layout row after a name refresh).
 PopModStatus mods_settings_set(uint32_t owner, const char *key, int64_t v) {
     if (!key)
         return POP_E_INVAL;
@@ -310,16 +410,35 @@ PopModStatus mods_settings_set(uint32_t owner, const char *key, int64_t v) {
         return POP_E_RANGE;
     if (v == e->value)
         return POP_OK;
-    const int64_t previous = e->value;
-    e->value = v;
-    stored()[e->mod_id + "/" + e->key] = v;
-    if (!g_in_txn && !mods_settings_save()) {
-        e->value = previous;
-        stored()[e->mod_id + "/" + e->key] = previous;
-        LOGW("settings: could not save %s", mods_settings_path());
-        return POP_E_STATE;
-    }
-    return POP_OK;
+    return commit(e, v, true);
+}
+
+// Mod code's write (presets, labels, migrations, NativeOptions.ini): see the top of this file.
+PopModStatus mods_settings_set_derived(uint32_t owner, const char *key, int64_t v) {
+    if (!key)
+        return POP_E_INVAL;
+    Entry *e = find(owner, key);
+    if (!e)
+        return POP_E_NOTFOUND;
+    if (v < e->min || v > e->max)
+        return POP_E_RANGE;
+    if (v == e->value)
+        return POP_OK; // nothing changes, so neither does who owns the value
+    return commit(e, v, v != e->def);
+}
+
+// Restore defaults: the override goes and the key follows its declared default again.
+PopModStatus mods_settings_inherit(uint32_t owner, const char *key) {
+    if (!key)
+        return POP_E_INVAL;
+    Entry *e = find(owner, key);
+    if (!e)
+        return POP_E_NOTFOUND;
+    return commit(e, std::clamp(e->def, e->min, e->max), false);
+}
+
+bool mods_settings_is_override(const char *mod_id_slash_key) {
+    return mod_id_slash_key && stored().count(mod_id_slash_key) != 0;
 }
 
 void mods_settings_remove_all(uint32_t owner) {
@@ -330,6 +449,7 @@ void mods_settings_remove_all(uint32_t owner) {
 void mods_settings_txn_begin() {
     g_txn_entries = entries();
     g_txn_stored = stored();
+    g_txn_legacy_done = g_legacy_done;
     g_in_txn = true;
 }
 
@@ -342,6 +462,7 @@ void mods_settings_txn_rollback() {
         return;
     entries() = g_txn_entries;
     stored() = g_txn_stored;
+    g_legacy_done = g_txn_legacy_done;
     g_in_txn = false;
 }
 

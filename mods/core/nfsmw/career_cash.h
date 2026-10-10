@@ -5,9 +5,9 @@
 /* The career record's default (0056d7c0, RET 4) is the retail new-career initializer: it sets flag 2
  * and, when its byte argument says an Underground 2 save was found (00518 5ea passes [ebx+0x1c]), adds
  * the retail $10,000 loyalty bonus (add [ecx+0xc], 0x2710 at 0056d7cc). Two separate controls:
- *   ug2_save_bonus (Test70): treat the Underground 2 save as present, so the ORIGINAL
- *       instruction pays its $10,000 once - an optional enhancement (a Mac has no Underground 2
- *       save to find); never added a second time when the game found a save itself.
+ *   ug2_save_bonus (Test70, owner request): treat the Underground 2 save as present, so the ORIGINAL
+ *       instruction pays its $10,000 once - an owner-selected enhancement (the Mac has no UG2 save;
+ *       the owner's PS2 career had one); never added a second time when the game found a save itself.
  *   starting_cash (Test52, ExOpts StartingCash): the configured amount added after the original.
  * Black Edition (black_edition) is a third, unrelated setting. Every grant is logged as a ledger. */
 static void exo_starting_cash(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {

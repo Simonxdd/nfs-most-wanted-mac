@@ -257,7 +257,7 @@ struct Machine {
         }
         V4 v;
         if (p->pixel) {
-            if (i < 32)
+            if (i < 224)
                 memcpy(v.v, pl->pconst[i], sizeof v.v);
         } else if (i < 256) {
             memcpy(v.v, pl->vconst[i], sizeof v.v);

@@ -1,5 +1,5 @@
 /* Knocked-over props in the rear-view mirror (post-final, Test137; the same restoration HD Reflections' RestoreDetails
- * makes with its destroyable-object pass, external review research 3 Oct).
+ * makes with its destroyable-object pass, research 3 Oct).
  * The main view draws the world's movable props (cones, signs, barriers, debris: the list 009b0f90) with
  * 007538d0(view, 0) at 006ded79; the mirror pass in 006de300 never calls it, so props knocked loose vanish from the
  * mirror. 007538d0 culls against the view it is given (its camera frustum and LOD) and submits each prop to the frame

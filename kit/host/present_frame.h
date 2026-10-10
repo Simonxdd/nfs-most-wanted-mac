@@ -56,6 +56,7 @@ struct Frame {
     bool released = false, dropped = false, success = true, repeat = false, staged_pixels = false;
     bool completion_fallback = false;
     bool hdr_scene_mask = false; // Test86: the D3D9 renderer saw the core mod's pre-HUD scene marker
+    bool hdr_float = false;      // PLAN_R2 item 10: the staged frame is the renderer's float (RGBA16F) back buffer
     double presented_ts = 0, gpu_ts = 0, submitted_ts = 0, sealed_ts = 0, gpu_ms = 0;
     // Guest time spent waiting for a free frame target (presenter backpressure) while
     // producing this frame; frame timings only (T01 attribution: wait vs guest work).

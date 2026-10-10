@@ -5,14 +5,20 @@ Manifest = the HLSL file itself:
   - constants: lines 'float4 Name : register(cN);' or 'float Name : register(cN);' (arrays: 'float4 Name[K] : register(cN);')
   - samplers:  lines 'sampler2D Name : register(sN);'  (bound by the host through its stage; listed in each CTAB)
   - techniques: comment lines '// technique NAME: vs=ENTRY ps=ENTRY'; the .asm files are '<base>.<ENTRY>.asm'
-usage: fxgen.py <file.hlsl> <asm dir> <out.fx>"""
+usage: fxgen.py [--hdr] <file.hlsl> <asm dir> <out.fx>
+--hdr (PLAN_R2 item 10 real HDR, review/run14/hdr-design.md s4): the HDR form of the effect. An asm line
+'<instr> ; hdr: <a> | <b>' becomes <a>, <b> (nothing when empty); a comment line '; hdr+: <a> | <b>' adds <a>, <b>.
+Without --hdr both are plain comments, so the ordinary effect is byte-identical with or without the tags."""
 import re, struct, sys
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import d3d9asm
 from d3d9asm import assemble
-hlsl, asmdir, outp = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+args = sys.argv[1:]
+HDR = bool(args) and args[0] == '--hdr'
+if HDR: args = args[1:]
+hlsl, asmdir, outp = Path(args[0]), Path(args[1]), Path(args[2])
 src = hlsl.read_text()
 consts, params = [], []
 for m in re.finditer(r'^\s*float(4)?\s+(\w+)\s*(?:\[(\d+)\])?\s*:\s*register\(c(\d+)\)\s*;', src, re.M):
@@ -22,8 +28,18 @@ for m in re.finditer(r'^\s*sampler2D\s+(\w+)\s*:\s*register\(s(\d+)\)\s*;', src,
     consts.append((m.group(1), 3, int(m.group(2)), 1, 4, 1, 1, 1))
 techs = re.findall(r'^\s*//\s*technique\s+(\w+)\s*:\s*vs=(\w+)\s+ps=(\w+)', src, re.M)
 if not techs: sys.exit('no "// technique NAME: vs=ENTRY ps=ENTRY" lines')
+def hdr_form(l):
+    code, sep, com = l.partition(';')
+    com = com.strip()
+    for tag in ('hdr+:', 'hdr:'):
+        if sep and com.startswith(tag):
+            body = com[len(tag):].split(';')[0]
+            new = [x.strip() for x in body.split('|') if x.strip()]
+            return ([code.strip()] if tag == 'hdr+:' and code.strip() else []) + new
+    return [l]
 def asm_text(entry):
     t = (asmdir / f'{hlsl.stem}.{entry}.asm').read_text().splitlines()
+    if HDR: t = [x for l in t for x in hdr_form(l)]
     return '\n'.join(l for l in t if l.strip() and not re.match(r'^\s*[vp]s_\d_\d\s*$', l))
 body = bytearray()
 def add(b):

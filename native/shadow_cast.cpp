@@ -456,7 +456,7 @@ static float s_rnd_float(void) {
     return ((float)(int32_t)s_rnd() / 2147483648.0f) * (k < 64 ? 2.0f : 500.0f);
 }
 
-/* Directed cases (external review review of Test150): a cube frustum [-10, 10]^3 and boxes built as the original
+/* Directed cases (review of Test150): a cube frustum [-10, 10]^3 and boxes built as the original
  * builds them (min = pos, every far corner = size[0]). The names say what each case aims at; the check is
  * translation == native, and each case's outcome is logged once. */
 struct ScCase {

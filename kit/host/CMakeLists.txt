@@ -128,7 +128,8 @@ endif()
 if(APPLE)
   set(FW_FOUNDATION "-framework Foundation")
   set(FW_METAL "-framework Metal" "-framework MetalKit" "-framework CoreText"
-               "-framework CoreVideo" "-framework CoreGraphics" "-framework QuartzCore")
+               "-framework CoreVideo" "-framework CoreGraphics" "-framework QuartzCore"
+               "-Wl,-weak_framework,MetalFX") # Remaster run 13 upscaling: absent MetalFX means native
 else()
   set(FW_FOUNDATION "")
   set(FW_METAL "")
@@ -252,6 +253,7 @@ if(TARGET recomp_gen)
             ${HOST}/page_overlay.cpp
             ${POP_PRESENT_SOURCES}
             ${HOST}/input.cpp ${HOST}/input_gate.cpp ${HOST}/input_touch.cpp ${POP_AUDIO_SOURCES}
+            ${HOST}/script.cpp # Remaster U4: the test-only app script runner reuses the parser
     LIBS ${POP_CORE_LIBS}
     FRAMEWORKS ${FW_METAL})
   pop_link_sdl(recomp_app)

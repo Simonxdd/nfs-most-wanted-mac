@@ -4,7 +4,8 @@
  * every plane. This selects that original mixer, not a stereo upmixer or
  * Dolby encoder. The native host must preserve all six channels.
  *
- * Test53: SND always runs that discrete mode. The Audio Mode choice - Mono,
+ * Test53: SND always runs that discrete mode (as the Xbox 360 mixes 5.1 and
+ * the console folds it for stereo outputs). The Audio Mode choice - Mono,
  * Stereo or 5.1 PCM - is how the host PRESENTS that mix (PopModApi
  * audio_output: ITU fold for Mono/Stereo, discrete for 5.1), so every change
  * is heard immediately, including while cycling in the menu, without
@@ -93,8 +94,9 @@ static void native_audio_present(const PopModApi *api) {
                           : !options || get_u32(options + 0x70) ? POP_AUDIO_OUTPUT_STEREO
                                                                 : POP_AUDIO_OUTPUT_MONO;
     /* Dolby Digital carries speaker roles in the bitstream, so the endpoint
-     * exchange only applies to PCM. */
-    const int dolby = setting("audio_dolby_digital", 0) != 0;
+     * exchange only applies to PCM. Remaster (owner 6 Oct): Dolby Digital is the default for 5.1, as the owner's
+     * native-port Play setup; plain 5.1 PCM lost the menu music on some HDMI TV and soundbar chains. */
+    const int dolby = setting("audio_dolby_digital", 1) != 0;
     const uint32_t flags = dolby ? POP_AUDIO_DOLBY_DIGITAL
                            : setting("audio_center_lfe_swap", 0) ? POP_AUDIO_SWAP_CENTER_LFE
                                                                  : 0;
@@ -157,7 +159,7 @@ static void native_audio_draw(const PopModApi *api, pop_cpu_v1 *cpu,
     if (!g_audio_screen || !options) return;
     if (g_audio_draft)
         native_audio_string(api, get_u32(widget + 0x30),
-                            setting("audio_dolby_digital", 0) ? "Dolby 5.1" : "5.1 PCM");
+                            setting("audio_dolby_digital", 1) ? "Dolby 5.1" : "5.1 PCM");
     /* Every choice is presented immediately (native_audio_present); there
      * is no pending state to announce. */
 }

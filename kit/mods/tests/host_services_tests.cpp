@@ -22,6 +22,12 @@ extern "C" int host_pad_rumble_pulse(uint32_t owner, uint16_t low, uint16_t high
     return 1;
 }
 
+// Device boundary double for the Remaster A1 texture-key service (dx/d3d9.cpp is not in this test binary):
+// no texture is known here.
+extern "C" int d3d9_texture_tag_iface(uint32_t, uint64_t) {
+    return 0;
+}
+
 static uint32_t test_audio_mode = 99, test_audio_flags = 99;
 extern "C" int host_audio_set_output(uint32_t mode, uint32_t flags) {
     test_audio_mode = mode;

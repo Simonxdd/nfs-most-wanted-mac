@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <mutex>
 
 #ifndef RECOMP_SETTINGS_PAGE_TABS
@@ -27,9 +28,9 @@ enum Source : uint8_t {
     SRC_MENU,
     SRC_APPLY,
     SRC_DISCARD,
-    SRC_RESTORE_LOOK, // Test85: Restore appearance defaults (group graphics.appearance)
-    SRC_RESTORE_GFX,  // Test85: Restore graphics defaults (image quality + appearance, not display/resolution)
-    SRC_RESTORE_GROUP, // Test85: a Mods page section's Restore defaults (index: kModGroups entry)
+    SRC_RESTORE_GFX,  // Test85: Restore graphics defaults (every picture section, not display/resolution)
+    SRC_RESTORE_GROUP, // Test85: a section's Restore defaults (index: kSections entry)
+    SRC_ADVANCED,      // Remaster run 13: shows or hides the Graphics page's Advanced section (index: its row count)
 };
 struct Item {
     Source src;
@@ -38,10 +39,18 @@ struct Item {
 };
 
 bool g_open = false;
+bool g_advanced = false; // Remaster run 13: the Advanced section is closed each time the menu opens
 int g_tab = 0;
 size_t g_cursor = 0; // index into the current tab's items
 // The Graphics draft: "d:<display row>" or "s:<mod id>/<key>" -> the value Apply will commit.
 std::map<std::string, int64_t> g_draft;
+// Remaster run 16: drafts made by a Restore. Apply removes these settings' overrides (they follow their defaults
+// again) instead of choosing the default value; an edit of the same line after the Restore makes it a choice again.
+std::set<std::string> g_restore;
+void clear_draft() {
+    g_draft.clear();
+    g_restore.clear();
+}
 std::string g_status;
 // The keyboard and pad reach the menu on the input thread; the presenter snapshots it on the thread
 // that seals a frame. One lock, recursive because a mod action may open or close the page.
@@ -53,8 +62,10 @@ std::atomic<bool> g_main_waiting{false};
 #ifdef POPM_TESTING
 bool g_force_enabled = false;
 #endif
-const char *const kTabs[] = {"Graphics", "Mods", "Controls"};
-constexpr int kTabCount = 3;
+// Short names, so seven fit the tab bar (settings_menu_draw.cpp also shrinks them to fit).
+const char *const kTabs[] = {"Graphics", "Display", "Audio", "Xbox 360", "PC", "Mods", "Controls"};
+constexpr int kTabCount = MENU_TAB_COUNT;
+static_assert(sizeof kTabs / sizeof kTabs[0] == MENU_TAB_COUNT, "a name for every page");
 
 struct Setting {
     uint32_t entry = 0, owner = 0;
@@ -89,42 +100,97 @@ bool drafted(const Setting &s) {
 bool drafted(int display_row) {
     return display_row == DISPLAY_FILTERING;
 }
-// Test85: the Graphics page's Appearance section (manifest group "graphics.appearance").
-bool appearance_setting(const Setting &s) {
-    return !strcmp(s.group, "graphics.appearance");
+// Remaster run 13 (owner 8 Oct: "not a list of tens of settings"): the Graphics page lists only the manifest
+// group "graphics" (the main list); every other Graphics section sits in one Advanced section, closed each time
+// the menu opens. Group "hidden" is kept and saved but never listed.
+bool main_graphics_setting(const Setting &s) {
+    return !strcmp(s.group, "graphics");
 }
-// What "Restore graphics defaults" covers: World filtering, and every Graphics setting that applies now or at
-// Apply. Not the display rows (window, frame limit, overlay) and not settings that need a restart (resolution,
-// widescreen): those are the player's setup, not graphics quality.
+// What "Restore graphics defaults" covers: World filtering, and every picture setting (a section marked `picture`
+// below, on the Graphics, Display, Xbox 360 and PC pages) that applies now or at Apply. Not the display rows
+// (window, frame limit, overlay) and not settings that need a restart (resolution, widescreen): those are the
+// player's setup, not graphics quality. Rumble, audio and the Mods page have their own section restores.
 bool restorable(const Setting &s) {
     return !strcmp(s.apply, "renderer") || !strcmp(s.apply, "live");
 }
-int tab_of(const Setting &s) {
-    if (!strncmp(s.group, "graphics", 8))
-        return 0;
-    if (!strcmp(s.group, "controls"))
-        return 2;
-    return 1;
-}
 
-// Mods page groups in the plan's order; anything else lands under Other.
-struct Group {
+// Remaster run 15 (owner 9 Oct: "the graphics options list is so huge...a tab for audio, another one for display,
+// another one for xbox 360 specific settings, another for PC"): every listed section, page by page and in order.
+// A setting's manifest group picks its section by exact match; any other group of a page's family ("graphics.*",
+// "display.*", "xbox360.*", "pc.*") lands in that page's Other section, and any other group at all under the Mods
+// page's Other. `restore` gives the section its own "Restore this section's defaults" row.
+struct Section {
     const char *id, *title;
+    int tab;
+    bool picture, restore;
 };
-const Group kModGroups[] = {
-    {"visual", "Visual restorations and enhancements"},
-    {"feedback", "Controller feedback"},
-    {"career", "Career and customization"},
-    {"audio", "Audio"},
-    {"fixes", "Verified fixes and compatibility"},
-    {"", "Other"},
-    {"diagnostics", "Diagnostics"},
+const Section kSections[] = {
+    {"graphics", "Picture", MENU_TAB_GRAPHICS, true, false},
+    // The Graphics page's Advanced section, in this order.
+    {"graphics.remaster", "Remaster features (follow Look)", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.effects", "Effects", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.cycle", "Day and weather cycle", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.mirror", "Mirror", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.rain", "Rain", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.engine", "Engine and experiments", MENU_TAB_GRAPHICS, true, false},
+    {"", "Other", MENU_TAB_GRAPHICS, true, false},
+    // Display: the window, frame limit and overlay rows open "Screen"; World filtering opens "Sharpness".
+    {"display", "Screen", MENU_TAB_DISPLAY, true, false},
+    {"display.quality", "Sharpness and upscaling", MENU_TAB_DISPLAY, true, false},
+    {"display.hdr", "HDR", MENU_TAB_DISPLAY, true, false},
+    {"", "Other", MENU_TAB_DISPLAY, true, false},
+    {"audio", "Audio", MENU_TAB_AUDIO, false, true},
+    {"xbox360", "Xbox 360 looks", MENU_TAB_XBOX360, true, false},
+    {"xbox360.particles", "Sparks and smoke", MENU_TAB_XBOX360, true, false},
+    {"xbox360.pools", "Light pools", MENU_TAB_XBOX360, true, false},
+    {"", "Other", MENU_TAB_XBOX360, true, false},
+    {"pc", "Extra Options", MENU_TAB_PC, true, false},
+    {"pc.keys", "Keys, camera and HUD", MENU_TAB_PC, true, false},
+    {"", "Other", MENU_TAB_PC, true, false},
+    {"visual", "Screen and camera extras", MENU_TAB_MODS, false, true},
+    {"career", "Career and customization", MENU_TAB_MODS, false, true},
+    {"fixes", "Verified fixes and compatibility", MENU_TAB_MODS, false, true},
+    {"", "Other", MENU_TAB_MODS, false, true},
+    {"diagnostics", "Diagnostics", MENU_TAB_MODS, false, true},
+    {"controls", "Controller", MENU_TAB_CONTROLS, false, false},
+    {"feedback", "Controller rumble", MENU_TAB_CONTROLS, false, true}, // owner 9 Oct: rumble on Controls
 };
-bool known_group(const char *g) {
-    for (const Group &k : kModGroups)
-        if (*k.id && !strcmp(k.id, g))
-            return true;
-    return false;
+constexpr size_t kSectionCount = sizeof kSections / sizeof kSections[0];
+// The page a group family belongs to when no section names the group itself.
+int family_tab(const char *g) {
+    struct Family {
+        const char *prefix;
+        int tab;
+    };
+    static const Family kFamilies[] = {{"graphics", MENU_TAB_GRAPHICS},
+                                       {"display", MENU_TAB_DISPLAY},
+                                       {"audio", MENU_TAB_AUDIO},
+                                       {"xbox360", MENU_TAB_XBOX360},
+                                       {"pc", MENU_TAB_PC},
+                                       {"controls", MENU_TAB_CONTROLS}};
+    for (const Family &f : kFamilies) {
+        const size_t n = strlen(f.prefix);
+        if (!strncmp(g, f.prefix, n) && (g[n] == 0 || g[n] == '.'))
+            return f.tab;
+    }
+    return MENU_TAB_MODS;
+}
+// The section a setting is listed in (an index into kSections), or -1 for group "hidden".
+int section_of(const Setting &s) {
+    if (!strcmp(s.group, "hidden"))
+        return -1;
+    for (size_t i = 0; i < kSectionCount; ++i)
+        if (*kSections[i].id && !strcmp(kSections[i].id, s.group))
+            return int(i);
+    const int tab = family_tab(s.group);
+    for (size_t i = 0; i < kSectionCount; ++i)
+        if (!*kSections[i].id && kSections[i].tab == tab)
+            return int(i);
+    return -1;
+}
+int tab_of(const Setting &s) {
+    const int i = section_of(s);
+    return i < 0 ? -1 : kSections[i].tab;
 }
 
 std::vector<Item> build(int tab) {
@@ -138,57 +204,67 @@ std::vector<Item> build(int tab) {
                 v.push_back({SRC_SETTING, i, {}});
         }
     };
-    if (tab == 0) {
-        header("Display");
-        for (int r : {DISPLAY_WINDOW, DISPLAY_FPS, DISPLAY_OVERLAY})
-            if (mods_display_row_applies(DisplayRow(r)))
-                v.push_back({SRC_DISPLAY, uint32_t(r), {}});
-        header("Image quality");
-        if (mods_display_row_applies(DISPLAY_FILTERING))
-            v.push_back({SRC_DISPLAY, uint32_t(DISPLAY_FILTERING), {}});
-        settings_in([](const Setting &s) { return tab_of(s) == 0 && !appearance_setting(s); });
+    // A section: its header, the host's rows that open it, its settings, its restore row; nothing when empty.
+    auto section = [&](size_t si) {
+        const Section &sec = kSections[si];
         const size_t mark = v.size();
-        header("Appearance");
-        settings_in([](const Setting &s) { return appearance_setting(s); });
-        const bool looks = v.size() > mark + 1;
-        if (!looks)
-            v.pop_back();
+        header(sec.title);
+        if (!strcmp(sec.id, "display"))
+            for (int r : {DISPLAY_WINDOW, DISPLAY_FPS, DISPLAY_OVERLAY})
+                if (mods_display_row_applies(DisplayRow(r)))
+                    v.push_back({SRC_DISPLAY, uint32_t(r), {}});
+        if (!strcmp(sec.id, "display.quality") && mods_display_row_applies(DISPLAY_FILTERING))
+            v.push_back({SRC_DISPLAY, uint32_t(DISPLAY_FILTERING), {}});
+        settings_in([&](const Setting &s) { return section_of(s) == int(si); });
+        if (v.size() == mark + 1)
+            v.pop_back(); // an empty section shows no header
+        else if (sec.restore)
+            v.push_back({SRC_RESTORE_GROUP, uint32_t(si), {}});
+    };
+    if (tab == MENU_TAB_GRAPHICS) {
+        size_t main = 0;
+        while (strcmp(kSections[main].id, "graphics"))
+            ++main;
+        section(main);
+        uint32_t advanced = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            Setting s;
+            advanced += setting(i, &s) && s.owner != MODS_OWNER_RUNTIME && tab_of(s) == MENU_TAB_GRAPHICS &&
+                        !main_graphics_setting(s);
+        }
+        if (advanced) {
+            v.push_back({SRC_ADVANCED, advanced, {}});
+            for (size_t si = 0; g_advanced && si < kSectionCount; ++si)
+                if (si != main && kSections[si].tab == MENU_TAB_GRAPHICS)
+                    section(si);
+        }
         header("Defaults");
-        if (looks)
-            v.push_back({SRC_RESTORE_LOOK, 0, {}});
         v.push_back({SRC_RESTORE_GFX, 0, {}});
-        v.push_back({SRC_APPLY, 0, {}});
-        v.push_back({SRC_DISCARD, 0, {}});
-    } else if (tab == 1) {
-        if (mods_menu_entry_count()) {
-            header("Mod actions");
-            for (uint32_t i = 0; i < mods_menu_entry_count(); ++i)
-                v.push_back({SRC_MENU, i, {}});
-        }
-        for (size_t gi = 0; gi < sizeof kModGroups / sizeof kModGroups[0]; ++gi) {
-            const Group &g = kModGroups[gi];
-            const size_t mark = v.size();
-            header(g.title);
-            settings_in([&](const Setting &s) {
-                return tab_of(s) == 1 && (*g.id ? !strcmp(s.group, g.id) : !known_group(s.group));
-            });
-            if (v.size() == mark + 1)
-                v.pop_back(); // an empty group shows no header
-            else
-                v.push_back({SRC_RESTORE_GROUP, uint32_t(gi), {}});
-        }
-    } else {
+    } else if (tab == MENU_TAB_CONTROLS) {
         if (mods_settings_row_listed(DISPLAY_CONTROLS_BIT)) {
             header("On-screen controls");
             for (int r = 0; r < CONTROLS_ROW_COUNT; ++r)
                 v.push_back({SRC_CONTROLS, uint32_t(r), {}});
         }
-        const size_t mark = v.size();
-        header("Controller");
-        settings_in([](const Setting &s) { return tab_of(s) == 2; });
-        if (v.size() == mark + 1)
-            v.pop_back();
+        for (size_t si = 0; si < kSectionCount; ++si)
+            if (kSections[si].tab == MENU_TAB_CONTROLS)
+                section(si);
+        header("Changes");
+    } else {
+        if (tab == MENU_TAB_MODS && mods_menu_entry_count()) {
+            header("Mod actions");
+            for (uint32_t i = 0; i < mods_menu_entry_count(); ++i)
+                v.push_back({SRC_MENU, i, {}});
+        }
+        for (size_t si = 0; si < kSectionCount; ++si)
+            if (kSections[si].tab == tab)
+                section(si);
+        header("Changes");
     }
+    // Every page that can hold a waiting change ends with Apply and Discard (also buttons beside the status line
+    // while changes wait), so a change made on any page can be committed there.
+    v.push_back({SRC_APPLY, 0, {}});
+    v.push_back({SRC_DISCARD, 0, {}});
     return v;
 }
 bool selectable(const Item &it) {
@@ -346,24 +422,28 @@ MenuLine line_for(const Item &it) {
         l.enabled = !g_draft.empty();
         l.help = "Forget the changes not yet applied.";
         break;
-    case SRC_RESTORE_LOOK:
-        l.kind = MenuLine::ACTION;
-        l.label = "Restore appearance defaults";
-        l.help = "Marks the Appearance section's default values (the Definitive look) as changes; Apply commits them. "
-                 "Quality, anti-aliasing, filtering, resolution and the frame limit stay as they are.";
+    case SRC_ADVANCED:
+        l.label = "Advanced settings";
+        l.value = g_advanced ? "Hide" : "Show (" + std::to_string(it.index) + ")";
+        l.adjustable = true;
+        l.help = "Every single setting behind the Picture list: each Remaster feature, effect strengths, the day "
+                 "and weather lengths, the mirror, rain and engine options. Look decides the Remaster features; the "
+                 "rest you rarely need. Screen, HDR and sharpness are on the Display page. Closed again each time "
+                 "this menu opens.";
         break;
     case SRC_RESTORE_GROUP:
         l.kind = MenuLine::ACTION;
         l.label = "Restore this section's defaults";
         l.list_only = true;
-        l.help = std::string("Marks the default values of \"") + kModGroups[it.index].title +
+        l.help = std::string("Marks the default values of \"") + kSections[it.index].title +
                  "\" as changes; Apply commits them, Discard forgets them. Other sections stay as they are.";
         break;
     case SRC_RESTORE_GFX:
         l.kind = MenuLine::ACTION;
         l.label = "Restore graphics defaults";
-        l.help = "Marks the default values of World filtering, Quality, anti-aliasing and the Appearance section as "
-                 "changes; Apply commits them. The window mode, resolution and frame limit stay as they are.";
+        l.help = "Marks the default values of the picture settings that apply now or at Apply as changes (the "
+                 "Definitive look included), here and on the Display, Xbox 360 and PC pages; Apply commits them. The "
+                 "window mode, resolution, frame limit, rumble and settings that need a restart stay as they are.";
         break;
     }
     return l;
@@ -387,6 +467,7 @@ int64_t stepped(int64_t value, int64_t mn, int64_t mx, int64_t step, int delta, 
 }
 
 void set_draft(const std::string &key, int64_t value, int64_t committed) {
+    g_restore.erase(key); // a Restore marks its drafts after this call
     if (value == committed)
         g_draft.erase(key);
     else
@@ -413,6 +494,9 @@ void adjust(const Item &it, int delta, bool from_enter) {
             mods_controls_nudge(ControlsRow(it.index), delta);
         }
         break;
+    case SRC_ADVANCED:
+        g_advanced = from_enter ? !g_advanced : delta > 0;
+        break;
     case SRC_SETTING: {
         Setting s;
         if (!setting(it.index, &s))
@@ -421,7 +505,7 @@ void adjust(const Item &it, int delta, bool from_enter) {
         const bool wrap = from_enter && *s.choices;
         int64_t want = s.kind == POP_SETTING_BOOL ? !cur : stepped(cur, s.mn, s.mx, s.step, delta, wrap);
         // A retired choice keeps its value slot (saved profiles still hold it) with an empty label; stepping passes
-        // over it (for example a look a game has since removed).
+        // over it (NFSMW: the removed Xbox 360 looks, 2 Oct).
         for (int64_t guard = s.mx - s.mn; s.kind != POP_SETTING_BOOL && *s.choices && guard > 0 && want != cur &&
                                           choice(s.choices, std::clamp(want, s.mn, s.mx) - s.mn).empty();
              --guard)
@@ -431,6 +515,7 @@ void adjust(const Item &it, int delta, bool from_enter) {
             set_draft(draft_key(s), want, s.value);
         else {
             g_draft.erase(draft_key(s)); // a Restore's draft of this live setting gives way to the edit
+            g_restore.erase(draft_key(s));
             mods_settings_set(s.owner, s.key, want);
         }
         break;
@@ -486,14 +571,16 @@ void apply_draft() {
         }
         for (uint32_t i = 0; i < count; ++i) {
             Setting s;
-            if (setting(i, &s) && draft_key(s) == key && mods_settings_set(s.owner, s.key, value) == POP_OK) {
+            if (setting(i, &s) && draft_key(s) == key &&
+                (g_restore.count(key) ? mods_settings_inherit(s.owner, s.key)
+                                      : mods_settings_set(s.owner, s.key, value)) == POP_OK) {
                 ++applied;
                 break;
             }
         }
     }
     const size_t total = g_draft.size();
-    g_draft.clear();
+    clear_draft();
     char line[96];
     if (applied == int(total))
         snprintf(line, sizeof line, "Applied %d change%s.", applied, applied == 1 ? "" : "s");
@@ -520,10 +607,22 @@ void request_apply() {
     });
 }
 
+// Remaster run 16: one setting back to its default. A changed value is drafted (Apply removes the override, Discard
+// forgets it); a value already at the default only loses its override now (nothing to see or apply), so it follows
+// later default changes again. The menu shows neither: the player sees the default value either way.
+void restore_one(const Setting &s, int64_t def) {
+    const std::string key = draft_key(s);
+    set_draft(key, std::clamp(def, s.mn, s.mx), s.value);
+    if (g_draft.count(key))
+        g_restore.insert(key);
+    else if (mods_settings_is_override((std::string(s.mod_id) + "/" + s.key).c_str()))
+        mods_settings_inherit(s.owner, s.key);
+}
+
 // Test85: draft the defaults (Apply commits them, Discard forgets them).
-void restore_defaults(bool appearance_only) {
+void restore_defaults() {
     int n = 0;
-    if (!appearance_only && mods_display_row_applies(DISPLAY_FILTERING)) {
+    if (mods_display_row_applies(DISPLAY_FILTERING)) {
         set_draft(draft_key(DISPLAY_FILTERING), 0, mods_display_value(DISPLAY_FILTERING));
         ++n;
     }
@@ -531,34 +630,33 @@ void restore_defaults(bool appearance_only) {
     for (uint32_t i = 0; i < count; ++i) {
         Setting s;
         int64_t def = 0;
-        if (!setting(i, &s) || s.owner == MODS_OWNER_RUNTIME || tab_of(s) != 0 || !mods_settings_default(i, &def))
+        if (!setting(i, &s) || s.owner == MODS_OWNER_RUNTIME || !mods_settings_default(i, &def))
             continue;
-        if (appearance_only ? !appearance_setting(s) : !restorable(s))
+        const int si = section_of(s);
+        if (si < 0 || !kSections[si].picture || !restorable(s))
             continue;
-        set_draft(draft_key(s), std::clamp(def, s.mn, s.mx), s.value);
+        restore_one(s, def);
         ++n;
     }
     g_status = g_draft.empty() ? "Already at the defaults."
-                               : std::string(appearance_only ? "Appearance" : "Graphics") +
-                                     " defaults marked; choose Apply to use them.";
+                               : "Graphics defaults marked; choose Apply to use them.";
     printf("mods: settings menu restore %s defaults: %d settings, %zu changes drafted\n",
-           appearance_only ? "appearance" : "graphics", n, g_draft.size());
+           "graphics", n, g_draft.size());
     fflush(stdout);
 }
 
-// Test85: a Mods page section's defaults, drafted the same way.
+// Test85: a section's defaults (the Mods page's, Audio, rumble), drafted the same way.
 void restore_group(size_t gi) {
-    const Group &g = kModGroups[gi];
+    const Section &g = kSections[gi];
     const uint32_t count = mods_settings_entry_count();
     int n = 0;
     for (uint32_t i = 0; i < count; ++i) {
         Setting s;
         int64_t def = 0;
-        if (!setting(i, &s) || s.owner == MODS_OWNER_RUNTIME || tab_of(s) != 1 || !mods_settings_default(i, &def))
+        if (!setting(i, &s) || s.owner == MODS_OWNER_RUNTIME || section_of(s) != int(gi) ||
+            !mods_settings_default(i, &def))
             continue;
-        if (*g.id ? strcmp(s.group, g.id) != 0 : known_group(s.group))
-            continue;
-        set_draft(draft_key(s), std::clamp(def, s.mn, s.mx), s.value);
+        restore_one(s, def);
         ++n;
     }
     g_status = g_draft.empty() ? "Already at the defaults." : std::string(g.title) + " defaults marked; choose Apply to use them.";
@@ -568,8 +666,12 @@ void restore_group(size_t gi) {
 
 // Enter, or a click on the line.
 void activate(const Item &it) {
-    if (it.src == SRC_RESTORE_LOOK || it.src == SRC_RESTORE_GFX) {
-        restore_defaults(it.src == SRC_RESTORE_LOOK);
+    if (it.src == SRC_RESTORE_GFX) {
+        restore_defaults();
+        return;
+    }
+    if (it.src == SRC_ADVANCED) {
+        g_advanced = !g_advanced;
         return;
     }
     if (it.src == SRC_RESTORE_GROUP) {
@@ -580,7 +682,7 @@ void activate(const Item &it) {
         request_apply();
     else if (it.src == SRC_DISCARD) {
         g_status = g_draft.empty() ? "" : "Discarded the changes.";
-        g_draft.clear();
+        clear_draft();
     } else if (it.src == SRC_MENU)
         mods_menu_activate(it.index);
     else
@@ -607,6 +709,7 @@ bool mods_menu_enabled() {
 void mods_menu_open(int tab) {
     std::lock_guard lock(g_mu);
     g_open = true;
+    g_advanced = false;
     g_tab = std::clamp(tab, 0, kTabCount - 1);
     g_cursor = 0;
     g_status.clear();
@@ -627,7 +730,7 @@ void mods_menu_close() {
         printf("mods: settings menu closed\n");   // Test93: the record that it closed, and when
         fflush(stdout);
     }
-    g_draft.clear();
+    clear_draft();
     g_open = false;
 }
 
@@ -716,7 +819,7 @@ bool mods_menu_pointer_line(int tab, size_t line, int action) {
     case MENU_POINT_DECREASE:
     case MENU_POINT_INCREASE:
         if (v[line].src == SRC_APPLY || v[line].src == SRC_DISCARD || v[line].src == SRC_MENU ||
-            v[line].src == SRC_RESTORE_LOOK || v[line].src == SRC_RESTORE_GFX || v[line].src == SRC_RESTORE_GROUP)
+            v[line].src == SRC_RESTORE_GFX || v[line].src == SRC_RESTORE_GROUP)
             activate(v[line]);
         else
             adjust(v[line], action == MENU_POINT_INCREASE ? +1 : -1, false);
@@ -816,9 +919,10 @@ void mods_menu_enable_for_test(bool on) {
 void mods_menu_reset_for_test() {
     std::lock_guard lock(g_mu);
     g_open = false;
+    g_advanced = false;
     g_tab = 0;
     g_cursor = 0;
-    g_draft.clear();
+    clear_draft();
     g_status.clear();
     g_applying = false;
 }

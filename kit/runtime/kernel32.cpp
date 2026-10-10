@@ -2209,7 +2209,7 @@ void thread_finish_exit_process();
 
 // T01 correction (Test58): the deadline ticker. Every guest Sleep/timed wait ends
 // in a host timed wait, and on macOS those wake late by the timer's coalescing
-// leeway: measured on the test Mac 2.8 ms median, 4.5 ms max, whatever the
+// leeway: measured on the owner's Mac 2.8 ms median, 4.5 ms max, whatever the
 // mechanism (condition variable, nanosleep, mach_wait_until) or thread class;
 // a time-constraint thread wakes within 0.05 ms. The game's frame limiter sleeps
 // every frame, so that leeway landed directly on the frame (16.7 -> 19-21 ms).
@@ -2926,7 +2926,7 @@ bool guest_yield() {
 // DirectInput service threads indefinitely, expired 200 ms waits and all.  Any
 // call into the runtime is a checkpoint, and a thread yields at most once per
 // millisecond so the check costs a clock read on the hot path.
-const double SCHED_SLICE_SECONDS = 0.001;
+const double SCHED_SLICE_SECONDS = 0.001; // default; RECOMP_SCHED_SLICE_MS overrides (sched_checkpoint)
 
 } // namespace
 
@@ -3048,7 +3048,14 @@ void sched_checkpoint() {
         return;
     GuestThread *me = threads()[t_self];
     double now = sched_now();
-    if (now - me->last_yield < SCHED_SLICE_SECONDS)
+    // Remaster S5 (TEST, off by default): RECOMP_SCHED_SLICE_MS=<0.25..50> sets the slice (default 1 ms), so a
+    // longer slice can be measured against audio underruns and frame times. No guest code runs in parallel.
+    static const double slice = [] {
+        const char *e = recomp_env("SCHED_SLICE_MS");
+        const double ms = e ? atof(e) : 1.0;
+        return (ms >= 0.25 && ms <= 50.0 ? ms : 1.0) / 1000.0;
+    }();
+    if (now - me->last_yield < slice)
         return;
     me->last_yield = now;
     guest_yield();

@@ -610,7 +610,7 @@ static void test_joy_device_state() {
     wr32(info, 580);
     CHECK_EQ(call_method(dev, DID_GetDeviceInfo, {info}), DI_OK);
     CHECK_EQ(rd32(info + 36), 0x0404u);
-    CHECK_EQ(rd8(info + 300), (uint32_t)'R');
+    CHECK_EQ(rd8(info + 300), (uint32_t)'C');   // "Controller" (run 13: the pad's shown name)
 }
 
 static uint32_t g_obj_calls = 0;

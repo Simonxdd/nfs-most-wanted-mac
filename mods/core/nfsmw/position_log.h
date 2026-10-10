@@ -1,9 +1,9 @@
-/* Test136 (3 Oct 2026): "Log my position" diagnostic, so a player can report where something happened (pop-in at the
+/* Test136 (3 Oct 2026): "Log my position" diagnostic, so the owner can report where something happened (pop-in at the
  * highway gas station and the stadium trees, the Rosewood College sign flicker) by the clock time alone. With
  * position_log on, every 250 ms in the game world the log gets the local time (ms), the player car's world position
  * in the x,y,z (z up) form the QA fixture's QA_FIXTURE_TELEPORT takes, the heading and the speed (both from the
  * movement since the last line). 250 ms, not 2 s: at 100 mph two seconds is ~90 m, too coarse to place a pop-in
- * boundary (external review checklist review, 3 Oct). Read only: the position comes from the player's own getter (vtable +0x0c
+ * boundary (checklist review, 3 Oct). Read only: the position comes from the player's own getter (vtable +0x0c
  * of [[0092d87c]], as qa_fixture.c's QA_FIXTURE_POSLOG reads it). Called from game_device_update (once per frame; a
  * hook, so guest_call is allowed). */
 #include <time.h>

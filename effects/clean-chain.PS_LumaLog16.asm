@@ -25,6 +25,7 @@ def c49 = 2.12599993e-01, 7.15200007e-01, 7.22000003e-02, 6.93147182e-01
 def c50 = 2.12599993e-01, 7.15200007e-01, 7.22000003e-02, 6.25000000e-02
 def c51 = 3.75000000e-01, 3.75000000e-01, 0.00000000e+00, 0.00000000e+00
 def c52 = 2.12599993e-01, 7.15200007e-01, 7.22000003e-02, 1.00000000e+00
+; hdr+: def c220 = 1.0, 0.0, 0.0, 0.0   ; HDR constants: one, zero
 dcl_2d s0
 mov r0.xy, v0.xyxx
 mov r1.xyzw, c4.xyzw
@@ -34,6 +35,7 @@ mov r3.xy, r2.xyxx
 mul r0.zw, r0.xxzw, r3.xxxy
 add r0.zw, r0.xxxy, r0.xxzw
 texld r3.xyzw, r0.zwxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.z, r3.x
 mov r4.x, r0.z
 mov r0.z, r3.xxyx
@@ -53,6 +55,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -73,6 +76,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -93,6 +97,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -113,6 +118,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -133,6 +139,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -153,6 +160,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -173,6 +181,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -193,6 +202,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -213,6 +223,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -233,6 +244,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -253,6 +265,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -273,6 +286,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -293,6 +307,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -313,6 +328,7 @@ mov r3.zw, r2.xxxy
 mul r3.xy, r3.xyxx, r3.zwxx
 add r3.xy, r0.xyxx, r3.xyxx
 texld r3.xyzw, r3.xyxx, s0.xyzw
+; hdr+: min r3.xyz, r3.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.w, r3.x
 mov r4.x, r0.w
 mov r0.w, r3.xxxy
@@ -333,6 +349,7 @@ mov r2.xy, r2.xyxx
 mul r2.xy, r3.xyxx, r2.xyxx
 add r0.xy, r0.xyxx, r2.xyxx
 texld r2.xyzw, r0.xyxx, s0.xyzw
+; hdr+: min r2.xyz, r2.xyzz, c220.xxxx   ; statistics read min(frame, 1)
 mov r0.x, r2.x
 mov r4.x, r0.x
 mov r0.x, r2.yxxx

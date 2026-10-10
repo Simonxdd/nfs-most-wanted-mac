@@ -36,6 +36,9 @@
 #include "../controls/controls_host.h"
 #include "../../mods/controls_settings.h"
 #include "../controls/gamepad_sdl.h"
+#include "../controls/vpad.h"
+#include "../script.h"
+#include "../../runtime/guest.h"
 #include "../../mods/mods_internal.h"
 #include "../midi.h"
 #include "../present.h"
@@ -371,7 +374,7 @@ void deliver_pending_input() {
 // Window positions remain the motion source in both capture states.
 // ---------------------------------------------------------------------------
 bool g_pointer_hidden = false;
-// Test80 (test report: the arrow sat in the middle of the picture while racing with the controller):
+// Test80 (owner, 1 Oct 2026: the arrow sat in the middle of the picture while racing with the controller):
 // the OS cursor also hides itself while the pointer is idle - 2.5 s after the last real mouse or trackpad
 // motion, or at once on controller input - and comes back on the next motion or click. Not while the
 // settings page (which is navigated with a real cursor) is up. g_os_cursor_hidden is what SDL was told.
@@ -420,7 +423,7 @@ void update_idle_cursor() {
     if (want != g_idle_hidden) {
         g_idle_hidden = want;
         reconcile_os_cursor();
-        // Test128 (an RC4 test session: the arrow stayed on screen): each change and why, once.
+        // Test128 (owner's RC4 session, 2 Oct 2026: the arrow stayed on screen): each change and why, once.
         printf("[host] cursor: %s (idle %d, game picture %d, window focus %d, settings page %d)\n",
                want ? "hidden" : "shown", int(idle), int(primary), int(focus), int(page));
         fflush(stdout);
@@ -510,7 +513,10 @@ bool window_has_resize_edges() {
     return g_window_mode == 0 && !g_fullscreen_transition && !window_fullscreen();
 }
 
+bool app_script_due();
 bool input_pending() {
+    if (app_script_due()) // Remaster U4: a due script step ends an idle wait like input does
+        return true;
     std::lock_guard<std::mutex> held(g_pending_input_m);
     return !g_pending_input.empty();
 }
@@ -1105,7 +1111,7 @@ void update_editor_text_input() {
         SDL_StopTextInput(g_window);
 }
 
-// Test128 (RC3 and Development 61 test sessions): when the Mac sleeps, the TV's HDMI audio device
+// Test128 (owner's RC3 and Development 61 sessions, 2 Oct 2026): when the Mac sleeps, the TV's HDMI audio device
 // disappears and comes back on wake as a new device (#15 removed, #39 'LG TV' added). The output - the Dolby Digital
 // bitstream or PCM - stayed on the vanished device, so the game was silent until it was restarted, and the game's
 // streaming sound kept restarting its buffer (thousands of times). The playback device that was the default when it
@@ -1141,7 +1147,7 @@ void note_audio_device_event(uint32_t type, SDL_AudioDeviceID which) {
                "output again\n", name.c_str(), unsigned(which));
         fflush(stdout);
         g_audio_lost_name.clear();
-        // review (2 Oct): no resume across the loss and no fixed delay alone - the reopen builds a fresh session
+        // Review (2 Oct): no resume across the loss and no fixed delay alone - the reopen builds a fresh session
         // (the Dolby sink resolves the default device, its streams, the AC-3 format and hog mode anew, and a new
         // IOProc). It waits until macOS has made the returned device the system output again (on wake it briefly
         // shows the built-in speakers), checked every 250 ms for at most 15 s, then 1 s for the HDMI link.
@@ -1158,7 +1164,7 @@ void note_audio_device_event(uint32_t type, SDL_AudioDeviceID which) {
             host_audio_restart_output("the output device came back (sleep/wake or the TV reconnected)");
         }).detach();
         // The returned device is the output from here on. Not the momentary system default: on wake that is the
-        // built-in speakers, and remembering it lost the second sleep (an RC4 test session).
+        // built-in speakers, and remembering it lost the second sleep (owner's RC4 session, 2 Oct 2026).
         g_audio_default_name = name;
         return;
     }
@@ -1626,6 +1632,124 @@ void apply_mode_change() {
     host_set_client_size(host_main_window(), g_mode_w, g_mode_h);
 }
 
+// ---------------------------------------------------------------------------
+// Remaster U4 (TEST ONLY; review/2026-10-06-u4-app-script-runner-design.md after challenge C-U4): a script runner
+// for the real app, so the harness and the A5 self-benchmark measure SpeedRecomp itself (window, display link,
+// audio, the 4K present). Only with RECOMP_TEST_SCRIPTS=1 and --script <file>; the Launch script never sets either.
+// It runs the subset the harness scripts use - wait, key, pad, poke, quit - on the script clock (at_ms), from
+// pump() on the host thread holding the baton. Keys arrive as the KEY input real keys produce; the pad is the
+// virtual pad's own test source (the touch router rewrites the touch source every frame here). Other verbs (dump included) are logged once and skipped.
+// ---------------------------------------------------------------------------
+struct AppScript {
+    std::vector<HostScriptStep> steps;
+    size_t next = 0;
+    bool on = false, started = false;
+    uint32_t start_ms = 0;
+    controls::PadState pad{};
+} g_app_script;
+
+bool app_script_load(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    std::string text;
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
+        text.append(buf, n);
+    fclose(f);
+    g_app_script.steps.resize(8192);
+    char err[256] = "";
+    const int count = host_script_parse(text.c_str(), g_app_script.steps.data(), (int)g_app_script.steps.size(), err,
+                                        sizeof err);
+    if (count < 0) {
+        fprintf(stderr, "[app-script] %s: %s\n", path, err);
+        return false;
+    }
+    g_app_script.steps.resize((size_t)count);
+    g_app_script.on = true;
+    fprintf(stderr, "[app-script] %s: %d steps (TEST ONLY)\n", path, count);
+    return true;
+}
+
+bool app_script_due() {
+    if (!g_app_script.on || g_app_script.next >= g_app_script.steps.size())
+        return false;
+    if (!g_app_script.started)
+        return true;
+    return boot_guest_millis() - g_app_script.start_ms >= g_app_script.steps[g_app_script.next].at_ms;
+}
+
+void app_script_tick() {
+    AppScript &s = g_app_script;
+    if (!s.on || s.next >= s.steps.size())
+        return;
+    const uint32_t now = boot_guest_millis();
+    if (!s.started) {
+        s.started = true;
+        s.start_ms = now;
+    }
+    while (s.next < s.steps.size() && now - s.start_ms >= s.steps[s.next].at_ms) {
+        const HostScriptStep &step = s.steps[s.next++];
+        switch (step.op) {
+        case HOST_SCRIPT_WAIT:
+            break;
+        case HOST_SCRIPT_KEY: {
+            const HostKeyMapping m = host_key_mapping_for_dik(step.dik);
+            if (!m.dik)
+                break;
+            PendingInput e;
+            e.kind = PendingInput::KEY;
+            e.key = m.mac;
+            e.down = step.down != 0;
+            e.flags = current_modifier_flags();
+            apply_input(e);
+            break;
+        }
+        case HOST_SCRIPT_PAD: {
+            const int index = step.button;
+            if (index < 13) {
+                const uint16_t bit = uint16_t(1u << index);
+                s.pad.buttons = step.x ? s.pad.buttons | bit : s.pad.buttons & ~bit;
+                if (index == 6)
+                    s.pad.l2 = float(step.x);
+                if (index == 7)
+                    s.pad.r2 = float(step.x);
+            } else if (index < 17) {
+                const uint8_t bit = uint8_t(1u << (index - 13));
+                s.pad.hat = step.x ? s.pad.hat | bit : s.pad.hat & ~bit;
+            } else if (index < 23) {
+                float *axes[] = {&s.pad.lx, &s.pad.ly, &s.pad.rx, &s.pad.ry, &s.pad.l2, &s.pad.r2};
+                *axes[index - 17] = step.x / 32767.0f;
+            }
+            controls::vpad().set_source(controls::kPadSourceTest, s.pad);
+            break;
+        }
+        case HOST_SCRIPT_POKE:
+            if (gm_valid(step.addr, step.len)) {
+                const uint32_t v = uint32_t(int64_t(step.threshold));
+                uint8_t *p = gm_ptr(step.addr);
+                for (uint32_t i = 0; i < step.len; ++i)
+                    p[i] = uint8_t(v >> (8 * i));
+                fprintf(stderr, "[app-script] poke %08x = 0x%x (%u bytes; test)\n", step.addr, v, step.len);
+            }
+            break;
+        case HOST_SCRIPT_QUIT:
+            fprintf(stderr, "[app-script] quit\n");
+            boot_request_close("the test script asked to quit");
+            break;
+        default: {
+            static bool warned[64];
+            if (step.op >= 0 && step.op < 64 && !warned[step.op]) {
+                warned[step.op] = true;
+                fprintf(stderr, "[app-script] verb %d is not supported in the app runner; skipped\n", step.op);
+            }
+            break;
+        }
+        }
+    }
+}
+
 // True when this thread may touch the window at all.
 bool on_host_thread() {
     if (boot_on_run_thread() && SDL_IsMainThread())
@@ -1653,6 +1777,7 @@ void pump() {
     // and a mod callback dispatched from here is serialised against every
     // other guest thread, which is the whole point.
     deliver_pending_input();
+    app_script_tick(); // Remaster U4: TEST ONLY, nothing unless RECOMP_TEST_SCRIPTS=1 and --script
     apply_window_mode();
     apply_mode_change();
     service(0.0);
@@ -1936,7 +2061,17 @@ int main(int argc, char **argv) {
             exe_flag = argv[i] + 6;
         else if (strcmp(argv[i], "--launcher") == 0)
             continue; // launcher::requested reads it
-        else {
+        else if (strcmp(argv[i], "--script") == 0 && i + 1 < argc) {
+            // Remaster U4 (TEST ONLY): honoured only with RECOMP_TEST_SCRIPTS=1.
+            const char *on = getenv("RECOMP_TEST_SCRIPTS");
+            if (on && !strcmp(on, "1")) {
+                if (!app_script_load(argv[i + 1]))
+                    return 2;
+            } else {
+                fprintf(stderr, RECOMP_APP_NAME ": --script needs RECOMP_TEST_SCRIPTS=1 (test only); ignored\n");
+            }
+            ++i;
+        } else {
             fprintf(stderr, "usage: " RECOMP_APP_NAME " [--exe <" RECOMP_EXECUTABLE
                             ">] [--launcher] [--version] [--probe-layout]\n");
             return 2;

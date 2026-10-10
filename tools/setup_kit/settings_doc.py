@@ -9,9 +9,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MOD = ROOT / "mods/core/nfsmw/mod.toml"
 OUT = ROOT / "docs/SETTINGS.md"
-PAGES = [("graphics", "Graphics"), ("graphics.appearance", "Graphics: look and effects"), ("visual", "Visual details"),
-         ("controls", "Controls"), ("feedback", "Controller rumble"), ("career", "Career and Extra Options"),
-         ("audio", "Audio"), ("fixes", "Fixes"), ("diagnostics", "Diagnostics"), ("", "Other")]
+# The menu's pages and sections, in its order (kit/mods/settings_menu.cpp kSections). Group "hidden" is never listed.
+PAGES = [("Graphics", [("graphics", "Picture"), ("graphics.remaster", "Advanced: Remaster features (follow Look)"),
+                       ("graphics.effects", "Advanced: Effects"), ("graphics.cycle", "Advanced: Day and weather cycle"),
+                       ("graphics.mirror", "Advanced: Mirror"), ("graphics.rain", "Advanced: Rain"),
+                       ("graphics.engine", "Advanced: Engine and experiments")]),
+         ("Display", [("display", "Screen"), ("display.quality", "Sharpness and upscaling"), ("display.hdr", "HDR")]),
+         ("Audio", [("audio", "Audio")]),
+         ("Xbox 360", [("xbox360", "Xbox 360 looks"), ("xbox360.particles", "Sparks and smoke"),
+                       ("xbox360.pools", "Light pools")]),
+         ("PC", [("pc", "Extra Options"), ("pc.keys", "Keys, camera and HUD")]),
+         ("Mods", [("visual", "Screen and camera extras"), ("career", "Career and customization"),
+                   ("fixes", "Verified fixes and compatibility"), ("diagnostics", "Diagnostics"), ("", "Other")]),
+         ("Controls", [("controls", "Controller"), ("feedback", "Controller rumble")])]
 APPLY = {"live": "at once", "restart": "after a restart", "renderer": "after Apply", "next_screen": "at the next screen or load",
          "new_career": "for new careers", "game_video": "with the game's video settings"}
 
@@ -41,15 +51,28 @@ def render():
            "Open the settings menu with **F10** (Fn+F10 on a laptop), the controller's touchpad button, or Back+Start. "
            "Each row says when a change takes effect. The same keys can be set in `NativeOptions.ini` in your profile "
            "folder (see the companion guide).", ""]
-    for gid, title in PAGES:
-        rows = groups.pop(gid, [])
-        if not rows:
+    hidden = groups.pop("hidden", [])
+    for page, sections in PAGES:
+        if not any(groups.get(gid) for gid, _ in sections):
             continue
-        out += [f"## {title}", "", "| Setting | Key | Default | Takes effect | What it does |", "|---|---|---|---|---|"]
-        for key, spec in rows:
-            label = spec.get("label", key).replace("|", "/")
+        out += [f"## {page}", ""]
+        for gid, title in sections:
+            rows = groups.pop(gid, [])
+            if not rows:
+                continue
+            out += [f"### {title}", "", "| Setting | Key | Default | Takes effect | What it does |", "|---|---|---|---|---|"]
+            for key, spec in rows:
+                label = spec.get("label", key).replace("|", "/")
+                help_text = re.sub(r"\s+", " ", spec.get("help", "")).replace("|", "/")
+                out.append(f"| {label} | `{key}` | {value_text(spec)} | {APPLY.get(spec.get('apply', ''), spec.get('apply', ''))} | {help_text} |")
+            out.append("")
+    if hidden:
+        out += ["## Not in the menu", "",
+                "Kept so that older profiles load cleanly, or fixed by the port; the menu does not list them.", "",
+                "| Key | Value | Why |", "|---|---|---|"]
+        for key, spec in hidden:
             help_text = re.sub(r"\s+", " ", spec.get("help", "")).replace("|", "/")
-            out.append(f"| {label} | `{key}` | {value_text(spec)} | {APPLY.get(spec.get('apply', ''), spec.get('apply', ''))} | {help_text} |")
+            out.append(f"| `{key}` | {value_text(spec)} | {help_text} |")
         out.append("")
     assert not groups, f"settings in unknown groups: {list(groups)}"
     return "\n".join(out)

@@ -52,7 +52,7 @@
 
 - Add bounded D3D9 sampled-volume resources, mip ownership/locks, 3D shader
   sampling and Metal storage with synthetic ABI/GPU regression coverage.
-- Car-effect integration and actual volume/light-context data remain open.
+- Xbox car-effect integration and actual volume/light-context data remain open.
 
 ## Local shader compatibility groundwork
 

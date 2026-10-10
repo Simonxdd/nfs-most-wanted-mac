@@ -23,4 +23,13 @@
 /* The scenery shadow-caster test and its two box routines (Test150, native/shadow_cast.cpp). */
 #define FN_006d7a40 native_006d7a40 /* does an instance outside the view cast a shadow into it */
 
+/* Opt-in USA movie QA; originals remain the default path. */
+#define FN_00542a40 native_00542a40 /* MoviePlayer::Play */
+#define FN_00525f70 native_00525f70 /* MoviePlayer::UpdateFunction */
+#define FN_006dd1d0 native_006dd1d0 /* MoviePlayer::PlatFinish */
+#define FN_00517660 native_00517660 /* MoviePlayer::Pause */
+#define FN_00517690 native_00517690 /* MoviePlayer::Resume */
+#define FN_00525f40 native_00525f40 /* MoviePlayer::GetFirstFrame */
+#define FN_0065f7a0 native_0065f7a0 /* USA availability at movie-only callers */
+
 #endif

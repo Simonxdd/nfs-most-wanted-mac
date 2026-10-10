@@ -27,9 +27,10 @@ Run `./setup.sh "/path/to/your game"` once. Afterwards:
 ```
 
 The core mod lives in `mods/core/nfsmw/` (`nfsmw.c` and its headers; settings in `mod.toml`). The rebuilt effects'
-sources are in `effects/`; `tools/effects/fxgen.py` turns their shader assembly into the `.fx` files the mod loads.
-After changing `effects/clean-chain.*` or `effects/post-host.*`, rebuild the `.fx` files in `mods/core/nfsmw/` and
-commit them together with their sources.
+sources are in `effects/`; the setup assembles them into the `.fx` files the mod loads (`tools/effects/gen_ssao.py
+--fx` for `clean-chain.fx` and, with `--hdr`, `clean-chain-hdr.fx`; `tools/effects/fxgen.py` for `post-host.fx`).
+Only the sources are committed. `tools/effects/gen_ssao.py` and `gen_glow.py` without arguments rewrite the
+ambient occlusion and lamp glow programs in `effects/` from their generators.
 
 ## Reporting bugs
 

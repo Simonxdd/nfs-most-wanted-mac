@@ -17,6 +17,8 @@
 #include "../../dx/d3d9_shader.h"
 #include "../../platform/os.h"
 #include "../../platform/ab_phase.h"
+#include "../../platform/rprof.h"
+#include "state_delta.h"
 #include "../d3d_render.h"
 
 #include <atomic>
@@ -144,7 +146,11 @@ enum class Op : uint8_t {
     QueryDrop,
     Probe,
     ReadAsync,
-    Call
+    Call,
+    Tag,
+    Scene, // Remaster run 13 MetalFX: host_d9_scene_split
+    Camera, // Remaster run 14 foundation F1: host_d9_scene_camera (32 words at `at`)
+    Atmos   // Remaster run 14 B1 height fog: host_d9_atmosphere (32 floats at `at`)
 };
 
 struct Command {
@@ -152,6 +158,8 @@ struct Command {
     uint32_t a = 0, b = 0, c = 0, d = 0;
     size_t at = 0;       // payload offset in the batch's bytes
     size_t state_at = 0; // a draw's sampler and render states, in the bytes
+    uint8_t state_kind = 0; // Remaster A4-lite: sdelta::Kind (LEGACY = today: state_at is a full table)
+    size_t verify_at = 0;   // RECOMP_REMASTER_SDELTA_VERIFY=1: a full copy to compare with (0: none)
     HostD9Draw draw{};
     HostD9TextureDesc desc{};
     HostD9Target target{};
@@ -165,8 +173,26 @@ struct Command {
 // how many batches it hands over, how many of those had to be made new and how often a batch's
 // byte buffer had to grow (a reallocation and copy on the game thread).
 static struct {
-    uint64_t draws, bytes, const_bytes, state_puts, state_bytes, batches, fresh, grows;
+    uint64_t draws, bytes, const_bytes, state_puts, state_bytes, batches, fresh, grows, state_deltas;
 } g_queue_stats;
+// Remaster A4-lite step 1: state-table deltas. OFF by default: the stable-bar A/B (6 Oct) showed no clear saving
+// (+0.04 / -0.14 ms, s.e. 0.18 / 0.10), so the owner rule keeps today's path. RECOMP_REMASTER_SDELTA=1 turns it on
+// (A/B switch sdelta). Verify mode sends a full copy with every draw and compares on the render thread (test only).
+static bool sdelta_on() {
+    static const bool v = [] {
+        const char *e = getenv("RECOMP_REMASTER_SDELTA");
+        return e && *e == '1';
+    }();
+    return v;
+}
+static bool sdelta_verify() {
+    static const bool v = [] {
+        const char *e = getenv("RECOMP_REMASTER_SDELTA_VERIFY");
+        return e && *e == '1';
+    }();
+    return v;
+}
+static std::atomic<uint64_t> g_sdelta_checked{0}, g_sdelta_mismatch{0};
 
 struct Batch {
     std::vector<Command> commands;
@@ -174,10 +200,12 @@ struct Batch {
     // The last draw's state tables in `bytes`, reused while the version holds.
     uint64_t state_version = 0;
     size_t state_at = 0;
+    sdelta::Encoder sd; // Remaster A4-lite: per batch, so every batch starts with a full put
     void clear() {
         commands.clear();
         bytes.clear();
         state_version = 0;
+        sd.reset();
     }
     size_t put(const void *p, size_t n) {
         size_t at = bytes.size();
@@ -215,7 +243,15 @@ class RenderThread {
             return;
         }
         // Hand work over often enough that the worker keeps pace with the game.
-        if (filling_->commands.size() >= 48 || filling_->bytes.size() >= (1u << 20))
+        // Remaster A4-lite: the hand-over size. 48 commands / 1 MB is today's; RECOMP_REMASTER_BATCH=<commands> sets
+        // another (bytes scale with it), and the A/B switch batch runs 48 in OLD periods. Same commands, same order.
+        static const size_t lim = [] {
+            const char *e = getenv("RECOMP_REMASTER_BATCH");
+            long v = e ? strtol(e, nullptr, 10) : 0;
+            return v >= 8 && v <= 4096 ? (size_t)v : (size_t)48;
+        }();
+        const size_t n = recomp_ab::old(recomp_ab::BATCH) ? 48 : lim;
+        if (filling_->commands.size() >= n || filling_->bytes.size() >= (n << 20) / 48)
             hand_over();
     }
     // Everything queued has been encoded; the caller may use the backend.
@@ -365,6 +401,7 @@ class RenderThread {
 
   public:
     void execute(Batch &b) {
+        sdelta::Tables sd_scratch; // Remaster A4-lite: the decoded tables, in command order within this batch
         for (Command &cmd : b.commands) {
             const uint8_t *base = b.bytes.data();
             switch (cmd.op) {
@@ -388,10 +425,24 @@ class RenderThread {
                 d.pconst = (const float *)take(d.pconst_count * 16u);
                 d.inline_vertices = take(d.inline_bytes);
                 d.inline_indices = take(d.inline_index_bytes);
-                d.sampler_state = (const uint32_t *)(base + cmd.state_at);
-                d.render_state = (const uint32_t *)(base + cmd.state_at + 16 * 14 * 4);
-                d.render_state_set = base + cmd.state_at + 16 * 14 * 4 + 256 * 4;
+                const uint8_t *tables = sdelta::decode(sd_scratch, (sdelta::Kind)cmd.state_kind, base, cmd.state_at);
+                if (cmd.verify_at) {
+                    const uint64_t n = ++g_sdelta_checked;
+                    if (memcmp(tables, base + cmd.verify_at, sdelta::kBytes) != 0) {
+                        const uint64_t m = ++g_sdelta_mismatch;
+                        if (m <= 8)
+                            fprintf(stderr, "[remaster] sdelta VERIFY MISMATCH: draw kind %u (check %llu)\n",
+                                    (unsigned)cmd.state_kind, (unsigned long long)n);
+                    }
+                    if (n % 2000000 == 0)
+                        fprintf(stderr, "[remaster] sdelta verify: %llu draws checked, %llu mismatches\n",
+                                (unsigned long long)n, (unsigned long long)g_sdelta_mismatch.load());
+                }
+                d.sampler_state = (const uint32_t *)tables;
+                d.render_state = (const uint32_t *)(tables + 16 * 14 * 4);
+                d.render_state_set = tables + 16 * 14 * 4 + 256 * 4;
                 d.label = cmd.a ? (const char *)take(cmd.a) : nullptr;
+                d.pool_block = d.pool_fuse ? (const float *)take(20 * 16) : nullptr;   // Remaster run 10
                 if (cmd.op == Op::RejectedDraw)
                     r_->rejected_draw(d);
                 else
@@ -411,6 +462,9 @@ class RenderThread {
                 break;
             case Op::Drop:
                 r_->drop(cmd.a);
+                break;
+            case Op::Tag:
+                r_->tag(cmd.a, (uint64_t)cmd.c << 32 | cmd.b);
                 break;
             case Op::BufferUpload:
                 r_->buffer_upload(cmd.a, cmd.b, cmd.c, base + cmd.at, cmd.d);
@@ -436,6 +490,21 @@ class RenderThread {
             case Op::Call:
                 (*cmd.call)();
                 break;
+            case Op::Scene:
+                r_->scene_split(cmd.a, cmd.b, cmd.c);
+                break;
+            case Op::Camera: {
+                float m[32];
+                memcpy(m, base + cmd.at, sizeof m);
+                r_->scene_camera(m, m + 16);
+                break;
+            }
+            case Op::Atmos: {
+                float m[32];
+                memcpy(m, base + cmd.at, sizeof m);
+                r_->atmosphere(m, m + 16);
+                break;
+            }
             }
         }
     }
@@ -474,6 +543,8 @@ RenderThread *render_thread() {
 // render thread only ever looks it up, so the bytes need not travel.
 // Fills in any key the caller left out.
 void predecode(HostD9Draw &d) {
+    if (d.programs_ready && d.vs_key && d.ps_key)
+        return; // Remaster C2: gpu_draw resolved both programs just before (same keys, same thread)
     if (!d.vs_key)
         d.vs_key = d9sh::code_key(d.vs, d.vs ? d.vs_size : 0);
     if (!d.ps_key)
@@ -523,8 +594,48 @@ void host_d9_texture_define(const HostD9TextureDesc *desc) {
     t->batch().commands.push_back(c);
     t->submitted();
 }
+void host_d9_scene_split(uint32_t phase, uint32_t bb, uint32_t ds) {
+    if (RenderThread *t = render_thread()) {
+        Command c{Op::Scene};
+        c.a = phase;
+        c.b = bb;
+        c.c = ds;
+        t->batch().commands.push_back(c);
+        t->submitted();
+    }
+}
+void host_d9_scene_camera(const float *view, const float *info) {
+    if (RenderThread *t = render_thread()) {
+        Batch &b = t->batch();
+        Command c{Op::Camera};
+        c.at = b.put(view, 16 * sizeof(float));
+        b.put(info, 16 * sizeof(float));
+        b.commands.push_back(c);
+        t->submitted();
+    }
+}
+void host_d9_atmosphere(const float *a, const float *b) {
+    if (RenderThread *t = render_thread()) {
+        Batch &bt = t->batch();
+        Command c{Op::Atmos};
+        c.at = bt.put(a, 16 * sizeof(float));
+        bt.put(b, 16 * sizeof(float));
+        bt.commands.push_back(c);
+        t->submitted();
+    }
+}
 void host_d9_texture_drop(uint32_t id) {
     push(Op::Drop, id);
+}
+void host_d9_texture_tag(uint32_t id, uint64_t key) {
+    if (RenderThread *t = render_thread()) {
+        Command c{Op::Tag};
+        c.a = id;
+        c.b = (uint32_t)key;
+        c.c = (uint32_t)(key >> 32);
+        t->batch().commands.push_back(c);
+        t->submitted();
+    }
 }
 void host_d9_texture_upload(uint32_t id, uint32_t face, uint32_t level, const uint8_t *bytes,
                             uint32_t pitch) {
@@ -645,18 +756,38 @@ static void queue_draw(const HostD9Draw *draw, bool rejected) {
         b.put(draw->label, n);
         c.a = (uint32_t)n;
     }
-    static const uint32_t zero_samplers[16 * 14] = {};
-    static const uint32_t zero_states[256] = {};
-    static const uint8_t zero_set[256] = {};
-    if (!draw->state_version || draw->state_version != b.state_version) {
-        b.state_at = b.put(draw->sampler_state ? draw->sampler_state : zero_samplers, 16 * 14 * 4);
-        b.put(draw->render_state ? draw->render_state : zero_states, 256 * 4);
-        b.put(draw->render_state_set ? draw->render_state_set : zero_set, 256);
-        b.state_version = draw->state_version;
-        ++g_queue_stats.state_puts;
-        g_queue_stats.state_bytes += 16 * 14 * 4 + 256 * 4 + 256;
+    // Remaster run 10: the fused pool block follows the label (20 float4).
+    if (draw->pool_fuse && draw->pool_block && !rejected)
+        b.put(draw->pool_block, 20 * 16);
+    else
+        c.draw.pool_fuse = 0;
+    c.draw.pool_block = nullptr;
+    if (rejected)
+        c.draw.pool_probe = 0;   // Remaster run 11
+    {
+        const bool use_delta = !rejected && sdelta_on() && !recomp_ab::old(recomp_ab::SDELTA);
+        const size_t before = b.bytes.size();
+        auto put = [&b](const void *p, size_t n) { return b.put(p, n); };
+        size_t at = 0;
+        const sdelta::Kind k = sdelta::encode(b.sd, put, draw->sampler_state, draw->render_state,
+                                              draw->render_state_set, draw->state_version, draw->state_dirty,
+                                              draw->pipeline_id, use_delta, &at);
+        c.state_kind = (uint8_t)k;
+        c.draw.state_dirty = nullptr; // the game thread's masks; the render thread never reads them
+        c.state_at = at;
+        if (b.bytes.size() != before) {
+            ++g_queue_stats.state_puts;
+            g_queue_stats.state_bytes += b.bytes.size() - before;
+            g_queue_stats.state_deltas += k == sdelta::DELTA;
+        }
+        if (sdelta_verify() && !rejected) {
+            static const uint32_t zs[16 * 14] = {}, zr[256] = {};
+            static const uint8_t zf[256] = {};
+            c.verify_at = b.put(draw->sampler_state ? draw->sampler_state : zs, 16 * 14 * 4);
+            b.put(draw->render_state ? draw->render_state : zr, 256 * 4);
+            b.put(draw->render_state_set ? draw->render_state_set : zf, 256);
+        }
     }
-    c.state_at = b.state_at;
     ++g_queue_stats.draws;
     g_queue_stats.bytes += b.bytes.size() - bytes_before;
     g_queue_stats.const_bytes += (draw->vconst ? draw->vconst_count * 16u : 0) + (draw->pconst ? draw->pconst_count * 16u : 0);
@@ -708,6 +839,7 @@ void host_d9_stretch(HostD9Surface src, const int32_t src_rect[4], HostD9Surface
 }
 void host_d9_present(uint32_t backbuffer, uint32_t width, uint32_t height) {
     recomp_ab::tick(); // TEST ONLY phase of an in-run A/B; nothing unless RECOMP_AB_PERIOD is set
+    rprof::frame();    // Remaster A4 design input; nothing unless RECOMP_REMASTER_PROF=1
     {
         static const bool stats = recomp_env("D3D9_STATS") != nullptr;
         static uint64_t presents = 0;
@@ -715,9 +847,10 @@ void host_d9_present(uint32_t backbuffer, uint32_t width, uint32_t height) {
             const double f = 600.0;
             fprintf(stderr,
                     "d3d9 host: per frame %.0f draws, %.0f KB copied into the batch (constants %.0f KB, state "
-                    "tables %.0f KB in %.0f puts); %.1f batches, %.2f new, %.2f buffer growths\n",
+                    "tables %.0f KB in %.0f puts, %.0f deltas); %.1f batches, %.2f new, %.2f buffer growths\n",
                     g_queue_stats.draws / f, g_queue_stats.bytes / f / 1024.0, g_queue_stats.const_bytes / f / 1024.0,
-                    g_queue_stats.state_bytes / f / 1024.0, g_queue_stats.state_puts / f, g_queue_stats.batches / f,
+                    g_queue_stats.state_bytes / f / 1024.0, g_queue_stats.state_puts / f,
+                    g_queue_stats.state_deltas / f, g_queue_stats.batches / f,
                     g_queue_stats.fresh / f, g_queue_stats.grows / f);
             g_queue_stats = {};
         }
@@ -769,6 +902,39 @@ void host_d9_probe_next_frame(const char *tag) {
     }
     b.commands.push_back(c);
     t->submitted();
+}
+
+// Remaster run 11 fused pools (host_d9.h): the readiness table. One writer (the render thread), any reader: a key is
+// published after its state (release), so a reader that sees the key sees a state written for it. Open addressing,
+// never erased; a full table leaves new keys unknown (two-pass), which is always safe.
+namespace {
+constexpr size_t kPoolSlots = 4096;
+std::atomic<uint64_t> g_pool_keys[kPoolSlots];
+std::atomic<int> g_pool_states[kPoolSlots];
+} // namespace
+int host_d9_pool_state(uint64_t key) {
+    for (size_t i = 0, h = (size_t)(key * 0x9e3779b97f4a7c15ull >> 52); i < kPoolSlots; ++i, h = (h + 1) % kPoolSlots) {
+        const uint64_t k = g_pool_keys[h].load(std::memory_order_acquire);
+        if (k == key)
+            return g_pool_states[h].load(std::memory_order_acquire);
+        if (!k)
+            return HOST_D9_POOL_UNKNOWN;
+    }
+    return HOST_D9_POOL_UNKNOWN;
+}
+void host_d9_pool_mark(uint64_t key, int state) {
+    for (size_t i = 0, h = (size_t)(key * 0x9e3779b97f4a7c15ull >> 52); i < kPoolSlots; ++i, h = (h + 1) % kPoolSlots) {
+        const uint64_t k = g_pool_keys[h].load(std::memory_order_relaxed);
+        if (k == key) {
+            g_pool_states[h].store(state, std::memory_order_release);
+            return;
+        }
+        if (!k) {
+            g_pool_states[h].store(state, std::memory_order_relaxed);
+            g_pool_keys[h].store(key, std::memory_order_release);
+            return;
+        }
+    }
 }
 
 #ifdef __EMSCRIPTEN__

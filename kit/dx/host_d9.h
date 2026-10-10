@@ -27,6 +27,9 @@ typedef struct HostD9TextureDesc {
     uint32_t usage;   // HOST_D9_USAGE_*
     uint32_t samples; // multisampled render target or depth buffer: sample count; 0 or 1 for none
     uint32_t depth;   // volume depth; ignored for 2D/cube textures
+    // Remaster A1: an opaque key a mod gave this texture (d3d9_texture_tag), or 0. The host uses it for
+    // texture dumps and replacement; it never names a guest address.
+    uint64_t key;
 } HostD9TextureDesc;
 
 // Non-zero when a GPU renderer is running and takes the device's draws.
@@ -35,6 +38,9 @@ int host_d9_active(void);
 // (Re)creates the mirror; contents are undefined until uploaded or drawn.
 void host_d9_texture_define(const HostD9TextureDesc *desc);
 void host_d9_texture_drop(uint32_t id);
+// Remaster A1: sets the key of a texture whose mirror is already defined (a texture tagged before its
+// first draw carries the key in its HostD9TextureDesc instead).
+void host_d9_texture_tag(uint32_t id, uint64_t key);
 // One face/level from the shim's bytes, in the texture's D3DFORMAT.
 // For a volume, face is the Z slice at this mip level. Upload completes before
 // returning, so the caller may reuse the source bytes for the next slice.
@@ -141,10 +147,27 @@ typedef struct HostD9Draw {
     // Nonzero: the three state tables above are unchanged for as long as this
     // is, so a host may reuse its copy from an earlier draw with the same value.
     uint64_t state_version;
+    // Remaster A4-lite step 1: the pipeline's dirty-entry masks (8 words, host/gpu/state_delta.h), cleared by the queue
+    // when it puts the tables; null when the tables are not the pipeline's own. pipeline_id: the device they belong to.
+    uint64_t *state_dirty;
+    uint32_t pipeline_id;
     const char *label; // what bound the shaders, for diagnostics; may be null
     // Test133: nonzero when stage 0 samples the texture a mod named in private render state 251 as part of the
     // scene (NFSMW: the rear-view mirror target): after the HDR scene marker it keeps the HDR highlight expansion.
     uint32_t hdr_scene_texture;
+    // Remaster C2: nonzero when the caller already resolved both programs in the shared decode cache (the shim's
+    // gpu_draw does), so the queue skips its second lookup under the cache mutex. Zero keeps the full lookup.
+    uint32_t programs_ready;
+    // Remaster run 10 fused pool shader: nonzero = draw with that pool variant (d9msl::PixelVariant::pool: 1
+    // normal-mapped, 2 diffuse-only; lamp light added in this pass);
+    // pool_block = 20 float4 (CleanPools[16], CleanPoolCount, TextureOffset, CleanPoolParams, LocalEyePos), copied
+    // into the queue's payload. Zero for every other draw.
+    uint32_t pool_fuse;
+    const float *pool_block;
+    // Remaster run 11 (review/run11/design-A.md): nonzero = this plain draw is the base pass of a two-pass pool draw
+    // whose (programs, form) is not known to fuse yet; the renderer builds that form's fused shaders and pipeline for
+    // it (drawing it plain) and records the outcome with host_d9_pool_mark. The value is the form.
+    uint32_t pool_probe;
 } HostD9Draw;
 
 void host_d9_draw(const HostD9Draw *draw);
@@ -179,6 +202,47 @@ void host_d9_query_drop(uint32_t id);
 // Diagnostics: log every draw of the next frame and dump its textures, with
 // `tag` in the file names.
 void host_d9_probe_next_frame(const char *tag);
+
+// Remaster run 11 fused pools: readiness of a (vertex program, pixel program, pool form), so the shim fuses only
+// what the renderer has already built (no per-draw round trip). Written by the render thread only, read by the game
+// thread. States: 0 unknown (draw two-pass and probe), 1 ready (fuse), 2 blocked (always two-pass).
+enum { HOST_D9_POOL_UNKNOWN = 0, HOST_D9_POOL_READY = 1, HOST_D9_POOL_BLOCKED = 2 };
+static inline uint64_t host_d9_pool_key(uint64_t vs_key, uint64_t ps_key, uint32_t form) {
+    uint64_t k = (vs_key ^ (ps_key * 0x9e3779b97f4a7c15ull)) * 0xff51afd7ed558ccdull + form;
+    k ^= k >> 33;
+    return k ? k : 1;
+}
+int host_d9_pool_state(uint64_t key);
+void host_d9_pool_mark(uint64_t key, int state);
+
+// Remaster run 13 MetalFX upscaling (review/run13/metalfx-design.md): the core mod marks a frame's 3D scene with
+// private render states the device turns into events (never device state). HOST_D9_SCENE_BEGIN opens the scene:
+// `bb` is the device's back buffer id, `ds` the depth-stencil surface bound with it then (0: none). HOST_D9_SCENE_END
+// closes it (bb and ds 0). A renderer that upscales draws bb and ds at a lower resolution in between and scales the
+// picture up into the native back buffer at the end; Present closes a scene left open. Any other renderer ignores
+// both. Queued in order with the draws.
+enum { HOST_D9_SCENE_END = 252, HOST_D9_SCENE_BEGIN = 253 };
+void host_d9_scene_split(uint32_t phase, uint32_t bb, uint32_t ds);
+// Remaster run 14 foundation F1 (review/run14/foundation-design.md 1, G): the core mod's camera for the scene window,
+// sent only with RECOMP_REMASTER_FOUNDATION=1 as two private SetTransform states the device turns into one event (never
+// device state; 0x200/0x201 are outside D3D's transform range). `view`: the camera's world -> view matrix, 16 floats,
+// row-vector. `info` (16 words): [0] full vertical FOV (radians), [1] near, [2] far, then u32 bits: [3] flags (1 an
+// in-engine cut-scene, 2 the world, 4 info), [4] the first camera mover's type, [5] the game frame, [6] the raw FOV u16. Queued in
+// order with the draws; renderers without a foundation ignore it.
+enum { HOST_D9_TS_SCENE_VIEW = 0x200, HOST_D9_TS_SCENE_INFO = 0x201 };
+void host_d9_scene_camera(const float *view, const float *info);
+// Remaster run 14 B1 height fog (review/run14/smoke-realism-design.md 8 (B)): the core mod's atmosphere packets, two
+// private SetTransform states (0x202 then 0x203, 16 floats each; layout in host/gpu/metal/atmosphere.h Params) that
+// the device turns into one event, never device state. Sent only while the setting `atmosphere` is on. Queued in
+// order with the draws; renderers without the pass ignore it.
+enum { HOST_D9_TS_ATMOS_A = 0x202, HOST_D9_TS_ATMOS_B = 0x203 };
+void host_d9_atmosphere(const float *a, const float *b);
+
+// PLAN_R2 item 10 real HDR (review/run14/hdr-design.md s2): 1 while the renderer's back buffer is float (RGBA16F, the
+// guest still sees its own format). The renderer sets it at Present; GetRenderState(249), a private read-only state,
+// returns it to the core mod (its post chain then runs in its HDR form). 0 with any renderer that has no float frame.
+#define HOST_D9_RS_HDR_FLOAT 249
+extern uint32_t host_d9_hdr_float;
 
 #ifdef __cplusplus
 }

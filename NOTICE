@@ -32,7 +32,9 @@ the addresses were checked against this executable.
 
 Native Extra Options (weather and cinematic settings, Black Edition content, replayable Blacklist rivals, special
 vinyls, the max-performance shop button, reward markers, longer profile names, starting cash, heat levels and the
-helicopter takedown bounty) follow the behaviour of ExOptsTeam/NFSMWExOpts, commit
+helicopter takedown bounty; since 2.0 also always rain, all police on the minimap, the heat-10 bounty, prologue and
+Busted-scene fixes, one-lap percent, the HUD on look-back, subtitles, heat keys, the World Map in races and no
+catch-up) follow the behaviour of ExOptsTeam/NFSMWExOpts, commit
 8a094fe29d28195bdcf69122dbfe945f16315f9a (GPL-3.0). They are reimplemented natively against verified PC binary
 values; no code from it is included, and the Windows ASI and its instruction patches are not bundled.
 
@@ -40,7 +42,7 @@ The rear-view mirror improvements (HD resolution, full scenery, vehicle lights, 
 restore what the community HD Reflections mod restores, reimplemented natively against the PC executable; no code
 from it is included.
 
-The texture-pack loader (mods/core/nfsmw/texture_pack.h) reads the TexWizard pack format; its engine entry points
+The texture-pack loader (mods/core/nfsmw/x360_textures.h) reads the TexWizard pack format; its engine entry points
 were taken as leads from the TexWizard project (R-033/texwizard, MW_Address.h) and verified against this executable.
 No code from it is included. Texture packs (for example the community "Need for Speed Most Wanted (2005) - Xbox 360
 Stuff Pack") are the player's own downloads; none is included, and only their texture files are used.
@@ -50,8 +52,17 @@ Camera field names used by the depth of field and motion blur host inputs follow
 
 The rebuilt post-process effects (effects/clean-chain.hlsl) and light pools (effects/clean-pools.hlsl,
 effects/lamp-classes.toml) were written for this port from a functional description of the standard HDR technique
-and tuned against the PC game's own picture. They contain no console code or data. The light pools' lights and
-shading are built at setup time from the player's own PC game files and are never distributed.
+and tuned against the PC game's own picture. Since 2.0 the chain also has ambient occlusion (a reduced form of the
+public horizon-based AO technique), sun rays, lamp glow (the closed-form single-scattering integral) and the golden
+colour filter (curves from the PC game's own visual treatment values), all written for this port. They contain no
+console code or data. The light pools' lights and shading are built at setup time from the player's own PC game
+files and are never distributed.
+
+The Xbox 360 look and the other Remaster features (wet roads, reflections, glass, water, wall relief, shadows,
+particles, sky) are this port's own Metal and C code. The Xbox 360 version of the game was studied as a reference
+only; none of its code, shaders, textures or other files are included. The Stuff Pack smoke option adds, from this
+port's code, the game's own unused tyre-smoke emitters that the community Xbox 360 Stuff Pack's data adds; no file
+of the Stuff Pack is read or included for it. MetalFX is an Apple system framework.
 
 The setup kit downloads, into its own cache and checked against pinned SHA-256 hashes: Ghidra 12.1.3 (Apache 2.0,
 National Security Agency), an OpenJDK 26.0.1 build (GPL-2.0 with the Classpath Exception) and, only when the Mac has

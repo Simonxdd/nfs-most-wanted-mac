@@ -37,7 +37,7 @@ extern "C" void host_audio_restart_output(const char *why); // weak default: run
 #include "../platform/os.h"
 
 namespace {
-// Test78: the presenter paces at the game's frame rate when the display refreshes at a
+// Test78 (owner, 1 Oct 2026): the presenter paces at the game's frame rate when the display refreshes at a
 // whole multiple of it. On an LG TV at 120 Hz the game still seals a frame every 16.7 ms, but pacing at the
 // display rate (wake and minimum duration 8.3 ms, repeats in between) showed new frames for 1, 2, 3 or 4
 // refreshes in turn (Development 61, 17:01-17:03: 37-50% of new frames held 25-33 ms): visible judder and
@@ -257,7 +257,9 @@ struct Service : std::enable_shared_from_this<Service> {
     // swapchain goes RGBA16F extended linear sRGB only while the display has EDR headroom (macOS HDR on).
     bool hdr_wanted = false, hdr_logged = false;
     uint64_t hdr_polls = 0;
-    double hdr_target = 1.0;
+    double hdr_target = 1.0, hdr_current_smooth = 0.0, hdr_usable_logged = 0.0;
+    bool hdr_upscale_logged = false;
+    float hdr_desat = 0.3f;   // PLAN_R2 item 10: the mode-3 shoulder's whitening of hot cores
     // Test90: the display's own HDR mode (the TV's HDR signal), and the audio reopen a switch calls for.
     int hdr_display_logged = -9;
     unsigned hdr_switches_seen = 0;
@@ -266,7 +268,7 @@ struct Service : std::enable_shared_from_this<Service> {
         if (++hdr_polls % 30 != 1 || !chain)
             return;
         const bool setting = mods_setting_value("core.nfsmw/hdr_output", 0) != 0;
-        // Test91: 4 = and at 60 Hz while in HDR (the test TV's HDMI link cannot carry 4K 120 Hz HDR cleanly).
+        // Test91: 4 = and at 60 Hz while in HDR (the owner's HDMI link cannot carry 4K 120 Hz HDR cleanly).
         const bool at_60 = mods_setting_value("core.nfsmw/hdr_refresh_60", 1) != 0;
         const int display_mode = device->display_hdr_mode(setting ? (at_60 ? 1 | 4 : 1) : 0);
         if (display_mode != hdr_display_logged && display_mode != 2) {
@@ -287,9 +289,48 @@ struct Service : std::enable_shared_from_this<Service> {
             std::thread([] { host_audio_restart_output("the display's HDR mode changed"); }).detach();
         }
         const double strength = std::clamp(double(mods_setting_value("core.nfsmw/hdr_highlights", 60)), 0.0, 100.0) / 100;
-        const double potential = device->edr_headroom(true);
-        const bool want = setting && potential > 1.05;
-        hdr_target = 1.0 + (potential - 1.0) * strength;
+        // R2 #10 (review/r2close/hdr-design.md 3.5): `want` follows the display's POTENTIAL headroom with hysteresis
+        // (on above 1.10, off below 1.02) so a display at the edge does not flap; the highlight ceiling follows the
+        // CURRENT headroom (macOS clips the layer there; it is lower at low panel brightness), smoothed over ~1 s of
+        // polls and never above the potential. Logged when it moves by more than 0.05.
+        const double potential = device->edr_headroom(true), current = device->edr_headroom(false);
+        const bool want = setting && (hdr_wanted ? potential > 1.02 : potential > 1.10);
+        hdr_current_smooth = hdr_current_smooth > 0 ? hdr_current_smooth + (current - hdr_current_smooth) * 0.5 : current;
+        const double usable = std::min(potential, std::max(1.0, hdr_current_smooth));
+        hdr_target = 1.0 + (usable - 1.0) * strength;
+        if (want && std::fabs(usable - hdr_usable_logged) > 0.05) {
+            hdr_usable_logged = usable;
+            printf("presenter: HDR headroom current %.2f (smoothed %.2f), potential %.2f: highlights to x%.2f of SDR white\n",
+                   current, hdr_current_smooth, potential, hdr_target);
+            fflush(stdout);
+        }
+        {   // PLAN_R2 item 10: the game's frame in float while HDR is really on (RECOMP_TEST_HDR_RENDER=0: today's
+            // expansion of the 8-bit frame); RECOMP_TEST_HDR_FLOAT=1 forces it, also on an SDR swapchain (the job's
+            // float dumps then carry a synthetic headroom of 4). RECOMP_TEST_HDR_DESAT: the shoulder's whitening (0.3).
+            static const char *render_env = recomp_env("TEST_HDR_RENDER"), *force_env = recomp_env("TEST_HDR_FLOAT"),
+                              *desat_env = recomp_env("TEST_HDR_DESAT");
+            const bool render = !render_env || std::atoi(render_env) != 0;
+            const bool force = force_env && std::atoi(force_env) != 0;
+            hdr_desat = desat_env ? std::clamp(float(std::atof(desat_env)), 0.0f, 1.0f) : 0.3f;
+            const bool fl = force || (want && render);
+            g_host_hdr_headroom.store(float(hdr_target), std::memory_order_relaxed);
+            // R2 #10 (hdr-design.md 3.7): MetalFX spatial in Perceptual mode with values above 1 is unverified (probe P4,
+            // after R2); until then HDR + upscaling only says so (upscale is off by default).
+            const bool upscaled = mods_setting_value("core.nfsmw/upscale", 0) != 0;
+            if (fl && upscaled != hdr_upscale_logged) {
+                hdr_upscale_logged = upscaled;
+                if (upscaled) {
+                    printf("presenter: HDR with upscaling: highlights may clip in the MetalFX scaler (probe pending)\n");
+                    fflush(stdout);
+                }
+            }
+            if (fl != g_host_hdr_float.load(std::memory_order_relaxed)) {
+                g_host_hdr_float.store(fl, std::memory_order_relaxed);
+                printf("presenter: HDR float frame %s (hdr_output %s, headroom potential %.2f%s)\n", fl ? "on" : "off",
+                       setting ? "on" : "off", potential, force ? ", TEST forced" : !render ? ", TEST hdr_render 0" : "");
+                fflush(stdout);
+            }
+        }
         if (want != hdr_wanted || (setting && !want && !hdr_logged)) {
             if (want != hdr_wanted)
                 device->set_swapchain_hdr(chain, want);
@@ -312,6 +353,19 @@ struct Service : std::enable_shared_from_this<Service> {
             game_gpu_frames_seen = frames;
         }
         return game_gpu_ms >= 0 ? game_gpu_ms : presenter_ms;   // no D3D9 renderer: the presenter's
+    }
+    // R2 close perf pass (review/r2close/perf-design.md 3.1): frames.csv game_gpu_ms = the game's GPU ms per game frame
+    // finished since the previous row (same counters as the overlay, own cursor), -1 when none finished.
+    uint64_t csv_gpu_us_seen = 0, csv_gpu_frames_seen = 0;
+    double csv_game_gpu_ms() {
+        const uint64_t us = g_host_game_gpu_us.load(std::memory_order_relaxed);
+        const uint64_t frames = g_host_game_gpu_frames.load(std::memory_order_relaxed);
+        if (frames <= csv_gpu_frames_seen || us < csv_gpu_us_seen)
+            return -1;
+        const double ms = double(us - csv_gpu_us_seen) / 1000.0 / double(frames - csv_gpu_frames_seen);
+        csv_gpu_us_seen = us;
+        csv_gpu_frames_seen = frames;
+        return ms;
     }
     FILE *timings = nullptr;
     unsigned timing_rows = 0;
@@ -385,7 +439,7 @@ struct Service : std::enable_shared_from_this<Service> {
                     fprintf(
                         timings,
                         "%llu,%d,%d,%.9f,%.9f,%.9f,%.3f,%llu,%d,%d,%d,%d,%llu,%llu,%llu,%d,%.3f,"
-                        "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                        "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
                         (unsigned long long)f->frame_id, int(f->cls), int(f->repeat), f->sealed_ts,
                         f->submitted_ts, f->presented_ts, f->gpu_ms, (unsigned long long)drops,
                         int(!offscreen && !f->completion_fallback), f->input.drawable_w,
@@ -395,7 +449,8 @@ struct Service : std::enable_shared_from_this<Service> {
                         (unsigned long long)f->diagnostic.id, int(f->diagnostic.detailed),
                         f->slot_wait_ms, f->guest_yield_ms, f->guest_blocked_ms, f->guest_late_ms,
                         f->guest_max_starve_ms, f->guest_cpu_ms, f->guest_sleep_req_ms,
-                        f->guest_sleep_over_ms, f->guest_wait_ms, f->guest_over_others_ms);
+                        f->guest_sleep_over_ms, f->guest_wait_ms, f->guest_over_others_ms,
+                        csv_game_gpu_ms());
                     // Keep diagnostics live without a synchronous write on
                     // every display callback while holding the queue mutex.
                     // fclose flushes the remaining rows during shutdown.
@@ -434,10 +489,70 @@ struct Service : std::enable_shared_from_this<Service> {
                     f->capture(result);
                     f->capture = {};
                 }
+                if (f->composed && device && !f->repeat)
+                    queue_composed_float(*f);   // under the lock: only queued (the readback waits for the GPU)
             }
             release(f);
             flights.pop_front();
             wake.notify_one();
+        }
+    }
+    // R2 #10 TEST (review/r2close/hdr-design.md 7.5; RECOMP_DUMP_COMPOSED_FLOAT=N): every Nth new frame whose composed
+    // texture is RGBA16F (what the HDR drawable shows: after the shoulder, HUD composited) as raw RGBA half plus a json
+    // (size, the highlight ceiling H, frame id, mode) into RECOMP_HOST_DUMP_DIR. sweep() runs under `mutex` inside GPU
+    // completion callbacks, and a readback waits for the GPU (whose callbacks take `mutex`): so sweep only queues the
+    // frame (the shared_ptr keeps its texture from reuse) and the presenter thread writes it with the lock released
+    // (flush_composed_floats, after hdr_poll). Test only.
+    struct ComposedDump {
+        std::shared_ptr<Composite> composed;
+        uint64_t frame_id;
+        float headroom;
+        bool hdr_float, hdr_scene, pattern;
+    };
+    std::vector<ComposedDump> composed_pending;   // guarded by mutex
+    unsigned composed_dumps = 0;
+    void queue_composed_float(const Frame &f) {
+        static const int every = [] { const char *e = recomp_env("DUMP_COMPOSED_FLOAT"); return e ? std::max(0, std::atoi(e)) : 0; }();
+        static const char *dir = recomp_env("HOST_DUMP_DIR");
+        if (every <= 0 || !dir || f.frame_id % uint64_t(every) != 0 || f.composed->format != gpu::Format::RGBA16F ||
+            composed_pending.size() >= 4)
+            return;
+        composed_pending.push_back({f.composed, f.frame_id, f.input.hdr_headroom, f.input.hdr_float, f.input.hdr_scene,
+                                    f.input.hdr_pattern});
+    }
+    void flush_composed_floats() {
+        std::vector<ComposedDump> todo;
+        {
+            std::lock_guard lock(mutex);
+            if (composed_pending.empty())
+                return;
+            todo.swap(composed_pending);
+        }
+        static const char *dir = recomp_env("HOST_DUMP_DIR");
+        for (const ComposedDump &d : todo) {
+            const int w = d.composed->w, h = d.composed->h;
+            if (!dir || w <= 0 || h <= 0)
+                continue;
+            std::vector<uint16_t> px(size_t(w) * h * 4);
+            if (!device->readback(d.composed->texture, {0, 0, w, h}, px.data(), w * 8))
+                continue;
+            char path[1024];
+            snprintf(path, sizeof path, "%s/composed-%06llu.rgba16f", dir, (unsigned long long)d.frame_id);
+            if (FILE *o = fopen(path, "wb")) {
+                fwrite(px.data(), 2, px.size(), o);
+                fclose(o);
+            }
+            snprintf(path, sizeof path, "%s/composed-%06llu.json", dir, (unsigned long long)d.frame_id);
+            if (FILE *o = fopen(path, "w")) {
+                fprintf(o, "{\"w\": %d, \"h\": %d, \"headroom\": %.4f, \"frame_id\": %llu, \"hdr_float\": %d, "
+                           "\"hdr_scene\": %d, \"pattern\": %d}\n",
+                        w, h, d.headroom, (unsigned long long)d.frame_id, int(d.hdr_float), int(d.hdr_scene), int(d.pattern));
+                fclose(o);
+            }
+            if (++composed_dumps == 1) {
+                printf("presenter: TEST composed float dumps (%dx%d, H %.2f) into %s\n", w, h, d.headroom, dir);
+                fflush(stdout);
+            }
         }
     }
     void drop(const std::shared_ptr<Frame> &f) {
@@ -982,8 +1097,13 @@ struct Service : std::enable_shared_from_this<Service> {
             auto start = Clock::now();
             prepare();
             hdr_poll();
+            flush_composed_floats();   // R2 #10 TEST: outside the lock
             f->input.hdr_scene = out_format == gpu::Format::RGBA16F && f->hdr_scene_mask;
             f->input.hdr_headroom = float(hdr_target);
+            f->input.hdr_float = out_format == gpu::Format::RGBA16F && f->hdr_float;   // item 10: mode 3/4
+            f->input.hdr_desat = hdr_desat;
+            static const bool hdr_pattern = [] { const char *e = recomp_env("TEST_HDR_PATTERN"); return e && std::atoi(e) != 0; }();
+            f->input.hdr_pattern = hdr_pattern;   // R2 #10 TEST: the bars (compositor mode 5)
             if (!reuse_composition)
                 compositor_compose(device, &f->input, out->texture, cb);
             f->composed = out;
@@ -1154,7 +1274,7 @@ std::shared_ptr<Service> begin(bool fake, bool automatic, bool offscreen) {
                         "gpu_ms,drops,display_ack,drawable_w,drawable_h,screen_class_valid,render_"
                         "frame,render_monotonic_ns,capture_id,detail_sample,slot_wait_ms,"
                         "guest_yield_ms,guest_blocked_ms,guest_late_ms,guest_max_starve_ms,guest_cpu_ms,"
-                        "guest_sleep_req_ms,guest_sleep_over_ms,guest_wait_ms,guest_over_others_ms\n");
+                        "guest_sleep_req_ms,guest_sleep_over_ms,guest_wait_ms,guest_over_others_ms,game_gpu_ms\n");
                 fflush(s->timings);
             } else
                 fprintf(stderr, "presenter: cannot open frame timings %s\n", path);
@@ -1446,6 +1566,7 @@ extern "C" void host_present_stage_rgba(const uint8_t *rgba, int w, int h) {
     s->guest_h = h;
     s->writing->diagnostic = {};
     s->writing->staged_pixels = true;
+    s->writing->hdr_float = false;   // item 10: CPU-staged pixels are 8-bit
     auto &t = *s->writing->target;
     if (s->fake)
         t.test_pixels.assign(rgba, rgba + size_t(w) * h * 4);
@@ -1504,6 +1625,7 @@ bool host_present_stage_texture(gpu::Texture src, int w, int h, int guest_w, int
     s->writing->diagnostic = capture ? *capture : CaptureMarker{};
     s->writing->staged_pixels = true;
     s->writing->hdr_scene_mask = g_host_hdr_scene_mask.load(std::memory_order_relaxed); // Test86
+    s->writing->hdr_float = format == gpu::Format::RGBA16F;   // PLAN_R2 item 10: the renderer's float back buffer
     s->device->blit(cb, src, {0, 0, w, h}, t.pixels, 0, 0);
     return true;
 }

@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--max-memory", default="8G", help="Ghidra's Java heap (default 8G)")
     args = parser.parse_args()
     if not (KIT / "tools/ExportProgram.java").is_file():
-        sys.exit("The kit folder is missing: clone the whole repository again")
+        sys.exit("The kit submodule is missing: run `git submodule update --init`")
     if not args.ghidra_home:
         sys.exit("Set --ghidra-home or GHIDRA_HOME to the extracted Ghidra %s directory" % GHIDRA_VERSION)
     ghidra = args.ghidra_home.expanduser().resolve()

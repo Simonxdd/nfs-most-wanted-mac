@@ -18,7 +18,7 @@ entry_point = 0x007c4040
 guest_root = 'C:\Program Files\EA GAMES\Need for Speed Most Wanted'
 # Where a developer checkout finds the game, relative to the repository root.
 developer_exe = "original/retail/speed.exe"
-# A large texture pack (the community Xbox 360 Stuff Pack's archive is 112 MiB) exceeds the legacy free span.
+# The owner's 112 MiB X360 texture archive exceeds the legacy free span.
 # Reserve additional guest heap above the fixed stack/TEB/shim region.
 guest_size = 0x40000000
 heap_extra_base = 0x10000000
@@ -50,7 +50,7 @@ volatile_reads = []
 # The four above, plus pointer-referenced helpers found by scanning the image
 # (2026-09-17, docs/analysis.md).
 # Native replacements for the renderer's hottest x87 routines and the sound mixer's two inner loops (native/).
-native = { header = "native/overrides.h", sources = ["native/culling.c", "native/audio_mix.cpp", "native/aabb.cpp", "native/shadow_cast.cpp"] }
+native = { header = "native/overrides.h", sources = ["native/culling.c", "native/usa_movies.cpp", "native/audio_mix.cpp", "native/aabb.cpp", "native/shadow_cast.cpp"] }
 # The engine's frame time, 1/60, is one pooled .rdata float with 17 readers.
 # The three that set the simulation rate read a slot in the section padding
 # instead, which the core.nfsmw mod fills (mods/core/nfsmw/nfsmw.c).
@@ -149,7 +149,7 @@ instruction_patches = [
     # The registry keeps the size packed (core.nfsmw), not the list index.
     { at = 0x006c1e24, text = "PUSH 0xa37838" },
     { at = 0x006c20a0, text = "PUSH 0xa37838" },
-    # Selected Extra Options (ExOpts 8a094fe, Test52). Each site reads a
+    # Owner-selected Extra Options (ExOpts 8a094fe, Test52). Each site reads a
     # slot instead of its constant; the seeds below are the original values,
     # so a run with every option off is the unmodified game. core.nfsmw
     # (native_options.h) writes the option values at launch.
@@ -195,7 +195,7 @@ instruction_patches = [
     { at = 0x0052f1fc, text = "MOV byte ptr [ESI + 0x14a],byte ptr [0x00a37c38]" },
     # ForceBlackEdition: the content check's result ORs a slot before SETNE.
     { at = 0x005994e4, text = "OR EAX,dword ptr [0x00a37c40]" },
-    # Heat Level Override (Test88; ExOpts' [Pursuit] HeatLevelOverride/Minimum/MaximumHeatLevel, by request
+    # Heat Level Override (Test88; ExOpts' [Pursuit] HeatLevelOverride/Minimum/MaximumHeatLevel, owner request
     # 2 Oct). The car's top heat 5.0 in CustomizeMeter::Init (four pushes), SetHeatLevel's clamp (00435077,
     # 00435084) and the safehouse car icon (007a5b01/007a5b10) read one slot; seed 5.0 = the original game.
     # The event's own minimum/maximum (00443dc3) are set by core.nfsmw (hook 00402060 from 00443dd9).
@@ -250,6 +250,11 @@ data_seeds = [
     { addr = 0x00a37c44, float = 5.0 },   # Test88: top heat level (original 5.0)
 ]
 entry_points = [
+    # Remaster EO (5 Oct 2026; review/2026-10-05-eo-hook-strategies.md): virtual methods reached only through vtables,
+    # recovered as data-provenance blocks and so not hookable. 004741d0: 16-byte thiscall returning [ecx+0xa1] ? 0x8000
+    # : 0 (HUD hide on look-back; vtable slot 0x894cf8). 00409390: ICheater::GetCatchupCheat, float return (vtable
+    # slots 0x892240, 0x8925c8).
+    0x004741d0, 0x00409390,
     # PC AudioMode Act (vtable0089bac8+4), UIOptionsScreen NotificationMessage
     # (EXITCOMPLETE e1fde1d1). Verified PE prologues/RET8 and RET16, respectively.
     # Recovered block symbols alone are not eligible mod-hook function entries.
@@ -294,7 +299,8 @@ entry_points = [
     # from the listing and from every earlier build's symbols (Development 48 too).
     0x007bfd30,  # vtable slot 008b808c
     # Test59: the PC IFeedback implementation (vtable 008a7bd4, object+0x2c; ctor near
-    # 00634bb7), whose Update* methods are empty on PC; kept as hookable entries.
+    # 00634bb7), whose Update* methods are empty on PC. core.nfsmw hooks them (BEFORE) to
+    # run the USA Xbox 360 rumble mixer on the arguments the sim driver 006ee490 passes.
     # Verified from the PE: 00628800 is PauseEffects (PUSH ESI, stops the FFB effects,
     # RET); the rest are stubs whose RET immediates match IFeedback's signatures.
     # Recovered as data-referenced blocks, which are not eligible hook entries.
@@ -1022,7 +1028,8 @@ sprites = []
 builtin = "none"
 
 [settings]
-# Renderer settings are supplied by this game's core mod.
+# Renderer settings are supplied by this game's core mod. The shared page
+# also exposes touch layout selection and button remapping on the iPad.
 rows = ["window", "frame_limit", "performance_overlay", "filtering", "controls"]
 # World filtering (Test72): "original" keeps the game's own texture filtering, so a profile that
 # never chose a value looks as before; 2-4 raise the anisotropy where the game filters anisotropically.
@@ -1080,8 +1087,8 @@ min_free_mb = 300
 required_dirs = ["CARS", "FRONTEND", "GLOBAL", "SOUND", "TRACKS"]
 
 [bundle]
-# Left out of the app: the uninstaller, the manual, Windows-only DLLs and
-# ASI mods, the LAN server config, installer helpers and any save folder
-# in the game directory. The VP6 cinematics stay: the game decodes them itself.
+# Left out of the iOS bundle: the uninstaller, the manual, the Windows-only
+# ASI loader and widescreen fix, LAN server, installer helpers and the
+# repack's saves. The VP6 cinematics stay: the game decodes them itself.
 exclude = ["Uninstall", "Support", "scripts", "SAVE", "foobar",
            "*.dll", "*_inst.exe", "*.txt", "server.cfg"]

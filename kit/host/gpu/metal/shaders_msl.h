@@ -31,7 +31,19 @@ fragment float4 compositor_fragment(Varying v [[stage_in]],
 // source (UI, menus, movies); 1: the game frame - decode, then where its alpha marks the scene (the core
 // mod sets it before the HUD; the HUD clears it) expand the highlights above `knee` toward `headroom`,
 // hue kept; 2: the source is already linear (a re-fit of the composed frame).
-struct Hdr { float mode; float headroom; float knee; float pad; };
+// 3 (PLAN_R2 item 10, review/run14/hdr-design.md s3): the game frame is the renderer's float back buffer, values above 1
+// kept: extended decode; under the scene mark identity to SDR white, then a hue-kept shoulder on the max channel m,
+// f(m) = 1 + (H-1) u/(1+u), u = (m-1)/(H-1) (f(1)=1, f'(1)=1, f(inf)=H), hot cores whitened by `desat` (the spare
+// slot); outside the mark (HUD, mirror frame) clipped at SDR white. 4: the same frame without a scene mark: clipped.
+struct Hdr { float mode; float headroom; float knee; float desat; };
+float3 hdr_shoulder(float3 lin, float H, float D) {
+    const float m = max(max(lin.r, lin.g), lin.b);
+    if (m <= 1.0 || H <= 1.001) return min(lin, 1.0);
+    const float u = (m - 1.0) / (H - 1.0);
+    const float f = 1.0 + (H - 1.0) * u / (1.0 + u);
+    const float3 rgb = lin * (f / m);
+    return mix(rgb, float3(f), D * (f - 1.0) / (H - 1.0));
+}
 float3 hdr_decode(float3 c) {
     c = max(c, 0.0);
     return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045);
@@ -44,6 +56,14 @@ fragment float4 compositor_hdr_fragment(Varying v [[stage_in]],
     float4 c=tex.sample(nearest,v.uv);
     const float mask=c.a;
     if(q.opaque) c.a=1;
+    if(h.mode>4.5 && v.uv.y<0.1) {   // R2 #10 TEST bars: 1, 2, 4, 8 x SDR white through the mode-3 shoulder
+        const float bar=exp2(floor(saturate(v.uv.x)*3.999));
+        return float4(hdr_shoulder(float3(bar),h.headroom,h.desat),1.0);
+    }
+    if(h.mode>2.5) {   // item 10 (5 = 3 with the TEST bars)
+        const float3 lin=hdr_decode(c.rgb);
+        return float4((h.mode<3.5 || h.mode>4.5) && mask>0.5 ? hdr_shoulder(lin,h.headroom,h.desat) : min(lin,1.0), c.a);
+    }
     if(h.mode>1.5) return c;
     float3 lin=hdr_decode(c.rgb);
     if(h.mode>0.5 && mask>0.5 && h.headroom>1.0) {

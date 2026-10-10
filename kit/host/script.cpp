@@ -58,6 +58,9 @@ const Named kKeys[] = {
     {"F2", 0x3c},
     {"F3", 0x3d},
     {"F4", 0x3e},
+    {"F5", 0x3f},
+    {"F6", 0x40},
+    {"F7", 0x41},   // Remaster EO key tests
     {"1", 0x02},
     {"2", 0x03},
     {"3", 0x04},

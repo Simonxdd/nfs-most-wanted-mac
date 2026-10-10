@@ -273,7 +273,14 @@ void mods_host_services_remove_all(uint32_t owner) {
 
 // Populate host-facing mod services with thread and value validation.
 // Successful registrations retain ownership so teardown can revoke the calling mod resources.
+extern "C" int d3d9_texture_tag_iface(uint32_t iface, uint64_t key); // dx/d3d9.cpp (Remaster A1)
+
 void mods_fill_host_api(PopModApi *api) {
+    api->d3d9_texture_tag = [](const PopModApi *, uint32_t tex_iface, uint64_t key) -> PopModStatus {
+        if (!tex_iface)
+            return POP_E_RANGE;
+        return d3d9_texture_tag_iface(tex_iface, key) ? POP_OK : POP_E_NOTFOUND;
+    };
     api->audio_output = [](const PopModApi *, uint32_t mode, uint32_t flags) -> PopModStatus {
         if (mode > POP_AUDIO_OUTPUT_SURROUND51 ||
             (flags & ~(POP_AUDIO_SWAP_CENTER_LFE | POP_AUDIO_DOLBY_DIGITAL)))

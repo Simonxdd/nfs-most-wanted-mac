@@ -45,6 +45,10 @@ int main(int argc, char **argv) {
         std::sort(files.begin(), files.end());
         NSMutableArray *results = [NSMutableArray array];
         unsigned failures = 0;
+        // Remaster S3: D9_CORPUS_SOFT=1 compiles every pixel shader as the soft-particle variant instead.
+        d9msl::PixelVariant pv{};
+        if (const char *e = getenv("D9_CORPUS_SOFT"); e && *e == '1')
+            pv.soft = 1;
         for (const fs::path &path : files) {
             @autoreleasepool {
                 std::ifstream file(path, std::ios::binary);
@@ -52,7 +56,7 @@ int main(int argc, char **argv) {
                 const auto &program = d9sh::program_for(bytes);
                 std::string source, why = program.why;
                 bool generated =
-                    program.ok && (program.pixel ? d9msl::pixel_source(program, {}, &source, &why)
+                    program.ok && (program.pixel ? d9msl::pixel_source(program, pv, &source, &why)
                                                  : d9msl::vertex_source(program, &source, &why));
                 bool compiled = false;
                 if (generated) {

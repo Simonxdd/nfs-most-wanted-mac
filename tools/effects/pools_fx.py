@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Build clean-world.fx and clean-worldreflect.fx (the light pools' shading) from the player's own speed.exe: copies
-of the PC game's own WORLD and WORLDREFLECT effects with one added pass 'clean_pools' per technique, whose programs
+"""Build clean-world.fx, clean-worldreflect.fx and clean-worldnormalmap.fx (the light pools' shading; the third one
+for the tunnel props, technique worldnormalmap_2_0, with the reflect programs) from the player's own speed.exe: copies
+of the PC game's own WORLD, WORLDREFLECT and WORLDNORMALMAP effects with one added pass 'clean_pools' per technique, whose programs
 are effects/clean-pools.*.asm (from effects/clean-pools.hlsl). Added parameters CleanPoolCount (float4),
 CleanPoolParams (float4), CleanPools (float4[16]). The base pass is untouched. Added pass states: blending ONE/ONE,
 RGB writes, ZFUNC LESSEQUAL; alpha test as pass 0.
@@ -106,7 +107,8 @@ def main():
     fl = [c for c in consts if c[1] == 2]
     pe = pefile.PE(exe); priv.mkdir(parents=True, exist_ok=True)
     for res, out, vse, pse, tech in (('IDI_WORLD_FX', 'clean-world.fx', 'VS_Pools', 'PS_Pools', lambda n: n == 'world'),
-                                     ('IDI_WORLDREFLECT_FX', 'clean-worldreflect.fx', 'VS_PoolsReflect', 'PS_PoolsReflect', lambda n: n != 'world_fixed')):
+                                     ('IDI_WORLDREFLECT_FX', 'clean-worldreflect.fx', 'VS_PoolsReflect', 'PS_PoolsReflect', lambda n: n != 'world_fixed'),
+                                     ('IDI_WORLDNORMALMAP_FX', 'clean-worldnormalmap.fx', 'VS_PoolsReflect', 'PS_PoolsReflect', lambda n: n == 'worldnormalmap_2_0')):
         vs = assemble('vs_3_0', fl, asm(folder, vse)); ps = assemble('ps_3_0', consts, asm(folder, pse))
         va, rva, size, data = resource_entry(pe, res)
         fx, added = rewrite(data, vs, ps, tech)

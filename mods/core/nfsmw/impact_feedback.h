@@ -1,4 +1,11 @@
-/* Controller rumble from the PC 1.3 force-feedback update.
+/* Controller rumble from the PC 1.3 force-feedback update (Test57, revised Test58).
+ *
+ * Test59: with rumble_model = 1 (default) the continuous driving rumble is the USA Xbox 360
+ * game's own (x360_feedback.h) and the road-surface bridge below is not used.
+ * Test61: with rumble_model = 1 collisions are the 360's own ReportCollision (every player
+ * collision: traffic, police, props, walls, ground), so the PC impact bridge below is not used
+ * either (it was a wheel heuristic: a per-frame speed drop > 4, both motors, 150 ms; it never
+ * saw police contact or props). rumble_model = 0 restores the Development 52 behaviour.
  *
  * The per-frame FFB update (around 006432e0, wrapper at [009203c4], device 0 = player 1)
  * builds DirectInput effects for a wheel. A gamepad has no force axes, so those effects
@@ -63,6 +70,7 @@ static uint64_t feedback_now_ms(void) {
 }
 /* Monotonic ms clock; native/tests/rumble_feedback_tests.cpp substitutes a fixture clock. */
 static uint64_t (*g_feedback_clock)(void) = feedback_now_ms;
+#include "x360_feedback.h"
 static int impact_api_available(const PopModApi *api) {
     return api->size >= offsetof(PopModApi, rumble_pulse) + sizeof api->rumble_pulse && api->rumble_pulse;
 }
@@ -74,6 +82,7 @@ static void impact_feedback_stop(const PopModApi *api) {
     g_road.phase_live = 0;
     g_feedback_sent_level = 0;
     g_feedback_sent_high = 0;
+    g_x360.step_ms = 0;   /* no mixer time passes while feedback is stopped */
 }
 /* Level (0..1) of the game's periodic waveform index at `phase` (0..1). */
 static float road_wave(uint32_t waveform, float phase) {
@@ -113,7 +122,38 @@ static void impact_feedback_tick(const PopModApi *api) {
     if (surface_gain > 200) surface_gain = 200;
     if (surface_gain < 0) surface_gain = 0;
     uint16_t low, high;
-    {
+    float x360_left, x360_right;
+    if (x360_feedback_levels(now, &x360_left, &x360_right)) {
+        x360_trace_second(api, now);
+        /* Xbox 360 model: separate motors, truncated like the console (823a3acc). */
+        /* PORT ENHANCEMENT (Test69, owner request, `paved_surface_rumble`, default on): the 360 has no
+         * road rumble on paved textured surfaces (cobble, stone, rooftile, metal, railroad: no RoadNoise
+         * graph in attributes.bin), but the PC game computes one for them every frame (006dcda0, its own
+         * WheelEffect data, e.g. cobble a 100 ms triangle up to ~0.4 at speed). While a wheel is on such a
+         * surface and none is on a 360 RoadNoise surface, that PC effect is drawn on the left motor (where
+         * the 360 puts road noise), under `surface_rumble`. Not console behaviour; off restores the 360. */
+        float paved = 0.0f;
+        if (g_x360.paved_seen && !g_x360.roadnoise_seen && setting("paved_surface_rumble", 1) &&
+            g_x360.enabled && g_x360.driver_ms && now - g_x360.driver_ms < 250 &&
+            g_road.seen_ms && now - g_road.seen_ms < 100) {
+            const float wave = road_level_at(now);
+            paved = (float)(g_road.magnitude > 10000 ? 10000 : g_road.magnitude) / 10000.0f * wave;
+            if (paved > g_x360_trace_paved) g_x360_trace_paved = paved;
+        } else {
+            g_road.phase_live = 0;
+        }
+        /* Driving sources follow surface_rumble, the 360 collision decay follows
+           impact_rumble; both at 100 give the console's own left motor unchanged. */
+        int coll_gain = (int)setting("impact_rumble", 100);
+        if (coll_gain > 200) coll_gain = 200;
+        if (coll_gain < 0) coll_gain = 0;
+        float l = fmaxf(fmaxf(g_x360_out_drive_left, paved) * (float)surface_gain / 100.0f,
+                        g_x360_out_coll_left * (float)coll_gain / 100.0f);
+        float r = x360_right * (float)surface_gain / 100.0f;
+        (void)x360_left;
+        low = (uint16_t)((l > 1.0f ? 1.0f : l) * 65535.0f);
+        high = (uint16_t)((r > 1.0f ? 1.0f : r) * 65535.0f);
+    } else {
         float level = 0.0f;
         if (surface_gain > 0 && g_road.seen_ms && now - g_road.seen_ms < 100) {
             /* The effect keeps running (and its phase advancing) at magnitude 0. */
@@ -131,8 +171,10 @@ static void impact_feedback_tick(const PopModApi *api) {
         if (impact > low) low = impact;
         if (impact > high) high = impact;
     }
-    /* `rumble_floor` (default 1%): a motor level under the cut-off is not played, so a fading effect does not
-     * leave a modern controller's motors buzzing at a barely perceptible level. 0 plays every level. */
+    /* Test156 (owner 3 Oct, PORT ADJUSTMENT, `rumble_floor`, default 1%): a motor level under the cut-off is not
+     * played. After a collision fades, the 360 model can leave the left motor at ~0.3-0.5% for seconds (session
+     * 21:46:18.9-21:46:22.2, no contact); an Xbox 360 motor does not turn at that level, a DualSense actuator
+     * does, so the rumble was felt to linger. 1% (review: 0.5-1%) clears that tail; 0 plays every level, as the console computes it. */
     {
         int64_t floor_pct = setting("rumble_floor", 1);
         if (floor_pct < 0) floor_pct = 0;
@@ -152,13 +194,31 @@ static void impact_feedback_tick(const PopModApi *api) {
     if (setting("input_trace", 0) &&
         ((low >> 12) != (g_feedback_sent_level >> 12) || (high >> 12) != (g_feedback_sent_high >> 12) ||
          /* Test156: also when a motor reaches or leaves zero, so the end of every rumble is in the log (a level
-            under 4096, ~6%, otherwise never shows; test report: rumble lingering after a vehicle impact). */
+            under 4096, ~6%, otherwise never shows; owner 3 Oct: rumble lingering after a vehicle impact). */
          (low == 0) != (g_feedback_sent_level == 0) || (high == 0) != (g_feedback_sent_high == 0))) {
         char line[320];
-        {
+        if (x360_model()) {
+            /* Test61: per-source attribution of every change (which contribution is live). */
+            float grp[3][2];
+            for (int g = 0; g < 3; ++g) {
+                const X360Osc *o = &g_x360.osc[4 * g];
+                grp[g][0] = fmaxf(o[0].amp + o[0].offset, 0.0f) + fmaxf(o[1].amp + o[1].offset, 0.0f);
+                grp[g][1] = fmaxf(o[2].amp + o[2].offset, 0.0f) + fmaxf(o[3].amp + o[3].offset, 0.0f);
+            }
+            char dec[64] = "";
+            size_t n = 0;
+            for (int i = 0; i < 10 && n < sizeof dec - 8; ++i)
+                if (g_x360.decay[i].left > 0.0f)
+                    n += (size_t)snprintf(dec + n, sizeof dec - n, " d%d=%.2f", i, g_x360.decay[i].left);
+            snprintf(line, sizeof line,
+                     "core.nfsmw: rumble low=%u high=%u x360 l=%.2f r=%.2f road=%.2f/%.2f skid=%.2f/%.2f "
+                     "slip=%.2f/%.2f%s impact=%u(%lldms)",
+                     low, high, g_x360.left, g_x360.right, grp[0][0], grp[0][1], grp[1][0], grp[1][1], grp[2][0],
+                     grp[2][1], dec, now < g_impact_until_ms ? g_impact_level : 0u,
+                     now < g_impact_until_ms ? (long long)(g_impact_until_ms - now) : 0LL);
+        } else
             snprintf(line, sizeof line, "core.nfsmw: rumble motor=%u (surface wave=%u period=%u mag=%u)", low,
                      g_road.waveform, g_road.period, g_road.magnitude);
-        }
         api->log(api, line);
     }
     g_feedback_sent_level = low;
@@ -170,6 +230,10 @@ static void impact_feedback(const PopModApi *api, pop_cpu_v1 *cpu,
     (void)inv; (void)user;
     uint32_t wrapper = cpu->ecx, device = get_u32(cpu->esp + 4);
     api->call_original(api, cpu->target, cpu);
+    /* Test61: with the 360 model the game's own collision report (IFeedback::ReportCollision,
+     * x360_feedback.h) carries collisions, as on the 360; this PC wheel heuristic (a per-frame
+     * speed drop of more than 4 at 006433xx) is then not used. rumble_model 0 keeps it. */
+    if (x360_model() && g_x360_collision_hooked) return;
     int gain = setting("impact_rumble", 100);
     if (!gain || !impact_api_available(api) || device != 0 ||
         wrapper != get_u32(0x009203c4u) || get_u32(0x00925e90u) != 6 ||
@@ -240,4 +304,22 @@ static void road_surface_trace(const PopModApi *api, pop_cpu_v1 *cpu,
              get_u32(layout + 0xcc), get_u32(layout + 0xd0), get_u32(layout + 0xd4), get_u32(layout + 0xd8),
              get_u32(cpu->esp + 8));
     api->log(api, line);
+    /* The USA 360 drives its road rumble from three per-surface graph attributes of the
+     * simsurface class (keys ba1297da, 0c149044, 8fd11d27; 4 x 32-byte records each:
+     * freq0, amp0, offset0, x0, freq1, amp1, offset1, x1). PC code never reads them, but
+     * PC attributes.bin defines them. Dump what this surface holds, through the game's own
+     * Attrib::Instance::GetAttributePointer (00454810, thiscall key, index). Trace only. */
+    static const uint32_t keys[3] = {0xba1297dau, 0x0c149044u, 0x8fd11d27u};
+    for (unsigned k = 0; k < 3; ++k)
+        for (uint32_t i = 0; i < 4; ++i) {
+            uint32_t args[2] = {keys[k], i}, rec = 0;
+            if (!api->guest_call || api->guest_call(api, 0x00454810u, cpu->ebx, args, 2, &rec) != POP_OK || !rec)
+                continue;
+            float v[8];
+            for (unsigned j = 0; j < 8; ++j) { uint32_t b = get_u32(rec + 4 * j); memcpy(&v[j], &b, 4); }
+            snprintf(line, sizeof line,
+                     "core.nfsmw: surface %s graph %08x[%u] f=%.3g..%.3g a=%.3g..%.3g o=%.3g..%.3g x=%.3g..%.3g",
+                     name, keys[k], i, v[0], v[4], v[1], v[5], v[2], v[6], v[3], v[7]);
+            api->log(api, line);
+        }
 }

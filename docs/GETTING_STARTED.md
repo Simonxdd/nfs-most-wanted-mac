@@ -49,14 +49,16 @@ The setup prints each step and what it found:
 2. **Link:** your game folder is linked (not copied or changed) into `original/retail`.
 3. **Analyse:** Ghidra maps the functions in your `speed.exe` (once; later runs reuse it).
 4. **Translate and build:** the game code is translated to C and compiled with the native host.
-5. **Extras from your game:** the light pools are built from your game's own lamp data and effects.
-6. **Optional packs:** a TexWizard texture pack in your game folder (`TRACKS/TexWizardX360`, for example the Xbox 360
-   Stuff Pack's textures) and `XenonEffects.tpk` (in its `scripts` folder) are found and added. How to add them on
-   your Mac: the [companion guide](COMPANION_GUIDE.md#optional-mods).
+5. **Effects and extras from your game:** the rebuilt effects are assembled from this repository's own shader
+   programs (`effects/`), and the light pools from your game's own lamp data and effects.
+6. **Optional packs:** the Xbox 360 Stuff Pack's textures in your game folder (`TRACKS/TexWizardX360`) and
+   `XenonEffects.tpk` (in its `scripts` folder) are found and added. How to add them on your Mac: the
+   [companion guide](COMPANION_GUIDE.md#optional-mods).
 7. **Package:** `dist/NFS Most Wanted Native.app` is written, with your game data inside it.
 
 Move the app to Applications if you like and open it. The first launch takes a little longer while Metal prepares
-its shaders.
+its shaders, and the first minutes of driving may hitch once at each new sight while the rest are prepared; after
+that they are kept in your profile folder.
 
 ### Options
 
@@ -82,6 +84,11 @@ git pull
 
 The analysis is reused, so an update only translates, builds and packages again. Your saves and settings are kept:
 they live in your profile folder, not in the app (see the [companion guide](COMPANION_GUIDE.md#saves-and-settings)).
+
+**From 1.0 to 2.0:** your saves and settings carry over. Anti-aliasing starts at Off once (choose 2x or 4x again),
+and the look is now *Look* (Definitive by default). A 1.0 profile keeps its own Dolby Digital choice (new profiles
+start with it on). What changed:
+[What's new in 2.0](COMPANION_GUIDE.md#whats-new-in-20).
 
 ## Removing it
 

@@ -7,12 +7,25 @@
 __pycache__/
 *.pyc
 .DS_Store
-# Files the setup builds from your game (it writes them to build/generated; never commit copies):
+# Files the setup builds (it writes them to build/generated; never commit copies):
+mods/core/nfsmw/*.fx
+mods/core/nfsmw/clean-chain.txt
 mods/core/nfsmw/clean-pools.bin
-mods/core/nfsmw/clean-world.fx
-mods/core/nfsmw/clean-worldreflect.fx
+mods/core/nfsmw/x360-textures.map
 mods/core/nfsmw/texture-pack.map
 mods/core/nfsmw/xenon/
+# Texture packs, shader caches and upscaler models are made or kept on the player's Mac only.
+*.dds
+*.tsv
+*.fx.o
+*.safetensors
+*.pth
+RemasterPack/
+PbrPilot/
+ShaderWarmSeed/
+ShaderWarm/
+HDTextures/
+/derived/
 # Game and build file types never belong in the repository.
 CMakeUserPresets.json
 /.tools/

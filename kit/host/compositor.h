@@ -68,6 +68,14 @@ struct CompositorInput {
     // the legacy frame is an already composed linear image (a re-fit), drawn as it is.
     bool hdr_scene = false, hdr_linear = false;
     float hdr_headroom = 1.0f, hdr_knee = 0.55f;
+    // PLAN_R2 item 10 real HDR: the legacy frame is the renderer's float back buffer (extended gamma-encoded values
+    // above 1 kept): mode 3 (scene mark: identity to SDR white, a hue-kept shoulder to hdr_headroom, hot cores
+    // whitened by hdr_desat) or mode 4 (no scene mark: clipped at SDR white).
+    bool hdr_float = false;
+    float hdr_desat = 0.3f;
+    // R2 #10 TEST (RECOMP_TEST_HDR_PATTERN=1): mode 3 also draws four bars at 1, 2, 4 and 8 x SDR white across the top
+    // tenth of the frame, through the same shoulder (mode 5), so the owner can count how many the TV tells apart.
+    bool hdr_pattern = false;
 };
 
 // Encode only: never commits, waits or presents. The caller supplies an open

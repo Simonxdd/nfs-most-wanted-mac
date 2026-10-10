@@ -1,4 +1,4 @@
-/* TEST ONLY (Test127, NFSMW_TEST_SCENERY_LOD=1): why does a piece of scenery appear late (report #127)?
+/* TEST ONLY (Test127, NFSMW_TEST_SCENERY_LOD=1): why does a piece of scenery appear late (owner report #127)?
  * Observes the game's own scenery selector; writes no game state. Read on exe c0516b48 (2 Oct 2026):
  *  - 00729120 (thiscall, RET 0xc; ecx = scenery section, args: instance index, cull info, frustum-test flag) decides
  *    one instance. Order: preculler bit (cull+0xc4 cell, per-section mask at section+0x30) -> instance flags ->
@@ -28,7 +28,7 @@
 #define SLP_FRAME 0x009885b8u        /* game frame counter (as audio_env_probe.h) */
 #define SLP_TABLE 65536u
 #define SLP_LOG_LIMIT 20000u
-static uint32_t g_slp_log_limit = SLP_LOG_LIMIT; /* 200000 when the player turns it on (scenery_trace, Test139) */
+static uint32_t g_slp_log_limit = SLP_LOG_LIMIT; /* 200000 when the owner turns it on (scenery_trace, Test139) */
 enum { SLP_NONE, SLP_DRAWN, SLP_PRECULL, SLP_FLAGS, SLP_SMALL, SLP_FULL };
 static const char *const k_slp_name[] = {"none", "drawn", "precull", "flags/frustum", "small", "list-full"};
 typedef struct { uint32_t section, index, frame; uint8_t outcome, slot; } SlpEntry;
@@ -44,7 +44,7 @@ static uint64_t g_slp_calls, g_slp_lines, g_slp_count[6];
 #define SLP_LIST_ITEMS 5000u
 static uint32_t g_slp_frame = 0xffffffffu, g_slp_frame_peak, g_slp_frame_drops, g_slp_frame_main_drops;
 /* per view class (006bfdd0's view order; cull+0x80 = the view): inserts and skips this frame and in total, and the
- * class that first met a full list this frame (external review S2: the hypothesis predicts that later views starve first) */
+ * class that first met a full list this frame (S2: the hypothesis predicts that later views starve first) */
 enum { SLV_MAIN, SLV_MIRROR, SLV_ENV, SLV_ROAD, SLV_AUX, SLV_SHADOW, SLV_OTHER, SLV_N };
 static const char *const k_slv_name[SLV_N] = {"main", "view3", "env", "road", "aux", "shadow", "other"};
 static uint32_t g_slv_frame_ins[SLV_N], g_slv_frame_skip[SLV_N];
@@ -210,7 +210,7 @@ static void slp_wrap(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *i
 }
 static void scenery_lod_probe_init(const PopModApi *api) {
     const char *on = getenv("NFSMW_TEST_SCENERY_LOD");
-    const int owner = setting("scenery_trace", 0) != 0; /* Test139: the player's diagnostics switch (restart) */
+    const int owner = setting("scenery_trace", 0) != 0; /* Test139: the owner's diagnostics switch (restart) */
     if ((!on || !*on || *on == '0') && !owner) return;
     if (owner) g_slp_log_limit = 200000u;
     g_slp = (SlpEntry *)calloc(SLP_TABLE, sizeof *g_slp);

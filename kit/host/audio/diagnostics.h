@@ -9,7 +9,7 @@
 
 namespace audio::diagnostic {
 constexpr unsigned max_channels = 8;
-// One hour of one-second windows: a listening session, not just its start.
+// One hour of one-second windows: an owner listening session, not just its start.
 constexpr unsigned max_windows = 3600;
 
 // SDL's documented order, corroborated by its CoreAudio DVD_12/WAVE_7_1

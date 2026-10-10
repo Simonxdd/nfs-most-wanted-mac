@@ -5,6 +5,9 @@ def c29 = 2.50000000e-01, 2.50000000e-01, 2.50000000e-01, 2.50000000e-01
 def c30 = 0.00000000e+00, 0.00000000e+00, 1.00000000e+00, 1.00000000e+00
 def c31 = 0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00
 def c32 = 1.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00
+; R2 #10 (review/r2close/hdr-design.md 3.3): the HDR form no longer clamps the bright-pass taps, so the bloom
+; of light above white scales with its excess (Bloom* are f16 in the HDR chain). SDR form: unchanged.
+; hdr+: def c220 = 1.0, 0.0, 2.0, 0.0   ; HDR constants: one, zero, the bloom-source cap (2x white; D-110 flicker fix F1)
 dcl_2d s1
 dcl_2d s0
 mov r0.xy, v0.xyxx
@@ -21,6 +24,7 @@ mov r2.z, r2.y
 mov r2.xy, r2.xzxx
 add r2.xy, r0.xyxx, r2.xyxx
 texld r2.xyzw, r2.xyxx, s0.xyzw
+; hdr+: min r2.xyz, r2.xyzz, c220.zzzz   ; D-110 F1: a bright-pass tap counts at most 2x white
 mov r3.x, r2.x
 mov r4.x, r2.yxxx
 mov r3.y, r4.x
@@ -36,6 +40,7 @@ mov r2.z, r2.x
 mov r2.xy, r2.yzxx
 add r2.xy, r0.xyxx, r2.xyxx
 texld r2.xyzw, r2.xyxx, s0.xyzw
+; hdr+: min r2.xyz, r2.xyzz, c220.zzzz   ; D-110 F1: a bright-pass tap counts at most 2x white
 mov r4.x, r2.x
 mov r5.x, r2.yxxx
 mov r4.y, r5.x
@@ -50,6 +55,7 @@ mov r2.y, r2.z
 mov r2.xy, r2.xyxx
 add r2.xy, r0.xyxx, r2.xyxx
 texld r2.xyzw, r2.xyxx, s0.xyzw
+; hdr+: min r2.xyz, r2.xyzz, c220.zzzz   ; D-110 F1: a bright-pass tap counts at most 2x white
 mov r5.x, r2.x
 mov r6.x, r2.yxxx
 mov r5.y, r6.x
@@ -63,6 +69,7 @@ mov r2.y, r0.z
 mov r0.zw, r2.xxxy
 add r0.xy, r0.xyxx, r0.zwxx
 texld r0.xyzw, r0.xyxx, s0.xyzw
+; hdr+: min r0.xyz, r0.xyzz, c220.zzzz   ; D-110 F1: a bright-pass tap counts at most 2x white
 mov r2.x, r0.x
 mov r6.x, r0.yxxx
 mov r2.y, r6.x

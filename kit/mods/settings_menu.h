@@ -1,6 +1,6 @@
 // settings_menu.h - the tabbed settings menu (Test72; NFSMW graphics/mods plan, Revision 3):
-// Graphics, Mods and Controls pages over the EXISTING settings owners (display rows, controls
-// rows, mod manifest settings). It keeps no state of its own besides the open page, the cursor
+// Graphics, Display, Audio, Xbox 360, PC, Mods and Controls pages (Remaster run 15) over the EXISTING
+// settings owners (display rows, controls rows, mod manifest settings). It keeps no state of its own besides the open page, the cursor
 // and the Graphics draft: a value lives where it always lived and persists the way it always did.
 // Graphics changes whose manifest says `apply = "renderer"` (and the World filtering row) are
 // collected in a draft and committed together by Apply; everything else applies the way its owner
@@ -27,6 +27,18 @@ struct MenuSnapshot {
     std::string help, status, prompts;
 };
 
+// The pages, in tab order (Remaster run 15, owner 9 Oct: "a tab for audio, another one for display, another one
+// for xbox 360 specific settings, another for PC"). A setting's manifest group decides its page (settings_menu.cpp).
+enum MenuTab {
+    MENU_TAB_GRAPHICS,
+    MENU_TAB_DISPLAY,
+    MENU_TAB_AUDIO,
+    MENU_TAB_XBOX360,
+    MENU_TAB_PC,
+    MENU_TAB_MODS,
+    MENU_TAB_CONTROLS,
+    MENU_TAB_COUNT
+};
 bool mods_menu_enabled(void);
 void mods_menu_open(int tab);
 // Closing discards an unapplied Graphics draft (the status said so while it was pending).

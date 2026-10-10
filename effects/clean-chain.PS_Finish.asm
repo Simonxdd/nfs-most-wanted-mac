@@ -7,6 +7,7 @@ def c31 = 2.00000000e+00, 1.00000000e+00, -5.00000000e-01, -5.00000000e-01
 def c32 = 2.00000000e+00, 2.00000000e+00, 0.00000000e+00, 9.99999975e-05
 def c33 = 3.00000000e+00, 2.00000000e+00, 0.00000000e+00, 0.00000000e+00
 def c34 = 1.00000000e+00, 1.00000000e+00, 1.00000000e+00, 0.00000000e+00
+; hdr+: def c220 = 1.0, 0.0, 0.0, 0.0   ; HDR constants: one, zero
 dcl_2d s0
 mov r0.xy, v0.xyxx
 mov r1.xyzw, c13.xyzw
@@ -14,6 +15,7 @@ mov r2.xyzw, c12.xyzw
 mov r3.xyzw, c11.xyzw
 mov r4.xyzw, c10.xyzw
 texld r5.xyzw, r0.xyxx, s0.xyzw
+; hdr+: add r20.xyz, r5.xyzz, -c220.xxxx | max r20.xyz, r20.xyzz, c220.yyyy   ; excess above 1
 mov r0.z, r5.x
 mov r6.x, r0.z
 mov r0.z, r5.xxyx
@@ -122,6 +124,7 @@ add r0.z, r0.w, r0.z
 mov r1.xyz, r6.xyzx
 mov r2.xyz, r0.zzzx
 mul r1.xyz, r1.xyzx, r2.xyzx
+; hdr+: mul r20.xyz, r20.xyzz, r2.xxxx   ; D-110 F3: the excess above white darkens at the screen edges like the rest
 mov r0.zw, c31.xxzw
 add r0.xy, r0.xyxx, r0.zwxx
 mov r0.zw, c32.xxxy
@@ -163,6 +166,7 @@ mov r2.xyz, r0.x
 mul r0.xyz, r0.yzwx, r2.xyzx
 add r0.xyz, r1.xyzx, r0.xyzx
 mov_sat r0.xyz, r0.xyzx
+; hdr+: add r0.xyz, r0.xyzz, r20.xyzz   ; excess back on top
 mov r0.w, r0.x
 mov r1.x, r0.w
 mov r0.w, r0.xxxy

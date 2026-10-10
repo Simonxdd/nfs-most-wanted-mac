@@ -1,12 +1,12 @@
-/* Sparks and light trails (XenonEffects): contrails behind fast cars and sparks from the game's own spark emitters, in
- * the style of the console version's particles. Switch 'xbox_particles' (default on, live; Definitive and
+/* Xbox 360 particles in the game (task 145, Test119): contrails behind fast cars and sparks from the game's own spark
+ * emitters, drawn as the Xbox 360's NGEffect particles. Switch 'xbox_particles' (default on, live; Definitive and
  * PC - Original alike: it adds effects, it changes no look). The particle maths is xenon_particles.h (matched exactly
  * to NFSMW_XenonEffects' asm under emulation); this file connects it to speed.exe 1.3.
  *
  * Reference implementation: NFSMW_XenonEffects by xan1242 (MIT, commit b5070080), which targets this executable
  * (RELOADED 1.3, md5 c0516b48, = our pinned exe). Its hook points and guest functions are REFERENCE unless marked
  * otherwise; the stubs it replaces (004fb000 returns 0, 006c3a40 returns) are PROVEN from our exe's listing.
- * Reimplemented in C; no code copied. Data: the player's GLOBAL\XenonEffects.tpk from that mod (texture "MAIN"), loaded
+ * Reimplemented in C; no code copied. Data: the owner's GLOBAL\XenonEffects.tpk (texture "MAIN"), private, loaded
  * from <mod>/xenon/ through the overlay when present (no file: the feature logs and stays off).
  *
  * Deliberate differences from the reference (operating standard 10: best native behaviour):
@@ -64,7 +64,7 @@
 #define XFX_CAR_ENGINE_ANIM_RET 0x0075662eu
 /* attribute keys (REFERENCE) */
 #define XFX_KEY_NGEMITTER       0xb0d98a89u  /* fuelcell_effect: list of NGEmitter refs */
-#define XFX_KEY_XENON_FX        0xfe40e637u  /* emitter: list of NGEffect refs (sparks) */
+#define XFX_KEY_XENON_FX        0xfe40e637u  /* emitter: list of Xbox effect refs (sparks) */
 #define XFX_KEY_SPIN_A          0x28638d89u
 #define XFX_KEY_SPIN_B          0xd2603865u
 #define XFX_KEY_SPIN_C          0xe2cc8106u
@@ -77,11 +77,11 @@
 #define XFX_EMITTER_VELOCITY    0x60u
 #define XFX_EMITTER_START       0x70u   /* Emitter: active from (PROVEN: 00509b72) */
 #define XFX_EMITTER_END         0x74u   /* Emitter: active to (PROVEN: 00509b61) */
-#define XFX_PIGGYBACK_FLAGS     0x18u   /* AcidEffect flags; bit 4 = draw its NGEffect effects */
+#define XFX_PIGGYBACK_FLAGS     0x18u   /* AcidEffect flags; bit 4 = draw its Xbox effects */
 #define XFX_CAR_MATRIX_PTR      0x34u   /* CarRenderConn: pointer to the car matrix */
 #define XFX_CAR_VELOCITY_PTR    0x38u   /* CarRenderConn: pointer to the velocity */
 #define XFX_CAR_FLAGS           0x3f8u  /* CarRenderConn: bit 2 = contrail-capable state */
-#define XFX_PKT_NOS             0x71u   /* PktCarService: NOS active (byte), as XenonEffects reads it */
+#define XFX_PKT_NOS             0x71u   /* PktCarService: NOS active (byte): PROVEN on the USA Xbox (824e8c84); XenonEffects reads the same on PC */
 #define XFX_EVIEW_ID            0x04u
 #define XFX_EVIEW_TYPE          0x08u   /* the reference's cave tests 1 or 2 here */
 #define XFX_EVIEW_MOVERS        0x44u   /* camera-mover list head; first node at +0x48, mover = node - 4 */
@@ -90,9 +90,9 @@
                                          * render path, RenderCarPOV per its header order): neutral name (standard 5) */
 #define XFX_COLLECTION_KEY      0x20u   /* collection +0x20: its key (the elasticity table's key) */
 
-#define XFX_MAX_PARTICLES 10000u   /* the reference's list size */
+#define XFX_MAX_PARTICLES 10000u   /* the Xbox's list holds 2048 (USA 82459c2c, PROVEN); the PC can afford the reference's 10000 */
 #define XFX_MAX_EFFECTS   500u
-#define XFX_CONTRAIL_SPEED 44.0f        /* the reference's contrail speed */
+#define XFX_CONTRAIL_SPEED 44.0f        /* PROVEN: USA CarRenderConn::UpdateContrails 824e8c80 (NOS byte +0x71, NIS off) */
 
 typedef struct {
     float intensity;
@@ -208,7 +208,7 @@ static void xfx_emitter_data(uint32_t mw, uint32_t collection, XenonEmitterData 
         for (unsigned i = 0; i < n_seen; ++i) if (seen[i] == key) return;
         seen[n_seen++] = key;
         char line[200];
-        snprintf(line, sizeof line, "core.nfsmw: sparks and light trails: emitter %08x: NumParticles %.3f, NumParticlesVariance %.4f, "
+        snprintf(line, sizeof line, "core.nfsmw: Xbox particles: emitter %08x: NumParticles %.3f, NumParticlesVariance %.4f, "
                  "Life %.3f, LifeVariance %.3f, contrail %u", key, (double)d->num_particles, (double)d->num_particles_variance,
                  (double)d->life, (double)d->life_variance, (unsigned)d->contrail);
         g_api->log(g_api, line);
@@ -369,7 +369,7 @@ static void xfx_global_load(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvoca
     const uint32_t name = xfx_str("GLOBAL\\XenonEffects.tpk");
     const uint32_t c[5] = {name, 0, 0, 0, 0};
     const uint32_t rf = name ? xfx_call(XFX_CREATE_RESFILE, 0, c, 5) : 0;
-    if (!rf) { api->log(api, "core.nfsmw: sparks and light trails: texture pack could not be opened; off"); g_xfx_broken = 1; return; }
+    if (!rf) { api->log(api, "core.nfsmw: Xbox particles: texture pack could not be opened; off"); g_xfx_broken = 1; return; }
     const uint32_t bl[2] = {0, 0};
     xfx_call(XFX_RESFILE_BEGIN, rf, bl, 2);
     xfx_call(XFX_SERVICE_RESOURCES, 0, NULL, 0);
@@ -383,7 +383,7 @@ static void xfx_global_load(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvoca
     g_xfx_elastic_key[1] = e2[0] ? xfx_call(XFX_STRINGHASH32, 0, e2, 1) : 0;
     g_xfx_ready = !g_xfx_broken;
     char line[160];
-    snprintf(line, sizeof line, "core.nfsmw: sparks and light trails: texture pack loaded, MAIN %s; %s",
+    snprintf(line, sizeof line, "core.nfsmw: Xbox particles: texture pack loaded, MAIN %s; %s",
              g_xfx_texinfo ? "found" : "missing", g_xfx_ready ? "ready" : "off");
     api->log(api, line);
 }
@@ -407,16 +407,16 @@ static void xfx_render(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation 
         const uint32_t hash = h[0] ? xfx_call(XFX_BSTRINGHASH, 0, h, 1) : 0;
         const uint32_t g[3] = {hash, 0, 0};
         g_xfx_texinfo = hash ? xfx_call(XFX_GET_TEXTUREINFO, 0, g, 3) : 0;
-        if (g_xfx_texinfo) api->log(api, "core.nfsmw: sparks and light trails: texture MAIN found");
+        if (g_xfx_texinfo) api->log(api, "core.nfsmw: Xbox particles: texture MAIN found");
     }
     g_xfx_count = xp_age(g_xfx_parts, g_xfx_count, dt, xfx_hit, NULL);
     for (uint32_t i = 0; i < g_xfx_queued && !g_xfx_broken; ++i) xfx_expand(&g_xfx_queue[i], dt);
     g_xfx_queued = 0;
     xfx_draw();
     ++g_xfx_frames;
-    if (g_xfx_broken) api->log(api, "core.nfsmw: sparks and light trails: a guest call failed; off for this session");
+    if (g_xfx_broken) api->log(api, "core.nfsmw: Xbox particles: a guest call failed; off for this session");
 }
-/* Emitter::SpawnParticles: after the game's own particles, the emitter's NGEffect effects (sparks). The reference's
+/* Emitter::SpawnParticles: after the game's own particles, the emitter's Xbox effects (sparks). The reference's
  * cave runs at the normal end (0050a5d7) only; the early exits are mirrored (time window, 00509b4b-00509b7a); its
  * rare mid-loop exit (0050a5e7) cannot be seen from outside and is accepted (DERIVED). */
 static void xfx_emitter_spawn(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
@@ -461,8 +461,10 @@ static XfxCar *xfx_car(uint32_t car, int make) {
     free_slot->on = 0;
     return free_slot;
 }
-/* UpdateEngineAnimation at 00756629: the car's contrail state - NOS or speed >= 44, never during a cut-scene (the
- * reference's speed test, with NOS as its optional Carbon mode and dbalatoni's reconstruction have it). */
+/* UpdateEngineAnimation at 00756629: the car's contrail state - NOS or speed >= 44, never during a cut-scene. PROVEN on
+ * the retail USA Xbox 360 (CarRenderConn::UpdateContrails 824e8c80: velocity [this+0x38], NOS byte [PktCarService+0x71],
+ * 44.0 at 820b01dc, NIS instance check, flag at +0x404), and in dbalatoni's reconstruction. XenonEffects enabled NOS
+ * only in its optional Carbon mode. */
 static void xfx_engine_anim(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
     (void)user;
     const uint32_t self = cpu->ecx;
@@ -481,7 +483,7 @@ static void xfx_engine_anim(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvoca
 }
 /* CarRenderConn::OnRender: for a car whose contrail state is on, in a player view (type 1 or 2) whose first camera
  * mover's vtable +0x24 is true (as the PC's own OnRender asks at 00750ee8), queue the contrail effect; its intensity
- * follows the reference (xp_contrail_intensity, at expansion).
+ * is the Xbox's own (xp_contrail_intensity, at expansion).
  * The reference's cave also skipped this when the function left early (its 00751017 / 007511d0 paths); the
  * mover-list and view tests below cover the first; the second (the car being the camera's own target in some modes)
  * is not mirrored (HYPOTHESIS that it does not matter; check in the image pass). */
@@ -505,25 +507,25 @@ static void xfx_car_render(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocat
     const uint32_t vel = get_u32(self + XFX_CAR_VELOCITY_PTR), mat = get_u32(self + XFX_CAR_MATRIX_PTR);
     if (!spec || !vel || !mat) return;
     c->last = g_xfx_clock;
-    xfx_add(0.0f, spec, mat, vel, 0);   /* the intensity follows the velocity, at expansion */
+    xfx_add(0.0f, spec, mat, vel, 0);   /* the intensity is the Xbox's own, from the velocity, at expansion */
     ++g_xfx_contrails;
 }
 /* Slots 90..95. The texture pack comes from <mod>/xenon (overlay, GLOBAL/XenonEffects.tpk). */
 static void xfx_init(const PopModApi *api) {
-    if (!setting("xbox_particles", 1)) { api->log(api, "core.nfsmw: sparks and light trails off (setting; applies at next launch)"); return; }
+    if (!setting("xbox_particles", 1)) { api->log(api, "core.nfsmw: Xbox particles off (setting; applies at next launch)"); return; }
     char path[2048];
     snprintf(path, sizeof path, "%s/xenon/GLOBAL/XenonEffects.tpk", api->mod_dir(api));
     FILE *f = fopen(path, "rb");
-    if (!f) { api->log(api, "core.nfsmw: sparks and light trails: no xenon/GLOBAL/XenonEffects.tpk beside the mod; off"); return; }
+    if (!f) { api->log(api, "core.nfsmw: Xbox particles: no xenon/GLOBAL/XenonEffects.tpk beside the mod; off"); return; }
     fclose(f);
     snprintf(path, sizeof path, "%s/xenon", api->mod_dir(api));
     uint32_t layer = 0;
-    if (api->overlay_push(api, path, &layer) != POP_OK) { api->log(api, "core.nfsmw: sparks and light trails: overlay refused; off"); return; }
+    if (api->overlay_push(api, path, &layer) != POP_OK) { api->log(api, "core.nfsmw: Xbox particles: overlay refused; off"); return; }
     g_xfx_tpk = 1;
     if (api->guest_alloc(api, XFX_MEM_SIZE, &g_xfx_mem) != POP_OK ||
         api->guest_alloc(api, XFX_MAX_PARTICLES * 4u * (uint32_t)sizeof(XenonVertex), &g_xfx_verts) != POP_OK ||
         api->guest_alloc(api, XFX_MAX_PARTICLES * 6u * 2u, &g_xfx_index) != POP_OK) {
-        api->log(api, "core.nfsmw: sparks and light trails: guest memory unavailable; off");
+        api->log(api, "core.nfsmw: Xbox particles: guest memory unavailable; off");
         return;
     }
     {   /* indices 0 1 2, 0 2 3 per quad */
@@ -545,13 +547,13 @@ static void xfx_init(const PopModApi *api) {
     ok += install_at(XFX_CAR_ENGINE_ANIM, XFX_CAR_ENGINE_ANIM_RET, xfx_engine_anim, POP_HOOK_WRAP, 95) == POP_OK;
     g_xfx_on = ok == 6;
     char line[128];
-    snprintf(line, sizeof line, "core.nfsmw: sparks and light trails: %d of 6 hooks%s", ok, g_xfx_on ? "" : "; off");
+    snprintf(line, sizeof line, "core.nfsmw: Xbox particles: %d of 6 hooks%s", ok, g_xfx_on ? "" : "; off");
     api->log(api, line);
 }
 static void xfx_exit(const PopModApi *api) {
     if (!g_xfx_on) return;
     char line[240];
-    snprintf(line, sizeof line, "core.nfsmw: sparks and light trails: %llu frames, %llu effects (%llu contrails, %llu sparks, %llu dropped), %llu particles, %llu impacts",
+    snprintf(line, sizeof line, "core.nfsmw: Xbox particles: %llu frames, %llu effects (%llu contrails, %llu sparks, %llu dropped), %llu particles, %llu impacts",
              (unsigned long long)g_xfx_frames, (unsigned long long)g_xfx_effects, (unsigned long long)g_xfx_contrails,
              (unsigned long long)g_xfx_sparks, (unsigned long long)g_xfx_dropped, (unsigned long long)g_xfx_spawned,
              (unsigned long long)g_xfx_hits);

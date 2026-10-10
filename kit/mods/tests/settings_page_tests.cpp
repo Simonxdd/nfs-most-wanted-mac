@@ -3,6 +3,8 @@
 #include "../display_settings.h"
 #include "../mods_internal.h"
 #include "../settings_menu.h"
+#include <algorithm>
+#include <cstdio>
 #include <thread>
 #include "../../runtime/memory.h"
 #include <limits>
@@ -357,23 +359,34 @@ MOD_TEST_SUITE(menu_tab_key_and_pointer_lines) {
     MenuSnapshot m;
     MOD_CHECK(mods_menu_snapshot(&m));
     MOD_CHECK_EQ(m.tab, 0);
-    // Tab walks the pages and wraps; a page can be chosen directly (a click on its name).
+    // Remaster run 15: seven pages, in this order.
+    MOD_CHECK_EQ(int(m.tabs.size()), int(MENU_TAB_COUNT));
+    MOD_CHECK(m.tabs[MENU_TAB_GRAPHICS] == "Graphics" && m.tabs[MENU_TAB_DISPLAY] == "Display" &&
+              m.tabs[MENU_TAB_AUDIO] == "Audio" && m.tabs[MENU_TAB_XBOX360] == "Xbox 360" &&
+              m.tabs[MENU_TAB_PC] == "PC" && m.tabs[MENU_TAB_MODS] == "Mods" && m.tabs[MENU_TAB_CONTROLS] == "Controls");
+    // Tab walks the pages and wraps (Page Up back); a page can be chosen directly (a click on its name).
     MOD_CHECK(mods_menu_key(MENU_KEY_TAB));
     MOD_CHECK(mods_menu_snapshot(&m));
     MOD_CHECK_EQ(m.tab, 1);
-    mods_menu_key(MENU_KEY_TAB);
-    mods_menu_key(MENU_KEY_TAB);
+    for (int i = 1; i < MENU_TAB_COUNT; ++i)
+        mods_menu_key(MENU_KEY_TAB);
     MOD_CHECK(mods_menu_snapshot(&m));
     MOD_CHECK_EQ(m.tab, 0);
-    mods_menu_set_tab(2);
+    mods_menu_key(MENU_KEY_TAB_PREV);
     MOD_CHECK(mods_menu_snapshot(&m));
-    MOD_CHECK_EQ(m.tab, 2);
+    MOD_CHECK_EQ(m.tab, int(MENU_TAB_CONTROLS));
+    mods_menu_key(MENU_KEY_TAB_NEXT);
+    MOD_CHECK(mods_menu_snapshot(&m));
+    MOD_CHECK_EQ(m.tab, 0);
+    mods_menu_set_tab(MENU_TAB_CONTROLS);
+    MOD_CHECK(mods_menu_snapshot(&m));
+    MOD_CHECK_EQ(m.tab, int(MENU_TAB_CONTROLS));
     mods_menu_set_tab(0);
     MOD_CHECK(mods_menu_snapshot(&m));
     const size_t aa = menu_line(m, "Anti-aliasing"), apply = menu_line(m, "Apply"), discard = menu_line(m, "Discard");
     MOD_CHECK(aa != size_t(-1) && apply != size_t(-1) && discard != size_t(-1));
     // A line from a page no longer showing, and a header, are refused.
-    MOD_CHECK(!mods_menu_pointer_line(1, aa, MENU_POINT_HOVER));
+    MOD_CHECK(!mods_menu_pointer_line(MENU_TAB_MODS, aa, MENU_POINT_HOVER));
     MOD_CHECK_EQ(int(m.lines[0].kind), int(MenuLine::HEADER));
     MOD_CHECK(!mods_menu_pointer_line(0, 0, MENU_POINT_HOVER));
     // Pointing selects; the arrows step the draft; the row click steps it too.
@@ -407,11 +420,11 @@ MOD_TEST_SUITE(menu_tab_key_and_pointer_lines) {
     MOD_CHECK(mods_menu_snapshot(&m));
     MOD_CHECK(m.lines[aa].selected);
     // A live setting on the Mods page changes at once from its arrow.
-    mods_menu_set_tab(1);
+    mods_menu_set_tab(MENU_TAB_MODS);
     MOD_CHECK(mods_menu_snapshot(&m));
     const size_t lights = menu_line(m, "Lights");
     MOD_CHECK(lights != size_t(-1));
-    MOD_CHECK(mods_menu_pointer_line(1, lights, MENU_POINT_DECREASE));
+    MOD_CHECK(mods_menu_pointer_line(MENU_TAB_MODS, lights, MENU_POINT_DECREASE));
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "lights", &v), POP_OK);
     MOD_CHECK_EQ(v, 0);
     // Off the main thread (input delivered by a guest worker holding the baton), Apply waits for the
@@ -433,10 +446,10 @@ MOD_TEST_SUITE(menu_tab_key_and_pointer_lines) {
     mods_menu_main_thread_drain();
     mods_menu_main_thread_drain();
     MOD_CHECK_EQ(ran, 1);
-    mods_menu_set_tab(1);
+    mods_menu_set_tab(MENU_TAB_MODS);
     // Closed, the menu refuses the pointer.
     mods_menu_close();
-    MOD_CHECK(!mods_menu_pointer_line(1, lights, MENU_POINT_HOVER));
+    MOD_CHECK(!mods_menu_pointer_line(MENU_TAB_MODS, lights, MENU_POINT_HOVER));
     mods_menu_reset_for_test();
     mods_menu_enable_for_test(false);
     teardown();
@@ -446,7 +459,7 @@ MOD_TEST_SUITE(menu_tab_key_and_pointer_lines) {
 MOD_TEST_SUITE(menu_skips_retired_choice) {
     setup();
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "look", "Picture look", POP_SETTING_INT, 0, 0, 3);
-    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "look", "graphics.appearance", "help", "live", "Hybrid||PC|Custom");
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "look", "graphics", "help", "live", "Hybrid||PC|Custom");
     mods_menu_enable_for_test(true);
     mods_menu_reset_for_test();
     mods_menu_open(0);
@@ -470,41 +483,124 @@ MOD_TEST_SUITE(menu_skips_retired_choice) {
     teardown();
 }
 
-// Test85: the Graphics page's Appearance section and its Restore actions: they only draft (Apply commits,
-// Discard forgets), Restore appearance touches only the Appearance section, Restore graphics also covers the
-// image-quality settings that apply now or at Apply, and never a restart-only setting (resolution).
+// Remaster run 13: the Graphics page lists group "graphics" (the Picture list) and folds every other "graphics.*"
+// group into one Advanced section, closed each time the menu opens; group "hidden" is never listed.
+// Run 15: Display, Audio, Xbox 360 and PC pages take their groups; each page can Apply.
+// Test85: Restore graphics defaults only drafts (Apply commits, Discard forgets), covers the Picture list and the
+// Advanced settings that apply now or at Apply, and never a restart-only setting (resolution).
 MOD_TEST_SUITE(menu_restore_defaults) {
     setup();
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "aa", "Anti-aliasing", POP_SETTING_INT, 0, 0, 2);
     mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "aa", "graphics", "help", "renderer", "Game|Off|4x");
-    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "look", "Appearance", POP_SETTING_INT, 0, 0, 2);
-    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "look", "graphics.appearance", "help", "renderer", "Hybrid|Xbox|PC");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "look", "Look", POP_SETTING_INT, 0, 0, 2);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "look", "graphics", "help", "renderer", "Definitive|Xbox|PC");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "glow", "Glow %", POP_SETTING_INT, 40, 0, 100);
-    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "glow", "graphics.appearance", "help", "live", "");
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "glow", "graphics.effects", "help", "live", "");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "width", "Width", POP_SETTING_INT, 0, 0, 9999);
-    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "width", "graphics", "help", "restart", "");
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "width", "display", "help", "restart", "");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "day", "Day length", POP_SETTING_INT, 24, 1, 120);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "day", "graphics.cycle", "help", "restart", "");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "hdrpeak", "HDR peak %", POP_SETTING_INT, 50, 0, 100);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "hdrpeak", "display.hdr", "help", "live", "");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "pools", "Pools %", POP_SETTING_INT, 100, 0, 200);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "pools", "xbox360.pools", "help", "live", "");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "lod", "Car detail", POP_SETTING_INT, -1, -1, 3);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "lod", "pc", "help", "restart", "");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "keys", "Light keys", POP_SETTING_BOOL, 0, 0, 1);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "keys", "pc.unheard", "help", "live", "");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "surround", "Surround", POP_SETTING_BOOL, 0, 0, 1);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "surround", "audio", "help", "next_screen", "");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "shake", "Shake %", POP_SETTING_INT, 100, 0, 200);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "shake", "feedback", "help", "live", "");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "odd", "Odd one", POP_SETTING_BOOL, 0, 0, 1);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "odd", "graphics.unheard", "help", "live", "");
+    mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "secret", "Secret", POP_SETTING_INT, 0, 0, 3);
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "secret", "hidden", "help", "renderer", "");
     mods_settings_set(MODS_OWNER_FIRST_MOD, "aa", 2);
     mods_settings_set(MODS_OWNER_FIRST_MOD, "look", 1);
     mods_settings_set(MODS_OWNER_FIRST_MOD, "glow", 90);
     mods_settings_set(MODS_OWNER_FIRST_MOD, "width", 1920);
+    mods_settings_set(MODS_OWNER_FIRST_MOD, "secret", 2);
+    mods_settings_set(MODS_OWNER_FIRST_MOD, "hdrpeak", 80);
+    mods_settings_set(MODS_OWNER_FIRST_MOD, "pools", 150);
+    mods_settings_set(MODS_OWNER_FIRST_MOD, "keys", 1);
+    mods_settings_set(MODS_OWNER_FIRST_MOD, "surround", 1);
+    mods_settings_set(MODS_OWNER_FIRST_MOD, "shake", 30);
+    mods_settings_set(MODS_OWNER_FIRST_MOD, "odd", 1);
+    mods_settings_set(MODS_OWNER_FIRST_MOD, "odd", 0); // run 16: the player's choice of the default value
+    MOD_CHECK(mods_settings_is_override("a.mod/odd"));
     mods_menu_enable_for_test(true);
     mods_menu_reset_for_test();
     mods_menu_open(0);
     MenuSnapshot m;
     MOD_CHECK(mods_menu_snapshot(&m));
-    const size_t head = menu_line(m, "Appearance"), look_restore = menu_line(m, "Restore appearance defaults"),
-                 all_restore = menu_line(m, "Restore graphics defaults"), discard = menu_line(m, "Discard"),
+    // Closed: the Picture list and the Advanced row; Advanced rows and the hidden setting are not listed.
+    const size_t advanced = menu_line(m, "Advanced settings");
+    MOD_CHECK(menu_line(m, "Picture") != size_t(-1) && menu_line(m, "Look") != size_t(-1));
+    MOD_CHECK(advanced != size_t(-1) && m.lines[advanced].value.rfind("Show (", 0) == 0);
+    MOD_CHECK(menu_line(m, "Glow %") == size_t(-1) && menu_line(m, "Width") == size_t(-1));
+    MOD_CHECK(menu_line(m, "Secret") == size_t(-1));
+    // Run 15: each new page lists its own groups, a family's unknown group under that page's Other.
+    struct PageRows {
+        int tab;
+        const char *head, *row;
+    };
+    for (const PageRows &p : {PageRows{MENU_TAB_DISPLAY, "Screen", "Width"}, PageRows{MENU_TAB_DISPLAY, "HDR", "HDR peak %"},
+                              PageRows{MENU_TAB_AUDIO, "Audio", "Surround"},
+                              PageRows{MENU_TAB_XBOX360, "Light pools", "Pools %"},
+                              PageRows{MENU_TAB_CONTROLS, "Controller rumble", "Shake %"},
+                              PageRows{MENU_TAB_PC, "Extra Options", "Car detail"}, PageRows{MENU_TAB_PC, "Other", "Light keys"}}) {
+        mods_menu_set_tab(p.tab);
+        MOD_CHECK(mods_menu_snapshot(&m));
+        const size_t head = menu_line(m, p.head), row = menu_line(m, p.row);
+        MOD_CHECK(head != size_t(-1) && row != size_t(-1) && head < row);
+        MOD_CHECK(menu_line(m, "Apply") != size_t(-1) && menu_line(m, "Discard") != size_t(-1));
+        MOD_CHECK(menu_line(m, "Look") == size_t(-1) && menu_line(m, "Lights") == size_t(-1));
+    }
+    mods_menu_set_tab(MENU_TAB_MODS);
+    MOD_CHECK(mods_menu_snapshot(&m));
+    MOD_CHECK(menu_line(m, "Surround") == size_t(-1) && menu_line(m, "Shake %") == size_t(-1));
+    mods_menu_set_tab(0);
+    MOD_CHECK(mods_menu_snapshot(&m));
+    // Opened: its parts in order, an unknown graphics group under Other; still no hidden setting.
+    MOD_CHECK(mods_menu_pointer_line(0, advanced, MENU_POINT_PRESS));
+    MOD_CHECK(mods_menu_snapshot(&m));
+    MOD_CHECK(m.lines[advanced].value == "Hide");
+    const size_t effects = menu_line(m, "Effects"), setup_head = menu_line(m, "Day and weather cycle"),
+                 other = menu_line(m, "Other");
+    MOD_CHECK(effects != size_t(-1) && setup_head != size_t(-1) && other != size_t(-1));
+    MOD_CHECK(effects < menu_line(m, "Glow %") && setup_head < menu_line(m, "Day length") &&
+              other < menu_line(m, "Odd one"));
+    MOD_CHECK(effects < setup_head && setup_head < other);
+    MOD_CHECK(menu_line(m, "Width") == size_t(-1) && menu_line(m, "Pools %") == size_t(-1));
+    MOD_CHECK(menu_line(m, "Mirror") == size_t(-1)); // an empty part shows no header
+    MOD_CHECK(menu_line(m, "Secret") == size_t(-1));
+    mods_menu_set_tab(1);
+    MOD_CHECK(mods_menu_snapshot(&m));
+    MOD_CHECK(menu_line(m, "Secret") == size_t(-1));
+    mods_menu_set_tab(0);
+    // Left closes it, Right opens it; a fresh opening of the menu starts closed.
+    MOD_CHECK(mods_menu_pointer_line(0, advanced, MENU_POINT_DECREASE));
+    MOD_CHECK(mods_menu_snapshot(&m));
+    MOD_CHECK(menu_line(m, "Glow %") == size_t(-1));
+    MOD_CHECK(mods_menu_pointer_line(0, advanced, MENU_POINT_INCREASE));
+    mods_menu_close();
+    mods_menu_open(0);
+    MOD_CHECK(mods_menu_snapshot(&m));
+    MOD_CHECK(menu_line(m, "Glow %") == size_t(-1));
+    const size_t all_restore = menu_line(m, "Restore graphics defaults"), discard = menu_line(m, "Discard"),
                  apply = menu_line(m, "Apply");
-    MOD_CHECK(head != size_t(-1) && look_restore != size_t(-1) && all_restore != size_t(-1));
-    MOD_CHECK(mods_menu_pointer_line(0, look_restore, MENU_POINT_PRESS));
-    MOD_CHECK_EQ(mods_menu_pending_count(), 2); // look and glow
+    MOD_CHECK(all_restore != size_t(-1) && menu_line(m, "Restore appearance defaults") == size_t(-1));
+    MOD_CHECK(mods_menu_pointer_line(0, all_restore, MENU_POINT_PRESS));
+    MOD_CHECK(mods_menu_pending_count() >= 6); // aa, look, glow, hdrpeak, pools, keys (+ World filtering)
     int64_t v = -1;
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "glow", &v), POP_OK);
     MOD_CHECK_EQ(v, 90); // drafted, not yet applied
     MOD_CHECK(mods_menu_pointer_line(0, discard, MENU_POINT_PRESS));
     MOD_CHECK_EQ(mods_menu_pending_count(), 0);
+    MOD_CHECK(mods_settings_is_override("a.mod/glow")); // Discard kept the choice
+    MOD_CHECK(!mods_settings_is_override("a.mod/odd")); // already at the default: the override went at once, unseen
     MOD_CHECK(mods_menu_pointer_line(0, all_restore, MENU_POINT_PRESS));
-    MOD_CHECK(mods_menu_pending_count() >= 3); // aa, look, glow (+ World filtering where the host has it)
     MOD_CHECK(mods_menu_pointer_line(0, apply, MENU_POINT_PRESS));
     MOD_CHECK_EQ(mods_menu_pending_count(), 0);
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "aa", &v), POP_OK);
@@ -515,16 +611,37 @@ MOD_TEST_SUITE(menu_restore_defaults) {
     MOD_CHECK_EQ(v, 40);
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "width", &v), POP_OK);
     MOD_CHECK_EQ(v, 1920); // a restart-only setting is the player's setup, not restored
+    MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "secret", &v), POP_OK);
+    MOD_CHECK_EQ(v, 2); // a hidden setting is never touched by the page
+    // Picture settings on the Display, Xbox 360 and PC pages are graphics defaults too; rumble and audio are not.
+    MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "hdrpeak", &v), POP_OK);
+    MOD_CHECK_EQ(v, 50);
+    MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "pools", &v), POP_OK);
+    MOD_CHECK_EQ(v, 100);
+    MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "keys", &v), POP_OK);
+    MOD_CHECK_EQ(v, 0);
+    MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "shake", &v), POP_OK);
+    MOD_CHECK_EQ(v, 30);
+    MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "surround", &v), POP_OK);
+    MOD_CHECK_EQ(v, 1);
+    // Run 16: Apply of a Restore removes the overrides (the keys follow later default changes); out of scope stay.
+    for (const char *k : {"a.mod/aa", "a.mod/look", "a.mod/glow", "a.mod/hdrpeak", "a.mod/pools", "a.mod/keys"})
+        MOD_CHECK(!mods_settings_is_override(k));
+    for (const char *k : {"a.mod/width", "a.mod/secret", "a.mod/shake", "a.mod/surround"})
+        MOD_CHECK(mods_settings_is_override(k));
     // A live setting edited after a Restore draft takes the edit, and its draft goes.
     mods_settings_set(MODS_OWNER_FIRST_MOD, "glow", 70);
-    MOD_CHECK(mods_menu_pointer_line(0, look_restore, MENU_POINT_PRESS));
+    MOD_CHECK(mods_menu_pointer_line(0, all_restore, MENU_POINT_PRESS));
+    MOD_CHECK(mods_menu_pointer_line(0, menu_line(m, "Advanced settings"), MENU_POINT_PRESS));
     MOD_CHECK(mods_menu_snapshot(&m));
     const size_t glow = menu_line(m, "Glow %");
     MOD_CHECK(glow != size_t(-1) && m.lines[glow].pending && m.lines[glow].value == "40");
     MOD_CHECK(mods_menu_pointer_line(0, glow, MENU_POINT_DECREASE));
-    MOD_CHECK_EQ(mods_menu_pending_count(), 0);
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "glow", &v), POP_OK);
     MOD_CHECK_EQ(v, 69);
+    MOD_CHECK(mods_settings_is_override("a.mod/glow")); // the edit is a choice again
+    MOD_CHECK(mods_menu_pointer_line(0, menu_line(m, "Discard"), MENU_POINT_PRESS));
+    MOD_CHECK_EQ(mods_menu_pending_count(), 0);
     // A Mods page section restores only its own settings, through the same draft.
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "lights", "Lights", POP_SETTING_BOOL, 1, 0, 1);
     mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "lights", "visual", "help", "live", "");
@@ -532,11 +649,11 @@ MOD_TEST_SUITE(menu_restore_defaults) {
     mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "rumble", "feedback", "help", "live", "");
     mods_settings_set(MODS_OWNER_FIRST_MOD, "lights", 0);
     mods_settings_set(MODS_OWNER_FIRST_MOD, "rumble", 50);
-    mods_menu_set_tab(1);
+    mods_menu_set_tab(MENU_TAB_MODS);
     MOD_CHECK(mods_menu_snapshot(&m));
     const size_t visual_restore = menu_line(m, "Restore this section's defaults"); // the first section: visual
     MOD_CHECK(visual_restore != size_t(-1));
-    MOD_CHECK(mods_menu_pointer_line(1, visual_restore, MENU_POINT_PRESS));
+    MOD_CHECK(mods_menu_pointer_line(MENU_TAB_MODS, visual_restore, MENU_POINT_PRESS));
     MOD_CHECK_EQ(mods_menu_pending_count(), 1);
     MOD_CHECK(mods_menu_snapshot(&m));
     MOD_CHECK(m.status.find("not applied") != std::string::npos || m.status.find("marked") != std::string::npos);
@@ -547,7 +664,74 @@ MOD_TEST_SUITE(menu_restore_defaults) {
     MOD_CHECK_EQ(v, 1);
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "rumble", &v), POP_OK);
     MOD_CHECK_EQ(v, 50);
+    // The rumble section (Controls page, owner 9 Oct) restores only rumble, and Apply on that page commits it.
+    mods_menu_set_tab(MENU_TAB_CONTROLS);
+    MOD_CHECK(mods_menu_snapshot(&m));
+    const size_t rumble_restore = menu_line(m, "Restore this section's defaults");
+    MOD_CHECK(rumble_restore != size_t(-1) && rumble_restore > menu_line(m, "Shake %"));
+    MOD_CHECK(mods_menu_pointer_line(MENU_TAB_CONTROLS, rumble_restore, MENU_POINT_PRESS));
+    MOD_CHECK_EQ(mods_menu_pending_count(), 2); // shake and rumble (both group feedback)
+    MOD_CHECK(mods_menu_snapshot(&m));
+    MOD_CHECK(mods_menu_pointer_line(MENU_TAB_CONTROLS, menu_line(m, "Apply"), MENU_POINT_PRESS));
+    MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "shake", &v), POP_OK);
+    MOD_CHECK_EQ(v, 100);
+    MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "rumble", &v), POP_OK);
+    MOD_CHECK_EQ(v, 100);
+    MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "surround", &v), POP_OK);
+    MOD_CHECK_EQ(v, 1);
+    MOD_CHECK(!mods_settings_is_override("a.mod/shake") && !mods_settings_is_override("a.mod/rumble"));
+    MOD_CHECK(mods_settings_is_override("a.mod/surround") && !mods_settings_is_override("a.mod/lights"));
     mods_menu_close();
+    mods_menu_reset_for_test();
+    mods_menu_enable_for_test(false);
+    teardown();
+}
+
+// Remaster run 15: seven page names fit the tab bar at every window shape, left of Close and in order, and a click
+// on each name opens that page (the names shrink to fit; the 1080p reference scales with the window). The page is
+// drawn once, so every name is found where Graphics' bar put it: the bar never had to slide.
+MOD_TEST_SUITE(menu_tab_bar_fits_and_clicks) {
+    setup();
+    mods_menu_enable_for_test(true);
+    mods_menu_reset_for_test();
+    struct Size {
+        int w, h;
+    };
+    for (const Size sz : {Size{1920, 1080}, Size{3840, 2160}, Size{1280, 720}, Size{1024, 768}, Size{2560, 1080},
+                          Size{800, 600}, Size{640, 480}}) {
+        mods_menu_open(MENU_TAB_GRAPHICS);
+        uint64_t gen = 0;
+        const uint8_t *pixels = nullptr;
+        MOD_CHECK(mods_menu_render(sz.w, sz.h, &gen, &pixels) == 2); // drawn
+        const double s = std::min(sz.w / 1920.0, sz.h / 1080.0);
+        const double ph = std::min(sz.h - 40 * s, 940 * s), py = (sz.h - ph) / 2;
+        const float pv = float((py + 54 * s) / sz.h);
+        std::vector<int> first_x(MENU_TAB_COUNT, -1);
+        int close_x = -1;
+        for (int x = 0; x < sz.w; x += 3) {
+            MenuSnapshot m;
+            MOD_CHECK(mods_menu_snapshot(&m));
+            const int before = m.tab;
+            mods_menu_pointer(float(x + 0.5) / sz.w, pv, 0, 1, 0);
+            if (!mods_menu_is_open()) { // Close
+                if (close_x < 0)
+                    close_x = x;
+                mods_menu_open(before);
+                gen = 0;
+                mods_menu_render(sz.w, sz.h, &gen, &pixels);
+                continue;
+            }
+            MOD_CHECK(mods_menu_snapshot(&m));
+            if (first_x[size_t(m.tab)] < 0 && (m.tab != before || m.tab == MENU_TAB_GRAPHICS))
+                first_x[size_t(m.tab)] = x;
+        }
+        for (int t = 1; t < MENU_TAB_COUNT; ++t)
+            MOD_CHECK(first_x[size_t(t)] > first_x[size_t(t - 1)]); // every page reached, in order
+        MOD_CHECK(close_x > first_x[MENU_TAB_CONTROLS]);
+        if (first_x[MENU_TAB_CONTROLS] < 0 || close_x < 0)
+            printf("tab bar %dx%d: Controls at %d, Close at %d\n", sz.w, sz.h, first_x[MENU_TAB_CONTROLS], close_x);
+        mods_menu_close();
+    }
     mods_menu_reset_for_test();
     mods_menu_enable_for_test(false);
     teardown();

@@ -62,7 +62,6 @@ static void native_options_load(const PopModApi *api) {
             {"Gameplay", "SelectableMarkerCount", "marker_count", 1},
             {"Gameplay", "StartingCash", "starting_cash", 1},
             {"Gameplay", "ForceBlackEdition", "black_edition", 1},
-            {"Gameplay", "SkipTrackAnywhere", "skip_track_anywhere", 1},
             {"Pursuit", "HeatLevelOverride", "heat_level_override", 1},
             {"Pursuit", "MinimumHeatLevel", "heat_level_min", 1},
             {"Pursuit", "MaximumHeatLevel", "heat_level_max", 1}
@@ -160,7 +159,7 @@ static void extra_options_owner(const PopModApi *api) {
     exo_replay_slots(api, g_exo_replay_blacklist);
     int black = setting("black_edition", 1) != 0;
     api->guest_write_u32(api, EXO_BLACK_EDITION, black ? 1u : 0u);
-    int64_t cash = setting("starting_cash", 0); /* dollars, as the PC INI; off by default (a new career = the game's $30,000 + the $10,000 UG2 bonus) */
+    int64_t cash = setting("starting_cash", 0); /* dollars, as the PC INI; owner 1 Oct: off by default (a new career = the game's $30,000 + the $10,000 UG2 bonus) */
     if (cash < 0) cash = 0;
     if (cash > 100000000) cash = 100000000;
     g_exo_starting_cash = (uint32_t)cash;
@@ -266,7 +265,7 @@ static void extra_options_apply(const PopModApi *api) {
     extra_options_owner(api);
 }
 
-/* Test88: Heat Level Override (ExOpts [Pursuit]). Off: the slot keeps 5.0 and the event's
+/* Test88: Heat Level Override (ExOpts [Pursuit]; owner request 2 Oct). Off: the slot keeps 5.0 and the event's
  * own heat range is used - the original game. On: every event's heat range becomes heat_level_min..max and the
  * car's top heat (meters, SetHeatLevel clamp, safehouse icon) becomes heat_level_max. 00443dc3 reads the event's
  * maximum (+0xe0) and minimum (+0xdc) and passes them to 00402060 (value, min, max); the hook replaces both

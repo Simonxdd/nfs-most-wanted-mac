@@ -46,7 +46,7 @@ int main() {
         p.samples = 1;
         CHECK(p.text() != base);
         p = sample();
-        p.color[0].mask = 7;   // a bloom mask pass vs the colour-only write
+        p.color[0].mask = 7;   // the Xbox bloom mask pass vs the colour-only write
         CHECK(p.text() != base);
         p = sample();
         p.color[0].blend = 0;

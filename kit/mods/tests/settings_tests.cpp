@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <vector>
 #include "../../platform/os.h"
 
 extern "C" bool mods_test_reset_loader(void);
@@ -54,6 +55,207 @@ MOD_TEST_SUITE(settings_declare_and_round_trip) {
     mods_settings_declare(2, "a.mod", "ui_scale", "UI scale", POP_SETTING_INT, 2, 1, 4);
     MOD_CHECK_EQ(mods_settings_get(2, "ui_scale", &v), POP_OK);
     MOD_CHECK_EQ(v, 4); // the persisted value beats the default
+
+    // Remaster run 16 (replaces run 15's sparse rule): a value the player sets back to its default is still the
+    // player's choice, so a later default change does not move it; Restore (inherit) is what follows the default.
+    MOD_CHECK_EQ(mods_settings_set(2, "ui_scale", 2), POP_OK);
+    MOD_CHECK(mods_settings_is_override("a.mod/ui_scale"));
+    mods_settings_reset();
+    MOD_CHECK(mods_settings_load(mods_settings_path()));
+    mods_settings_declare(2, "a.mod", "ui_scale", "UI scale", POP_SETTING_INT, 3, 1, 4); // the new default
+    MOD_CHECK_EQ(mods_settings_get(2, "ui_scale", &v), POP_OK);
+    MOD_CHECK_EQ(v, 2);
+    MOD_CHECK_EQ(mods_settings_inherit(2, "ui_scale"), POP_OK);
+    MOD_CHECK_EQ(mods_settings_get(2, "ui_scale", &v), POP_OK);
+    MOD_CHECK_EQ(v, 3);
+    MOD_CHECK(!mods_settings_is_override("a.mod/ui_scale"));
+}
+
+namespace {
+std::string read_profile() {
+    std::string text;
+    if (FILE *f = fopen(mods_settings_path(), "rb")) {
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof buf, f)) > 0)
+            text.append(buf, n);
+        fclose(f);
+    }
+    return text;
+}
+void write_profile(const char *text) {
+    FILE *f = fopen(mods_settings_path(), "wb");
+    MOD_CHECK(f != nullptr);
+    if (f) {
+        MOD_CHECK(fputs(text, f) >= 0);
+        MOD_CHECK_EQ(fclose(f), 0);
+    }
+}
+// A fresh session over the same profile: nothing declared, the file read again.
+void relaunch() {
+    mods_settings_reset();
+    mods_overlay_set_profile_dir(PROFILE);
+    MOD_CHECK(mods_settings_load(mods_settings_path()));
+}
+// core.nfsmw's settings_migrate step 1 through the mod API's write (derived), as nfsmw.c does it.
+void sky_migration() {
+    int64_t version = 0, sky = 2;
+    mods_settings_get(2, "settings_version", &version);
+    if (version >= 1)
+        return;
+    mods_settings_get(2, "x360_sky", &sky);
+    if (sky == 1)
+        mods_settings_set_derived(2, "x360_sky", 2);
+    mods_settings_set_derived(2, "settings_version", 1);
+}
+} // namespace
+
+// Remaster run 16 (review of runs 11-15, "sparse saving should preserve intent"): declared default, effective value,
+// explicit override.
+MOD_TEST_SUITE(settings_explicit_choice_survives_default_change) {
+    fresh();
+    remove(mods_settings_path());
+    relaunch();
+    mods_settings_declare(2, "a.mod", "bloom", "Bloom", POP_SETTING_BOOL, 0, 0, 1);
+    mods_settings_declare(2, "a.mod", "fog", "Fog", POP_SETTING_BOOL, 0, 0, 1);
+    // The player picks Off while Off is the default: kept as a choice. Fog is never touched: inherited.
+    MOD_CHECK_EQ(mods_settings_set(2, "bloom", 1), POP_OK);
+    MOD_CHECK_EQ(mods_settings_set(2, "bloom", 0), POP_OK);
+    MOD_CHECK(mods_settings_is_override("a.mod/bloom"));
+    MOD_CHECK(!mods_settings_is_override("a.mod/fog"));
+    MOD_CHECK(read_profile().find("\"a.mod/bloom\": 0") != std::string::npos);
+    MOD_CHECK(read_profile().find("a.mod/fog") == std::string::npos);
+    MOD_CHECK(read_profile().find("\"kit.settings/format\": 2") != std::string::npos);
+    // A later build turns both on by default: the choice stays Off, the inherited one follows.
+    relaunch();
+    mods_settings_declare(2, "a.mod", "bloom", "Bloom", POP_SETTING_BOOL, 1, 0, 1);
+    mods_settings_declare(2, "a.mod", "fog", "Fog", POP_SETTING_BOOL, 1, 0, 1);
+    int64_t v = -1;
+    MOD_CHECK_EQ(mods_settings_get(2, "bloom", &v), POP_OK);
+    MOD_CHECK_EQ(v, 0);
+    MOD_CHECK_EQ(mods_settings_get(2, "fog", &v), POP_OK);
+    MOD_CHECK_EQ(v, 1);
+    mods_settings_reset();
+}
+
+// Mod code (presets, labels, migrations) neither manufactures nor erases a choice by writing what is already there;
+// writing the declared default returns a key to the default, any other value is held.
+MOD_TEST_SUITE(settings_derived_writes_keep_ownership) {
+    fresh();
+    remove(mods_settings_path());
+    relaunch();
+    mods_settings_declare(2, "a.mod", "exposure", "Exposure", POP_SETTING_INT, 50, 0, 100);
+    mods_settings_declare(2, "a.mod", "quality", "Quality", POP_SETTING_INT, 2, 0, 4);
+    MOD_CHECK_EQ(mods_settings_set_derived(2, "exposure", 50), POP_OK); // a recipe writes the default: no choice
+    MOD_CHECK(!mods_settings_is_override("a.mod/exposure"));
+    MOD_CHECK_EQ(mods_settings_set(2, "exposure", 50), POP_OK);         // re-sending the value: nothing changes
+    MOD_CHECK(!mods_settings_is_override("a.mod/exposure"));
+    MOD_CHECK_EQ(mods_settings_set(2, "exposure", 60), POP_OK);
+    MOD_CHECK_EQ(mods_settings_set(2, "exposure", 50), POP_OK);         // the player picks it back: a choice
+    MOD_CHECK_EQ(mods_settings_set_derived(2, "exposure", 50), POP_OK); // the recipe again: the choice stays
+    MOD_CHECK(mods_settings_is_override("a.mod/exposure"));
+    MOD_CHECK_EQ(mods_settings_set_derived(2, "quality", 4), POP_OK);   // a label that is not the default is held
+    MOD_CHECK(mods_settings_is_override("a.mod/quality"));
+    MOD_CHECK_EQ(mods_settings_set_derived(2, "quality", 2), POP_OK);   // back at the default: follows it
+    MOD_CHECK(!mods_settings_is_override("a.mod/quality"));
+    MOD_CHECK_EQ(mods_settings_set_derived(2, "quality", 9), POP_E_RANGE);
+    mods_settings_reset();
+}
+
+// Restore removes overrides, only for the keys asked; other mods' keys in the file are kept untouched.
+MOD_TEST_SUITE(settings_inherit_scope_and_unknown_keys) {
+    fresh();
+    write_profile("{\n \"a.mod/glow\": 90,\n \"a.mod/volume\": 30,\n \"kit.settings/format\": 2,\n"
+                  " \"other.mod/x\": 5\n}\n");
+    relaunch();
+    mods_settings_declare(2, "a.mod", "glow", "Glow", POP_SETTING_INT, 40, 0, 100);
+    mods_settings_declare(2, "a.mod", "volume", "Volume", POP_SETTING_INT, 100, 0, 100);
+    MOD_CHECK_EQ(mods_settings_inherit(2, "glow"), POP_OK);
+    int64_t v = -1;
+    MOD_CHECK_EQ(mods_settings_get(2, "glow", &v), POP_OK);
+    MOD_CHECK_EQ(v, 40);
+    MOD_CHECK(!mods_settings_is_override("a.mod/glow"));
+    MOD_CHECK(mods_settings_is_override("a.mod/volume"));
+    MOD_CHECK_EQ(mods_settings_inherit(2, "nope"), POP_E_NOTFOUND);
+    const std::string text = read_profile();
+    MOD_CHECK(text.find("\"other.mod/x\": 5") != std::string::npos);
+    MOD_CHECK(text.find("\"a.mod/volume\": 30") != std::string::npos);
+    MOD_CHECK(text.find("a.mod/glow") == std::string::npos);
+    mods_settings_reset();
+}
+
+// A legacy snapshot (no format marker): once, values equal to today's default follow the default, others stay as
+// chosen; the sky migration through the derived write leaves the sky inherited; running it all again changes nothing.
+MOD_TEST_SUITE(settings_legacy_snapshot_and_migration_idempotence) {
+    fresh();
+    write_profile("{\n \"a.mod/aa\": 0,\n \"a.mod/sky\": 1,\n \"a.mod/x360_sky\": 1,\n \"a.mod/volume\": 70,\n"
+                  " \"other.mod/x\": 5\n}\n");
+    relaunch();
+    auto declare_all = [](int64_t aa_default) {
+        mods_settings_declare(2, "a.mod", "aa", "AA", POP_SETTING_INT, aa_default, 0, 2);
+        mods_settings_declare(2, "a.mod", "sky", "Sky", POP_SETTING_INT, 2, 0, 2);
+        mods_settings_declare(2, "a.mod", "x360_sky", "360 sky", POP_SETTING_INT, 2, 0, 2);
+        mods_settings_declare(2, "a.mod", "volume", "Volume", POP_SETTING_INT, 100, 0, 100);
+        mods_settings_declare(2, "a.mod", "settings_version", "v", POP_SETTING_INT, 0, 0, 100);
+    };
+    declare_all(0);
+    MOD_CHECK(!mods_settings_is_override("a.mod/aa"));    // equal to today's default: inherited
+    MOD_CHECK(mods_settings_is_override("a.mod/sky"));    // differs: explicit
+    MOD_CHECK(mods_settings_is_override("a.mod/volume"));
+    sky_migration();
+    int64_t v = -1;
+    MOD_CHECK_EQ(mods_settings_get(2, "x360_sky", &v), POP_OK);
+    MOD_CHECK_EQ(v, 2);
+    MOD_CHECK(!mods_settings_is_override("a.mod/x360_sky")); // the migration made no choice of the default
+    MOD_CHECK(mods_settings_save());
+    const std::string first = read_profile();
+    MOD_CHECK(first.find("\"kit.settings/format\": 2") != std::string::npos);
+    MOD_CHECK(first.find("\"other.mod/x\": 5") != std::string::npos);
+    MOD_CHECK(first.find("a.mod/aa") == std::string::npos);
+    // Again: the marker ends the legacy reading, the migration's version stops it; the file is unchanged.
+    relaunch();
+    declare_all(0);
+    sky_migration();
+    MOD_CHECK(mods_settings_save());
+    MOD_CHECK(read_profile() == first);
+    // After the conversion a choice equal to the default is a choice (no second legacy reading), and the inherited
+    // AA follows a new default.
+    MOD_CHECK_EQ(mods_settings_set(2, "volume", 100), POP_OK);
+    relaunch();
+    declare_all(1);
+    MOD_CHECK_EQ(mods_settings_get(2, "aa", &v), POP_OK);
+    MOD_CHECK_EQ(v, 1);
+    MOD_CHECK_EQ(mods_settings_get(2, "sky", &v), POP_OK);
+    MOD_CHECK_EQ(v, 1);
+    MOD_CHECK(mods_settings_is_override("a.mod/volume"));
+    MOD_CHECK_EQ(mods_settings_get(2, "volume", &v), POP_OK);
+    MOD_CHECK_EQ(v, 100);
+    mods_settings_reset();
+}
+
+// Last-known-good: a recovered Apply puts an inherited key back to inherited, not to a choice of its old value.
+MOD_TEST_SUITE(settings_pending_recovery_keeps_ownership) {
+    fresh();
+    remove(mods_settings_path());
+    relaunch();
+    mods_settings_declare(2, "a.mod", "aa", "AA", POP_SETTING_INT, 0, 0, 2);
+    mods_settings_declare(2, "a.mod", "look", "Look", POP_SETTING_INT, 0, 0, 2);
+    MOD_CHECK_EQ(mods_settings_set(2, "look", 1), POP_OK);
+    mods_cpp_settings_mark_pending({{"a.mod/aa", 0}, {"a.mod/look", 1}});
+    MOD_CHECK_EQ(mods_settings_set(2, "aa", 2), POP_OK);   // the Apply that never proved itself
+    MOD_CHECK_EQ(mods_settings_set(2, "look", 2), POP_OK);
+    relaunch();
+    MOD_CHECK_EQ(mods_settings_recover_pending(), 2);
+    mods_settings_declare(2, "a.mod", "aa", "AA", POP_SETTING_INT, 0, 0, 2);
+    mods_settings_declare(2, "a.mod", "look", "Look", POP_SETTING_INT, 0, 0, 2);
+    int64_t v = -1;
+    MOD_CHECK_EQ(mods_settings_get(2, "aa", &v), POP_OK);
+    MOD_CHECK_EQ(v, 0);
+    MOD_CHECK(!mods_settings_is_override("a.mod/aa"));
+    MOD_CHECK_EQ(mods_settings_get(2, "look", &v), POP_OK);
+    MOD_CHECK_EQ(v, 1);
+    MOD_CHECK(mods_settings_is_override("a.mod/look"));
+    mods_settings_reset();
 }
 
 MOD_TEST_SUITE(settings_host_display_survives_page_reinit_and_profile_reload) {

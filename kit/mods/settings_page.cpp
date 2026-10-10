@@ -304,7 +304,7 @@ void mods_page_init() {
 PopModStatus mods_page_open(const char *mod_id) {
     if (mods_menu_enabled()) {
         // A mod asking for its own page lands on the Mods page; F10 on Graphics.
-        const int tab = mod_id && *mod_id ? 1 : 0;
+        const int tab = mod_id && *mod_id ? MENU_TAB_MODS : MENU_TAB_GRAPHICS;
         g_open = false;
         mods_menu_open(tab);
         printf("mods: settings menu opened on page %d\n", tab);

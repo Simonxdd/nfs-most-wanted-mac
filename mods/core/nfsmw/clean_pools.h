@@ -89,9 +89,14 @@ static float cpl_box_d2(const float *p, const float *lo, const float *hi) {
 }
 
 /* Lights whose sphere intersects the world box, nearest to `eye` first (eye NULL: nearest to the box centre),
- * at most CPL_MAX. Returns the count; idx receives the light numbers. */
-static uint32_t cpl_select(const Cpl *s, const float *lo, const float *hi, const float *eye, uint32_t *idx) {
-    if (!s->n || !(hi[0] >= lo[0] && hi[1] >= lo[1] && hi[2] >= lo[2])) return 0;
+ * at most CPL_MAX. Returns the count; idx receives the light numbers. act (NULL: every lamp fully on, the original
+ * selection): activation by lamp kind (lamp_daylight.h); lamps at 0 are skipped and the rest rank by d2 / a^2. */
+/* cpl_select_cap: the same with at most `cap` (<= CPL_MAX) lights kept (vehicle_lights.h takes the other slots);
+ * cap = CPL_MAX is cpl_select exactly (the same candidates, keys and order). */
+static uint32_t cpl_select_cap(const Cpl *s, const float *lo, const float *hi, const float *eye, uint32_t *idx,
+                               const float *act, uint32_t cap) {
+    if (cap > CPL_MAX) cap = CPL_MAX;
+    if (!cap || !s->n || !(hi[0] >= lo[0] && hi[1] >= lo[1] && hi[2] >= lo[2])) return 0;
     float centre[3] = {(lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f, (lo[2] + hi[2]) * 0.5f};
     const float *ref = eye ? eye : centre;
     float keyv[CPL_MAX];
@@ -106,32 +111,48 @@ static uint32_t cpl_select(const Cpl *s, const float *lo, const float *hi, const
                 const uint32_t i = s->cell_items[k];
                 const CplLight *L = &s->l[i];
                 if (cpl_box_d2(L->p, lo, hi) >= L->radius * L->radius) continue;
+                const float a = act ? act[L->kind ? 1 : 0] : 1.0f;
+                if (act && !(a > 0.0f)) continue;
                 int dup = 0;
                 for (uint32_t j = 0; j < m; ++j) if (idx[j] == i) { dup = 1; break; }
                 if (dup) continue;
                 const float dx = L->p[0] - ref[0], dy = L->p[1] - ref[1], dz = L->p[2] - ref[2];
-                const float key = dx * dx + dy * dy + dz * dz;
-                /* insertion into the sorted top-CPL_MAX list */
+                float key = dx * dx + dy * dy + dz * dz;
+                if (act && a < 1.0f) { const float aa = a > 1e-3f ? a : 1e-3f; key /= aa * aa; }
+                /* insertion into the sorted top-cap list */
                 uint32_t at = m;
                 while (at > 0 && keyv[at - 1] > key) --at;
-                if (at >= CPL_MAX) continue;
-                const uint32_t last = m < CPL_MAX ? m : CPL_MAX - 1;
+                if (at >= cap) continue;
+                const uint32_t last = m < cap ? m : cap - 1;
                 for (uint32_t j = last; j > at; --j) { idx[j] = idx[j - 1]; keyv[j] = keyv[j - 1]; }
                 idx[at] = i; keyv[at] = key;
-                if (m < CPL_MAX) ++m;
+                if (m < cap) ++m;
             }
         }
     return m;
 }
+static __attribute__((unused)) uint32_t cpl_select(const Cpl *s, const float *lo, const float *hi, const float *eye,
+                                                   uint32_t *idx, const float *act) {
+    return cpl_select_cap(s, lo, hi, eye, idx, act, CPL_MAX);
+}
 
 /* The CleanPools block for one draw (world space; the caller moves positions into the draw's space):
  * [2i] = position, radius; [2i+1] = colour x intensity x activation, d0. Unused slots are zero. */
-static void cpl_block(const Cpl *s, const uint32_t *idx, uint32_t m, float out[2 * CPL_MAX][4]) {
+static void cpl_block(const Cpl *s, const uint32_t *idx, uint32_t m, float out[2 * CPL_MAX][4], const float *act) {
     memset(out, 0, sizeof(float) * 8 * CPL_MAX);
     for (uint32_t j = 0; j < m; ++j) {
         const CplLight *L = &s->l[idx[j]];
         out[2 * j][0] = L->p[0]; out[2 * j][1] = L->p[1]; out[2 * j][2] = L->p[2]; out[2 * j][3] = L->radius;
         out[2 * j + 1][0] = L->col[0]; out[2 * j + 1][1] = L->col[1]; out[2 * j + 1][2] = L->col[2]; out[2 * j + 1][3] = L->d0;
+        if (act) { const float a = act[L->kind ? 1 : 0]; out[2 * j + 1][0] *= a; out[2 * j + 1][1] *= a; out[2 * j + 1][2] *= a; }
     }
+}
+/* One more light in slot `at` of a block from cpl_block (vehicle_lights.h: a car light after the m lamps), world
+ * space like the lamps; colour x a. */
+static void cpl_block_append(float out[2 * CPL_MAX][4], uint32_t at, const float p[3], float radius, const float col[3],
+                             float d0, float a) {
+    if (at >= CPL_MAX) return;
+    out[2 * at][0] = p[0]; out[2 * at][1] = p[1]; out[2 * at][2] = p[2]; out[2 * at][3] = radius;
+    out[2 * at + 1][0] = col[0] * a; out[2 * at + 1][1] = col[1] * a; out[2 * at + 1][2] = col[2] * a; out[2 * at + 1][3] = d0;
 }
 #endif

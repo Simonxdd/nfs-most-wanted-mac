@@ -1,5 +1,5 @@
 /* TEST ONLY (Test115, NFSMW_TEST_STREAM_TIMING=<csv path>): wrap hooks that time the PC v1.3 streaming functions the
- * public reverse engineering names (MWSDK retail-v1.3 database; external review research 2 Oct 2026), so a main-thread stall
+ * public reverse engineering names (MWSDK retail-v1.3 database; research 2 Oct 2026), so a main-thread stall
  * can be split into "slept" (RECOMP_SLEEP_TRACE, kit) and "worked inside the streamer". Every call is counted (count,
  * total, maximum per function, logged at exit); a call of 2 ms or more is written to the CSV with its start on the
  * same clock as frames.csv render_monotonic_ns and RECOMP_SLEEP_TRACE (CLOCK_UPTIME_RAW), its caller (the return
@@ -44,7 +44,8 @@ static void stream_wrap(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation
     if (d >= 2000000ull && g_stream_csv)
         fprintf(g_stream_csv, "%llu,%s,%08x,%.3f\n", (unsigned long long)t0, f->name, caller, (double)d / 1e6);
 }
-/* Slots 73, 74, 82..86 (free in g_hooks). */
+/* Slots 73, 74, 82..86 (free in g_hooks; Test122 check_hook_slots). 52..58 were wrongly used before: 51..61 are the
+ * Xbox 360 rumble table's. */
 static const int k_stream_slots[7] = {73, 74, 82, 83, 84, 85, 86};
 static void stream_timing_init(const PopModApi *api) {
     const char *path = getenv("NFSMW_TEST_STREAM_TIMING");

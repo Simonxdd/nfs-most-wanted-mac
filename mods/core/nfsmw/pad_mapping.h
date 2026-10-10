@@ -279,11 +279,12 @@ static void pad_names_hook(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocat
         memcpy(dst, name, strlen(name) + 1);
 }
 
+/* Remaster: hook slots 106-108 (the DE tree used 114-116, which eo_extra.h holds for its NIS stages 113-118). */
 static void pad_mapping_install(void) {
-    if (install(0x0063cd80u, pad_defaults_hook, POP_HOOK_REPLACE, 114) != POP_OK ||
-        install(0x006284d0u, pad_table_defaults_hook, POP_HOOK_REPLACE, 115) != POP_OK)
+    if (install(0x0063cd80u, pad_defaults_hook, POP_HOOK_REPLACE, 106) != POP_OK ||
+        install(0x006284d0u, pad_table_defaults_hook, POP_HOOK_REPLACE, 107) != POP_OK)
         g_api->log(g_api, "core.nfsmw: controller defaults hooks unavailable");
-    if (install(0x00628230u, pad_names_hook, POP_HOOK_REPLACE, 116) != POP_OK)
+    if (install(0x00628230u, pad_names_hook, POP_HOOK_REPLACE, 108) != POP_OK)
         g_api->log(g_api, "core.nfsmw: controller button names unavailable (hook 00628230)");
 }
 

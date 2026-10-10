@@ -250,26 +250,10 @@ int mods_menu_render(int w, int h, uint64_t *generation, const uint8_t **pixels)
     c.fill(px, py, px + pw, py + ph, kPanel);
     const int left = px + u(56), right = px + pw - u(56);
 
-    // Tabs: page names that look and act like buttons.
-    const Font tab_font = font(u(34), true);
-    int tx = left;
-    const int tab_y = py + u(34);
-    for (size_t i = 0; i < m.tabs.size(); ++i) {
-        const bool on = int(i) == m.tab;
-        const bool hover = !on && hover_tab_kind && g_hover_index == i;
-        const int adv = measure(tab_font, m.tabs[i]);
-        const int bx0 = tx - u(16), by0 = tab_y - u(6), bx1 = tx + adv + u(16),
-                  by1 = tab_y + tab_font.height + u(14);
-        if (hover)
-            c.fill(bx0, by0, bx1, by1, kSelect);
-        text(c, tab_font, tx, tab_y, m.tabs[i], on ? kInk : hover ? kSoft : kFaint);
-        if (on)
-            c.fill(tx, tab_y + tab_font.height + u(8), tx + adv, tab_y + tab_font.height + u(12), kAccent);
-        hit(bx0, by0, bx1, by1, HIT_TAB, i);
-        tx += adv + u(48);
-    }
-    // Close, at the right of the tab bar, and how to change page beside it.
+    // Close, at the right of the tab bar.
     const Font hint_font = font(u(20), false), close_font = font(u(22), true);
+    const Font base_tab_font = font(u(34), true);
+    const int tab_y = py + u(34);
     const std::string close = "Close";
     const int cw = measure(close_font, close);
     const int cx1 = right, cx0 = right - cw - u(36);
@@ -279,10 +263,60 @@ int mods_menu_render(int w, int h, uint64_t *generation, const uint8_t **pixels)
     outline(c, cx0, cy0, cx1, cy1, std::max(1, u(2)), hover_close ? kSoft : kEdge);
     text(c, close_font, cx0 + u(18), cy0 + u(8), close, hover_close ? kInk : kSoft);
     hit(cx0, cy0, cx1, cy1, HIT_CLOSE, 0);
+
+    // Tabs: page names that look and act like buttons. Remaster run 15: seven pages; the names shrink (34 down to
+    // 20 px at the 1080p reference, the gaps first) until they fit between the left edge and Close, and if even
+    // that is too wide the bar slides to keep the current page in view.
+    const int tabs_right = cx0 - u(24);
+    Font tab_font = base_tab_font;
+    int gap = u(48);
+    std::vector<int> advs(m.tabs.size());
+    auto bar_width = [&] {
+        int wsum = 0;
+        for (size_t i = 0; i < m.tabs.size(); ++i)
+            wsum += (advs[i] = measure(tab_font, m.tabs[i])) + (i ? gap : 0);
+        return wsum;
+    };
+    int bar_w = bar_width();
+    for (int px_size = 34; bar_w > tabs_right - left && px_size >= 20; px_size -= 2) {
+        tab_font = font(u(px_size), true);
+        for (double g : {1.4, 1.0, 0.7}) {
+            gap = std::max(1, u(px_size * g));
+            if ((bar_w = bar_width()) <= tabs_right - left)
+                break;
+        }
+    }
+    int tx = left;
+    if (bar_w > tabs_right - left) {
+        int on_right = left;
+        for (size_t i = 0; i < m.tabs.size() && int(i) <= m.tab; ++i)
+            on_right += advs[i] + (i ? gap : 0);
+        tx -= std::max(0, on_right - (tabs_right - u(16)));
+    }
+    const int tab_text_y = tab_y + (base_tab_font.height - tab_font.height) / 2;
+    for (size_t i = 0; i < m.tabs.size(); ++i) {
+        const bool on = int(i) == m.tab;
+        const bool hover = !on && hover_tab_kind && g_hover_index == i;
+        const int adv = advs[i];
+        const int bx0 = tx - std::min(u(16), gap / 2), by0 = tab_y - u(6),
+                  bx1 = tx + adv + std::min(u(16), gap / 2), by1 = tab_y + base_tab_font.height + u(14);
+        if (tx >= left && tx + adv <= tabs_right) { // a name slid out of the bar is not drawn or clickable
+            if (hover)
+                c.fill(bx0, by0, bx1, by1, kSelect);
+            text(c, tab_font, tx, tab_text_y, m.tabs[i], on ? kInk : hover ? kSoft : kFaint);
+            if (on)
+                c.fill(tx, tab_y + base_tab_font.height + u(8), tx + adv, tab_y + base_tab_font.height + u(12),
+                       kAccent);
+            hit(bx0, by0, bx1, by1, HIT_TAB, i);
+        }
+        tx += adv + gap;
+    }
+    // How to change page, beside Close, only where it fits whole.
     const std::string pages = "Tab, or click a page name";
-    const int pages_x = std::max(tx, cx0 - u(24) - measure(hint_font, pages));
-    text(c, hint_font, pages_x, cy0 + (cy1 - cy0 - hint_font.height) / 2, pages, kFaint, cx0 - u(12));
-    const int rule_y = tab_y + tab_font.height + u(24);
+    const int pages_w = measure(hint_font, pages);
+    if (tx - gap + u(24) + pages_w <= cx0 - u(24))
+        text(c, hint_font, cx0 - u(24) - pages_w, cy0 + (cy1 - cy0 - hint_font.height) / 2, pages, kFaint);
+    const int rule_y = tab_y + base_tab_font.height + u(24);
     c.fill(left, rule_y, right, rule_y + std::max(1, u(1)), kEdge);
 
     // The footer: timing, help, status and prompts, from the bottom up.

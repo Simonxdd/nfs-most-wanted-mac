@@ -1,5 +1,5 @@
 /* TEST ONLY (Test131, NFSMW_TEST_MIRROR_FLARES=1): why do the police light-bar flares come and go in the rear-view
- * mirror (an RC4 test session)? Observes the game's car-flare path; writes no game state.
+ * mirror (owner's RC4 session, 2 Oct 2026)? Observes the game's car-flare path; writes no game state.
  * Read on exe c0516b48:
  *  - 00742950 (thiscall, RET 0x18; ecx = car render info; args: view, position, matrix, flags, p6, p7) draws one
  *    car's light flares for one view: frame-arena matrix (fails silently when the arena is full: 00915f94/98), LOD

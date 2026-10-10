@@ -23,12 +23,14 @@
 #include "../runtime/win32.h"
 #include "../platform/os.h"
 #include "../platform/ab_phase.h"
+#include "../platform/rprof.h"
 #include "host_api.h"
 #include "d3d9_pipeline.h"
 #include "d3d9_raster.h"
 #include "d3d9_shader.h"
 #include "d3d9_volume.h"
 #include "host_d9.h"
+#include "d3d9_msaa.h"
 #include <unordered_map>
 #include <map>
 #include <tuple>
@@ -179,12 +181,10 @@ void D9_CheckDeviceFormat(X86 *c) {
 }
 // D3DMULTISAMPLE_TYPE and quality as a sample count: 2x and 4x, which every
 // Apple GPU renders. NONMASKABLE (1) offers them as quality levels 0 and 1.
+// Remaster (owner 8 Oct): RECOMP_D3D9_MSAA_SAMPLES=2 (the core mod's 2x choice)
+// caps it to 2; unset, the count is exactly as before (d3d9_msaa.h).
 static uint32_t multisample_count(uint32_t type, uint32_t quality) {
-    if (type == 1)
-        return quality == 0 ? 2 : 4;
-    if (type >= 2)
-        return type >= 4 ? 4 : 2;
-    return 0;
+    return d9msaa::count_env(type, quality);
 }
 // (this, Adapter, DeviceType, SurfaceFormat, Windowed, MultiSampleType,
 // pQualityLevels)
@@ -342,7 +342,7 @@ void D9_CreateDevice(X86 *c) {
         if (present && rd32(present + 36)) {
             device_depthbuffer(dev);
             pl.rs[7] = 1; // ZENABLE defaults on with an automatic depth buffer
-            pl.states_changed();
+            pl.rs_changed(7);
         }
     }
     LOGW("d3d9: CreateDevice %ux%u, window %08x, %s renderer", dev->width, dev->height, dev->hwnd,
@@ -488,7 +488,7 @@ void Dev_Reset(X86 *c) {
     if (rd32(present + 36)) { // EnableAutoDepthStencil
         device_depthbuffer(dev);
         pl.rs[7] = 1;
-        pl.states_changed();
+        pl.rs_changed(7);
     } else
         bind_depth_stencil(dev, nullptr);
     LOGW("d3d9: Reset to %ux%u", dev->width, dev->height);
@@ -633,6 +633,8 @@ void Dev_Clear(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
+static void pool_stats_frame();   // Remaster run 10 (below gpu_draw)
+
 // (this, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion). The back
 // buffer goes to the host as a 32-bit frame: the first thing this module puts
 // on screen.
@@ -660,14 +662,18 @@ void Dev_Present(X86 *c) {
         gpu_sync(bb);
         ddraw_external_present_begin();
         host_present(nullptr, (int)bb->width, (int)bb->height, 32, nullptr, (int)bb->pitch);
+        if (rprof::on())
+            rprof::frame_id_next = host_frame_current().id;   // Remaster P1 (TEST ONLY): row id for the prof CSV
         host_d9_present(bb->id, bb->width, bb->height);
+        pool_stats_frame();   // Remaster run 10
         ddraw_external_present_end();
         // Test86 HDR: the core mod's pre-HUD scene marker (private render state 250) lasts one frame.
         if (dev) {
             D9Pipeline &p = d9_pipeline(dev->id);
             if (p.rs[250] || p.rs[251]) {
                 p.rs[250] = p.rs[251] = 0;
-                p.states_changed();
+                p.rs_changed(250);
+                p.rs_changed(251);
             }
         }
         com_ret(c, D3D_OK9);
@@ -891,6 +897,7 @@ static const uint32_t USAGE_RENDERTARGET = 1, USAGE_DEPTHSTENCIL = 2;
 struct GpuMirror {
     bool defined = false;
     std::vector<uint8_t> cpu_dirty;      // by slot
+    bool any_dirty = false;              // Remaster C3: some cpu_dirty slot may be set (gpu_sync's early out)
     std::vector<uint8_t> gpu_newer;      // by slot
     uint32_t dirty_lo = 0, dirty_hi = 0; // buffers: the changed byte range
 };
@@ -910,6 +917,11 @@ static GpuMirror &mirror_of(ComObj *o) {
 // D3DUSAGE of every texture and surface, by id.
 static std::unordered_map<uint32_t, uint32_t> &resource_usage() {
     static auto *m = new std::unordered_map<uint32_t, uint32_t>();
+    return *m;
+}
+// Remaster A1: the opaque key a mod gave a texture (d3d9_texture_tag_iface), by id.
+static std::unordered_map<uint32_t, uint64_t> &texture_keys() {
+    static auto *m = new std::unordered_map<uint32_t, uint64_t>();
     return *m;
 }
 static bool gpu_on() {
@@ -1041,6 +1053,16 @@ static GpuMirror &gpu_define(ComObj *o) {
     d.usage = (usage & USAGE_RENDERTARGET ? HOST_D9_USAGE_RENDERTARGET : 0) |
               (usage & USAGE_DEPTHSTENCIL ? HOST_D9_USAGE_DEPTH : 0);
     d.samples = o->kind == K_D3D9SURFACE ? o->samples : 0;
+    // Remaster run 13 mirror parity (RECOMP_REMASTER_MIRROR_MSAA=<w>x<h>, set by the core mod from `mirror_msaa`): the
+    // render-target texture of exactly that size (the rear-view mirror) gets a 4x MSAA attachment, resolved into the
+    // texture at the end of each pass as for the main view; alpha-to-coverage then follows. Unset: unchanged.
+    if (o->kind == K_D3D9TEXTURE && !o->caps && (usage & USAGE_RENDERTARGET) && !is_depth_format(d.format)) {
+        if (const char *m = getenv("RECOMP_REMASTER_MIRROR_MSAA"); m && *m) {
+            unsigned mw = 0, mh = 0;
+            if (sscanf(m, "%ux%u", &mw, &mh) == 2 && mw == d.width && mh == d.height)
+                d.samples = 4;
+        }
+    }
     if (o->kind == K_D3D9VOLUMETEXTURE) {
         d.kind = HOST_D9_TEX_VOLUME;
         d.depth = volumes().at(o->id).depth;
@@ -1052,12 +1074,17 @@ static GpuMirror &gpu_define(ComObj *o) {
         d.kind = HOST_D9_TEX_2D;
         d.levels = o->kind == K_D3D9TEXTURE ? slot_count(o) : 1;
     }
+    if (o->kind == K_D3D9TEXTURE) {
+        auto k = texture_keys().find(o->id);
+        d.key = k == texture_keys().end() ? 0 : k->second;
+    }
     host_d9_texture_define(&d);
     m.defined = true;
     uint32_t n = o->kind == K_D3D9TEXTURE && o->caps ? 6 * d.levels : slot_count(o);
     // A target's first contents are whatever is drawn; a texture's are what
     // the game wrote, so every slot starts out needing an upload.
     m.cpu_dirty.assign(n, d.usage ? 0 : 1);
+    m.any_dirty = !d.usage && n;
     m.gpu_newer.assign(n, 0);
     return m;
 }
@@ -1067,6 +1094,11 @@ static void gpu_sync(ComObj *o) {
     if (!o)
         return;
     GpuMirror &m = gpu_define(o);
+    // Remaster C3: nothing to upload for most bound textures on most draws. The A/B switch "mirrors" walks the
+    // slots every time, as before.
+    if (!m.any_dirty && !recomp_ab::old(recomp_ab::MIRRORS))
+        return;
+    m.any_dirty = false; // every slot below is cleared before anything else can mark it again
     for (uint32_t slot = 0; slot < m.cpu_dirty.size(); ++slot) {
         if (!m.cpu_dirty[slot])
             continue;
@@ -1123,8 +1155,10 @@ static void gpu_after_unlock(ComObj *o, uint32_t lo, uint32_t hi) {
     auto it = gpu_mirrors().find(id);
     if (it == gpu_mirrors().end())
         return; // not mirrored yet: its first use uploads everything
-    if (slot < it->second.cpu_dirty.size())
+    if (slot < it->second.cpu_dirty.size()) {
         it->second.cpu_dirty[slot] = 1;
+        it->second.any_dirty = true;
+    }
 }
 static void gpu_drawn_into(ComObj *s) {
     if (!s)
@@ -1167,6 +1201,22 @@ static void gpu_forget(ComObj *o) {
         gpu_mirrors().erase(it);
     }
     resource_usage().erase(o->id);
+    texture_keys().erase(o->id);
+}
+
+// Remaster A1: a mod names a 2D texture it holds through its IDirect3DTexture9 pointer. The pointer is
+// resolved to the shim's object id at once (ids are never reused); no guest address is kept. A texture whose
+// mirror already exists is re-keyed on the host; otherwise the key travels with its first definition.
+// 1 = tagged, 0 = not a live 2D texture of ours.
+extern "C" int d3d9_texture_tag_iface(uint32_t iface, uint64_t key) {
+    ComObj *o = com_this(iface, IF_D3DTEXTURE9);
+    if (!o || o->kind != K_D3D9TEXTURE || o->caps)
+        return 0;
+    texture_keys()[o->id] = key;
+    auto it = gpu_mirrors().find(o->id);
+    if (it != gpu_mirrors().end() && it->second.defined)
+        host_d9_texture_tag(o->id, key);
+    return 1;
 }
 
 // (this, Length, Usage, FVF, Pool, ppVertexBuffer, pSharedHandle)
@@ -1553,7 +1603,7 @@ void Dev_GetBackBuffer(X86 *c) {
     com_ret(c, D3D_OK9);
 }
 
-// Test155 (Metal allocation trace): GetDepthStencilSurface returns the depth-stencil
+// Test155 (owner session 3 Oct 21:47, Metal allocation trace): GetDepthStencilSurface returns the depth-stencil
 // surface that is set (SetDepthStencilSurface; the automatic one from CreateDevice/Reset until the game sets
 // another). With none set, Direct3D 9 returns D3DERR_NOTFOUND. This used to make a new device-sized depth buffer
 // instead (device_depthbuffer), which the game never released: at rain onset that was one 3840x2160 4x-MSAA
@@ -1926,8 +1976,112 @@ static void reject_draw(ComObj *dev, const HostD9Draw &attempt, uint32_t reason)
     host_d9_rejected_draw(&d);
 }
 
+// Remaster run 10 fused pool shader: why a fuse request cannot take the pool variant (0: it can). The fused pixel
+// shader adds the pool light to the base output, so the base must not blend; the vertex shader must read the four
+// inputs the pool needs (object-space position, normal, uv, tangent); stages 0 and 1 (diffuse, normal map, as the
+// pool pass samples them) must be plain 2D textures.
+// Remaster run 11 (review/run11/design-A.md): an explicit supported set - the WORLD / WORLDNORMALMAP pool copies, one
+// colour target, full colour writes, no stencil, depth test LESS/LESSEQUAL, no depth texture on stages 0/1 - and
+// readiness: a (programs, form) fuses only after the renderer has built it (host_d9_pool_state); until then the draw
+// is two-pass and probes. Every reason below draws the native two-pass, except UP (inline-vertex draws: no fusion and
+// no native second pass, as the guest's own loop drew them before fusion).
+enum {
+    POOL_OK, POOL_BLENDED, POOL_INPUTS, POOL_SAMPLERS, POOL_TEXTURES, POOL_EFFECT, POOL_TARGETS, POOL_WRITEMASK,
+    POOL_STENCIL, POOL_DEPTH, POOL_DEPTHTEX, POOL_FORCED, POOL_NOTREADY, POOL_BLOCKED, POOL_REASONS
+};
+static const char *const kPoolReason[POOL_REASONS] = {"ok", "blended", "inputs", "samplers", "textures", "effect",
+                                                      "targets", "writemask", "stencil", "depth", "depthtex", "forced",
+                                                      "notready", "blocked"};
+// Cumulative for the whole run (never reset): printed every 600 presents and at exit.
+static uint64_t g_pool_requests, g_pool_fused, g_pool_fallback[POOL_REASONS], g_pool_fallback_failed, g_pool_up,
+    g_pool_probes;
+// TEST ONLY (RECOMP_REMASTER_POOL_FORCE, run 11 fixtures): inelig = every request takes the native two-pass;
+// nopass = as inelig, and the native second pass reports the clean_pools pass missing (nothing added).
+static int pool_force_game() {
+    static const int f = [] {
+        const char *e = getenv("RECOMP_REMASTER_POOL_FORCE");
+        return !e ? 0 : !strcmp(e, "inelig") ? 1 : !strcmp(e, "nopass") ? 2 : 0;
+    }();
+    return f;
+}
+static int pool_ineligible(const D9Pipeline &pl, const d9sh::Program &vs, const d9sh::Program &ps,
+                           const HostD9Draw &d) {
+    if (pool_force_game())
+        return POOL_FORCED;
+    if (pl.pool_fuse > 2)
+        return POOL_EFFECT;
+    if (d.target.color[1].id || d.target.color[2].id || d.target.color[3].id)
+        return POOL_TARGETS;
+    if (pl.rs[27])
+        return POOL_BLENDED;
+    if ((pl.rs[168] & 0xf) != 0xf)
+        return POOL_WRITEMASK;
+    if (pl.rs[52])
+        return POOL_STENCIL;
+    if (!pl.rs[7] || !d.target.depth.id || (pl.rs[23] != 2 && pl.rs[23] != 4))
+        return POOL_DEPTH;
+    const bool mapped = pl.pool_fuse == 1;   // the normal-mapped form also needs TANGENT0 and stage 1
+    uint32_t have = 0;
+    for (const d9sh::DclIn &in : vs.inputs)
+        if (in.type == d9sh::R_INPUT && in.usage_index == 0)
+            have |= in.usage == 0 ? 1u : in.usage == 3 ? 2u : in.usage == 5 ? 4u : in.usage == 6 ? 8u : 0u;
+    if ((have & (mapped ? 15u : 7u)) != (mapped ? 15u : 7u))
+        return POOL_INPUTS;
+    if (ps.major < 2)
+        return POOL_SAMPLERS;
+    for (uint32_t s = 0; s < (mapped ? 2u : 1u); ++s) {
+        auto k = ps.samplers.find(s);
+        if (k != ps.samplers.end() && k->second != d9sh::S_2D)
+            return POOL_SAMPLERS;
+        ComObj *t = com_get(pl.sampler_tex[s]);
+        if (!t || t->kind != K_D3D9TEXTURE)
+            return POOL_TEXTURES;
+        if (is_depth_format(t->rmask ? t->rmask : 22) || (resource_usage()[t->id] & USAGE_DEPTHSTENCIL))
+            return POOL_DEPTHTEX;   // the renderer samples it as depth: the pool form cannot
+    }
+    return POOL_OK;
+}
+static void pool_stats_print(const char *when) {
+    if (!g_pool_requests && !g_pool_up)
+        return;
+    std::string why;
+    for (int r = 1; r < POOL_REASONS; ++r)
+        if (g_pool_fallback[r])
+            why += std::string(why.empty() ? "" : ", ") + kPoolReason[r] + " " + std::to_string(g_pool_fallback[r]);
+    uint64_t fb = 0;
+    for (uint64_t n : g_pool_fallback)
+        fb += n;
+    LOGW("d3d9: pool fusion totals (%s): requests %llu, fused %llu, two-pass %llu (%s), probes %llu, "
+         "second pass not drawn %llu, UP requests (no pool, as before fusion) %llu",
+         when, (unsigned long long)g_pool_requests, (unsigned long long)g_pool_fused, (unsigned long long)fb,
+         why.empty() ? "none" : why.c_str(), (unsigned long long)g_pool_probes,
+         (unsigned long long)g_pool_fallback_failed, (unsigned long long)g_pool_up);
+}
+// Per 600 presents, only once fuse requests were seen; cumulative.
+static void pool_stats_frame() {
+    static uint64_t frames = 0;
+    static bool exit_hook = false;
+    if (!exit_hook && g_pool_requests) {
+        exit_hook = true;
+        atexit([] { pool_stats_print("exit"); });
+    }
+    if (++frames % 600 == 0)
+        pool_stats_print(("frame " + std::to_string(frames)).c_str());
+}
+static void gpu_draw(ComObj *dev, HostD9Draw &d);
+struct PoolSecond {
+    ComObj *dev;
+    HostD9Draw d;
+};
+static void pool_second_draw(void *ctx) {
+    PoolSecond *x = static_cast<PoolSecond *>(ctx);
+    gpu_draw(x->dev, x->d);
+}
+
 // One draw, handed to the GPU renderer with everything the device has bound.
 static void gpu_draw(ComObj *dev, HostD9Draw &d) {
+    rprof::Scope prof_total(rprof::DRAW); // Remaster A4 design input (RECOMP_REMASTER_PROF=1)
+    uint64_t prof_t = rprof::start();
     D9Pipeline &pl = d9_pipeline(dev->id);
     if (pl.vs.empty() || pl.ps.empty()) {
         reject_draw(dev, d, 1);
@@ -1957,8 +2111,52 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
     }
     const d9sh::Program &vs = *static_cast<const d9sh::Program *>(pl.vs_prog);
     const d9sh::Program &ps = *static_cast<const d9sh::Program *>(pl.ps_prog);
+    // Remaster run 10: a fuse request for the programs still bound: the pool variant, or the native second pass.
+    // Run 11: only for a ready (programs, form) in the supported set; an unknown one probes; UP draws neither.
+    std::unique_ptr<PoolSecond> pool_second;
+    if (pl.pool_fuse && pl.pool_vs == pl.vs.data() && pl.pool_ps == pl.ps.data()) {
+        if (d.inline_vertices) {
+            if (!g_pool_up++)
+                LOGW("d3d9: pool fusion: a fuse request at an inline-vertex draw (%s): drawn without the pool, as "
+                     "before fusion", pl.label ? pl.label : "no label");
+        } else {
+            ++g_pool_requests;
+            int why = pool_ineligible(pl, vs, ps, d);
+            uint64_t key = 0;
+            if (why == POOL_OK) {
+                // The key includes the declared 2D stages holding depth (shadow maps): they change the shaders
+                // (challenge run 11 item 2). The renderer computes the same mask (d3d9_metal.mm pool_depth_stages).
+                uint32_t depth_stages = 0;
+                for (const auto &kv : ps.samplers) {
+                    if (kv.first >= 16 || kv.second != d9sh::S_2D)
+                        continue;
+                    ComObj *t = com_get(pl.sampler_tex[kv.first]);
+                    if (t && t->kind == K_D3D9TEXTURE &&
+                        (is_depth_format(t->rmask ? t->rmask : 22) || (resource_usage()[t->id] & USAGE_DEPTHSTENCIL)))
+                        depth_stages |= 1u << kv.first;
+                }
+                key = host_d9_pool_key(pl.vs_key, pl.ps_key, pl.pool_fuse | depth_stages << 8);
+                const int st = host_d9_pool_state(key);
+                why = st == HOST_D9_POOL_READY ? POOL_OK : st == HOST_D9_POOL_BLOCKED ? POOL_BLOCKED : POOL_NOTREADY;
+            }
+            if (why == POOL_OK) {
+                d.pool_fuse = pl.pool_fuse;
+                d.pool_block = &pl.pool_block[0][0];
+                ++g_pool_fused;
+            } else {
+                ++g_pool_fallback[why];
+                pool_second.reset(new PoolSecond{dev, d});
+                if (why == POOL_NOTREADY) {   // the renderer builds this form for the base draw (drawn plain)
+                    d.pool_probe = pl.pool_fuse;
+                    ++g_pool_probes;
+                }
+            }
+        }
+    }
     d.vs_key = pl.vs_key;
     d.ps_key = pl.ps_key;
+    d.programs_ready = lookup_always ? 0u : 1u; // Remaster C2 (A/B switch "mirrors" restores the second lookup)
+    prof_t = rprof::lap(rprof::DRAW_PROG, prof_t);
     d.vs = pl.vs.data();
     d.vs_size = (uint32_t)pl.vs.size();
     d.ps = pl.ps.data();
@@ -1966,7 +2164,7 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
     d.vconst = &pl.vconst[0][0];
     d.vconst_count = std::min<uint32_t>(vs.max_const, 256);
     d.pconst = &pl.pconst[0][0];
-    d.pconst_count = std::min<uint32_t>(ps.max_const, 32);
+    d.pconst_count = std::min<uint32_t>(ps.max_const, 224);
     memcpy(d.vbool, pl.vbool, sizeof d.vbool);
     memcpy(d.pbool, pl.pbool, sizeof d.pbool);
     ComObj *decl = com_get(pl.declaration);
@@ -1989,6 +2187,7 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
         d.stream[i].offset = pl.stream[i].offset;
         d.stream[i].stride = pl.stream[i].stride;
     }
+    prof_t = rprof::lap(rprof::DRAW_STREAMS, prof_t);
     uint32_t sampler_state[16][14];
     bool volume_lod = false;
     for (int s = 0; s < 16; ++s) {
@@ -2007,11 +2206,14 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
         }
     }
     d.sampler_state = volume_lod ? &sampler_state[0][0] : &pl.sampler_state[0][0];
+    prof_t = rprof::lap(rprof::DRAW_SAMPLERS, prof_t);
     d.render_state = pl.rs;
     d.render_state_set = (const uint8_t *)pl.rs_set;
     // A volume-LOD draw passes a local copy (sampler [s][9] raised), not the pipeline's tables: version 0 so the queue
-    // neither reuses an earlier table for it nor lets the next draw reuse this one.
+    // neither reuses an earlier table for it nor lets the next draw reuse this one (Remaster C-A4L1 finding).
     d.state_version = volume_lod ? 0 : pl.state_version;
+    d.state_dirty = volume_lod ? nullptr : pl.state_dirty; // Remaster A4-lite: deltas only of the pipeline's own tables
+    d.pipeline_id = dev->id;
     // Test133: private render state 251 = a guest texture pointer the mod counts as scene content under the HUD.
     if (pl.rs[251] && pl.sampler_tex[0]) {
         ComObj *scene_tex = com_this(pl.rs[251]);
@@ -2021,10 +2223,14 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
         if (pl.tss[st][24] & 0x100) // D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_PROJECTED
             d.projected_mask |= 1u << st;
     d.label = pl.label;
+    prof_t = rprof::start();
     host_d9_draw(&d);
+    rprof::lap(rprof::QUEUE, prof_t);
     bool color_write = !pl.rs_set[168] || (pl.rs[168] & 0xf) != 0;
     bool z_write = (!pl.rs_set[14] || pl.rs[14]) && (!pl.rs_set[7] || pl.rs[7]);
     gpu_target_drawn(dev, color_write, z_write);
+    if (pool_second && (pool_force_game() == 2 || !d3dx9_pool_second_pass(pl, pool_second_draw, pool_second.get())))
+        ++g_pool_fallback_failed;
 }
 
 // Hands one draw to the CPU renderer with what the device has bound.
@@ -2042,6 +2248,23 @@ static void raster(X86 *c, const D9DrawCall &call) {
 
 // (this, PrimitiveType, StartVertex, PrimitiveCount)
 static bool draw_refused(X86 *c, const char *what, uint32_t prim, uint32_t count, uint32_t vertices, uint32_t stride);
+// Remaster A4 gate (TEST ONLY): A/B switch nulldraw. During OLD periods every draw returns D3D_OK at entry without
+// any shim or host work (frames are not drawn), so the game-thread time saved is the most that moving draw work off
+// the game thread could save. Opt-in only: never part of the default "all switches" set.
+static bool null_draw(X86 *c) {
+    // Remaster P1 (TEST ONLY): RECOMP_REMASTER_POOLDRAW_NULL=1 with A/B switch poolnull: in OLD periods only the draws
+    // made while the clean pool pass is in effect return at entry (the pool pass's states and constants still apply).
+    // Diagnostic: it bounds the pool draws' shim share (their deferred sync moves to the next draw). Needs PROF=1.
+    static const bool poolnull = [] { const char *e = getenv("RECOMP_REMASTER_POOLDRAW_NULL"); return e && *e == '1'; }();
+    if (poolnull && rprof::pool_active && recomp_ab::old(recomp_ab::POOLNULL)) {
+        com_ret(c, D3D_OK9);
+        return true;
+    }
+    if (!recomp_ab::old(recomp_ab::NULLDRAW))
+        return false;
+    com_ret(c, D3D_OK9);
+    return true;
+}
 
 void Dev_DrawPrimitive(X86 *c) {
     if (draw_worth_reporting())
@@ -2051,6 +2274,8 @@ void Dev_DrawPrimitive(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
+    if (null_draw(c))
+        return;
     ComObj *dev = this_device9(c);
     if (dev && gpu_on()) {
         HostD9Draw d{};
@@ -2085,6 +2310,8 @@ void Dev_DrawIndexedPrimitive(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
+    if (null_draw(c))
+        return;
     ComObj *dev = this_device9(c);
     if (dev && gpu_on()) {
         HostD9Draw d{};
@@ -2183,7 +2410,7 @@ static void describe_draw_inputs(X86 *c, uint32_t vertices, uint32_t stride, uin
 }
 
 
-// Test155 (test session: the game's memory footprint went from 3.1 GB to 361 GB within a minute in
+// Test155 (owner session 3 Oct 19:54: the game's memory footprint went from 3.1 GB to 361 GB within a minute in
 // rain and macOS killed it for low swap; 361 GB / 2^31 = ~180 bytes per primitive). The UP draws computed their
 // vertex bytes in 32 bits, so a garbage primitive count (e.g. 0x80000000 + n) wrapped to a size that still fit the
 // guest arena and was accepted. Direct3D 9 limits every draw to the device's MaxPrimitiveCount (and indexed draws
@@ -2225,6 +2452,8 @@ void Dev_DrawPrimitiveUP(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
+    if (null_draw(c))
+        return;
     if (ComObj *dev = this_device9(c); dev && gpu_on()) {
         HostD9Draw d{};
         observe_draw(c, dev, d, 83);
@@ -2263,6 +2492,8 @@ void Dev_DrawIndexedPrimitiveUP(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
+    if (null_draw(c))
+        return;
     if (ComObj *dev = this_device9(c); dev && gpu_on()) {
         HostD9Draw d{};
         observe_draw(c, dev, d, 84);
@@ -2828,8 +3059,10 @@ static void VolTex_AddDirtyBox(X86 *c) {
         return;
     }
     auto it = gpu_mirrors().find(o->id);
-    if (it != gpu_mirrors().end())
+    if (it != gpu_mirrors().end()) {
         std::fill(it->second.cpu_dirty.begin(), it->second.cpu_dirty.end(), 1);
+        it->second.any_dirty = !it->second.cpu_dirty.empty();
+    }
     com_ret(c, D3D_OK9);
 }
 static void Vol_Unavailable(X86 *c) {
@@ -3100,6 +3333,11 @@ void Dev_GetRenderState(X86 *c) {
         com_ret(c, D3DERR_INVALIDCALL);
         return;
     }
+    if (state == HOST_D9_RS_HDR_FLOAT) {   // item 10: read-only, the renderer's float frame (not a pipeline state)
+        wr32(out, __atomic_load_n(&host_d9_hdr_float, __ATOMIC_RELAXED));
+        com_ret(c, D3D_OK9);
+        return;
+    }
     wr32(out, d9_pipeline(dev->id).rs[state]);
     com_ret(c, D3D_OK9);
 }
@@ -3255,6 +3493,48 @@ void Dev_GetViewport(X86 *c) {
 void Dev_SetTransform(X86 *c) {
     ComObj *dev = this_device9(c);
     uint32_t state = arg(c, 1), m = arg(c, 2);
+    // Remaster run 14 foundation F1: private states 0x200 (the camera view) then 0x201 (its info) from the core mod,
+    // one renderer event (host_d9_scene_camera), never device state. Only the mod's RECOMP_REMASTER_FOUNDATION=1
+    // sends them; an info without a view this frame goes nowhere.
+    if (dev && m && (state == HOST_D9_TS_SCENE_VIEW || state == HOST_D9_TS_SCENE_INFO)) {
+        static float view[16];
+        static bool have_view = false;
+        float *dst = view, info[16];
+        if (state == HOST_D9_TS_SCENE_INFO)
+            dst = info;
+        for (int i = 0; i < 16; ++i) {
+            uint32_t b = rd32(m + 4u * (uint32_t)i);
+            memcpy(&dst[i], &b, 4);
+        }
+        if (state == HOST_D9_TS_SCENE_VIEW)
+            have_view = true;
+        else if (have_view && gpu_on()) {
+            have_view = false;
+            host_d9_scene_camera(view, info);
+        }
+        com_ret(c, D3D_OK9);
+        return;
+    }
+    // Remaster run 14 B1 height fog: private states 0x202 (packet a) then 0x203 (packet b) from the core mod, one
+    // renderer event (host_d9_atmosphere), never device state. A b without an a this frame goes nowhere.
+    if (dev && m && (state == HOST_D9_TS_ATMOS_A || state == HOST_D9_TS_ATMOS_B)) {
+        static float pa[16];
+        static bool have_a = false;
+        float pb[16];
+        float *dst = state == HOST_D9_TS_ATMOS_A ? pa : pb;
+        for (int i = 0; i < 16; ++i) {
+            uint32_t b = rd32(m + 4u * (uint32_t)i);
+            memcpy(&dst[i], &b, 4);
+        }
+        if (state == HOST_D9_TS_ATMOS_A)
+            have_a = true;
+        else if (have_a && gpu_on()) {
+            have_a = false;
+            host_d9_atmosphere(pa, pb);
+        }
+        com_ret(c, D3D_OK9);
+        return;
+    }
     if (dev && m) {
         uint32_t slot =
             state < 256 ? state : (state >= 256 && state < 260 ? state - 256 + 24 : 0xffffffffu);
@@ -3279,12 +3559,30 @@ void Dev_SetTextureStageState(X86 *c) {
 void Dev_SetRenderState(X86 *c) {
     ComObj *dev = this_device9(c);
     uint32_t state = arg(c, 1);
+    // Remaster run 13 MetalFX upscaling: private states 252/253 are the core mod's scene markers, events for the
+    // renderer and never device state (the draw tables stay as they were). A begin counts only while the back
+    // buffer is render target 0; it names the depth surface bound with it.
+    if (dev && (state == HOST_D9_SCENE_END || state == HOST_D9_SCENE_BEGIN)) {
+        if (arg(c, 2) && gpu_on()) {
+            ComObj *bb = device_backbuffer(dev);
+            if (state == HOST_D9_SCENE_END)
+                host_d9_scene_split(state, 0, 0);
+            else if (bb) {
+                const HostD9Target t = gpu_target(dev);
+                const HostD9Surface b = surface_ref(bb);
+                if (t.color[0].id == b.id && !t.color[0].face && !t.color[0].level)
+                    host_d9_scene_split(state, b.id, t.depth.level ? 0 : t.depth.id);
+            }
+        }
+        com_ret(c, D3D_OK9);
+        return;
+    }
     if (dev && state < 256) {
         D9Pipeline &p = d9_pipeline(dev->id);
         if (p.rs[state] != arg(c, 2) || !p.rs_set[state]) {
             p.rs[state] = arg(c, 2);
             p.rs_set[state] = true;
-            p.states_changed();
+            p.rs_changed(state);
         }
     }
     com_ret(c, D3D_OK9);
@@ -3298,7 +3596,7 @@ void Dev_SetSamplerState(X86 *c) {
         D9Pipeline &p = d9_pipeline(dev->id);
         if (p.sampler_state[sampler][type] != arg(c, 3)) {
             p.sampler_state[sampler][type] = arg(c, 3);
-            p.states_changed();
+            p.ss_changed(sampler, type);
         }
     }
     com_ret(c, D3D_OK9);
@@ -3330,7 +3628,7 @@ void Dev_SetPixelShaderConstantF(X86 *c) {
     if (dev) {
         D9Pipeline &pl = d9_pipeline(dev->id);
         pl.pbinder = {};
-        write_registers(pl.pconst, 32, arg(c, 1), arg(c, 2), arg(c, 3));
+        write_registers(pl.pconst, 224, arg(c, 1), arg(c, 2), arg(c, 3));
     }
     com_ret(c, D3D_OK9);
 }

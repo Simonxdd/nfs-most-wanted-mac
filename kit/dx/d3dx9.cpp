@@ -21,6 +21,7 @@
 #include "../runtime/memory.h"
 #include "../platform/os.h"
 #include "../platform/ab_phase.h"
+#include "../platform/rprof.h"
 
 #include <string.h>
 #include <math.h>
@@ -405,6 +406,13 @@ struct FxEffect {
     uint32_t technique = 0, pass = 0xffffffffu, device = 0;
     uint32_t pool = 0; // the ID3DXEffectPool object it was created with
     uint32_t self = 0; // its COM object id
+    int8_t pool_fx = -1; // Remaster P1 (TEST ONLY): has a CleanPoolCount parameter (-1: not checked yet)
+    // Remaster run 10 fused pool shader: the pool-copy parameters by index (CleanPools, CleanPoolCount, TextureOffset,
+    // CleanPoolParams, LocalEyePos), resolved once; pool_ok -1 not checked, 0 not a pool-copy effect, 1 all present.
+    int8_t pool_ok = -1;
+    uint8_t pool_mode = 1;   // the clean_pools pass's form: 1 normal-mapped (PS_PoolsReflect), 2 diffuse (WORLD: PS_Pools),
+                             // 0xff not in the supported set (run 11: two-pass only)
+    int32_t pool_idx[5] = {-1, -1, -1, -1, -1};
     // Lookups the per-draw path makes, built on first use: parameter index by
     // name, and for each program (by code key) the parameter behind each of
     // its constant table entries (-1: none).
@@ -974,6 +982,8 @@ static uint32_t bind_constants(FxEffect &fx, const std::vector<uint8_t> &code, f
     const bool incremental = binder && binder->fx == fx.self && fx.self && binder->key == key &&
                              binder->stamp && !recomp_ab::old(recomp_ab::CONSTS);
     const uint64_t since = incremental ? binder->stamp : 0;
+    if (rprof::on())
+        ++(incremental ? rprof::cur.inc_binds : rprof::cur.full_binds)[rprof::kind];
     static const bool verify = [] {
         const char *e = recomp_env("FX_CONST_VERIFY");
         return e && !strcmp(e, "1");
@@ -1348,7 +1358,7 @@ static void apply_state(FxEffect &fx, D9Pipeline &pl, const FxState &s, uint32_t
         if (pl.rs[rs] != v || !pl.rs_set[rs]) {
             pl.rs[rs] = v;
             pl.rs_set[rs] = true;
-            pl.states_changed();
+            pl.rs_changed(rs);
         }
     } else if (s.op < 121) {
         if (s.index < 8 && state_value(fx, pl, s, &v))
@@ -1358,12 +1368,73 @@ static void apply_state(FxEffect &fx, D9Pipeline &pl, const FxState &s, uint32_t
         if (stage < 16 && state_value(fx, pl, s, &v) &&
             pl.sampler_state[stage][s.op - FXS_SAMPLER_FIRST + 1] != v) {
             pl.sampler_state[stage][s.op - FXS_SAMPLER_FIRST + 1] = v;
-            pl.states_changed();
+            pl.ss_changed(stage, s.op - FXS_SAMPLER_FIRST + 1);
         }
     }
 }
 
-static void apply_pass(FxEffect &fx) {
+// Remaster run 10 fused pool shader (review/2026-10-07-fused-pool-shader-design.md): at pass 0 of a pool-copy effect
+// (one with CleanPoolCount), CleanPoolCount.y == 1 is the mod's fuse request for this render entry. The pool block is
+// copied into the pipeline for gpu_draw, which draws the entry once with the pool light added in the same shader
+// (or, when the draw cannot take the variant, adds the pool pass natively: d3dx9_pool_second_pass). The game reads
+// none of these parameters; the mod clears a request that is still pending at its next unlit entry (a skipped entry
+// has no CommitChanges). Any other pass application clears the fuse.
+static void pool_fuse_update(FxEffect &fx, D9Pipeline &pl) {
+    pl.pool_fuse = 0;
+    if (fx.pool_ok == 0)
+        return;
+    if (fx.pool_ok < 0) {
+        static const char *const names[5] = {"CleanPools", "CleanPoolCount", "TextureOffset", "CleanPoolParams",
+                                             "LocalEyePos"};
+        static const size_t need[5] = {256, 16, 8, 16, 12};
+        fx.pool_ok = 1;
+        for (int i = 0; i < 5; ++i) {
+            fx.pool_idx[i] = param_index_of(fx, names[i]);
+            if (fx.pool_idx[i] < 0 || fx.params[(size_t)fx.pool_idx[i]].value.size() < need[i])
+                fx.pool_ok = 0;
+        }
+        // tools/fx/pools_fx.py: WORLD gets VS_Pools/PS_Pools (form 2), WORLDNORMALMAP PS_PoolsReflect (form 1). Run 11:
+        // any other pool copy (WORLDREFLECT roads, or a new one) is outside the supported set: 0xff = two-pass only.
+        fx.pool_mode = fx.resource == "IDI_WORLD_FX" ? 2 : fx.resource == "IDI_WORLDNORMALMAP_FX" ? 1 : 0xff;
+        if (fx.pool_idx[1] >= 0)
+            LOGW("d3dx9: pool fusion: effect %s: pool parameters %s (CleanPools %d CleanPoolCount %d TextureOffset %d "
+                 "CleanPoolParams %d LocalEyePos %d), pool form %u", fx.resource.c_str(),
+                 fx.pool_ok ? "all present" : "INCOMPLETE", fx.pool_idx[0], fx.pool_idx[1], fx.pool_idx[2],
+                 fx.pool_idx[3], fx.pool_idx[4], (unsigned)fx.pool_mode);
+        if (!fx.pool_ok)
+            return;
+    }
+    if (fx.pass != 0)
+        return;
+    const std::vector<uint8_t> &cnt = fx.params[(size_t)fx.pool_idx[1]].value;
+    float y;
+    memcpy(&y, cnt.data() + 4, 4);
+    if (y != 1.0f)
+        return;
+    float(*b)[4] = pl.pool_block;
+    memset(b, 0, sizeof pl.pool_block);
+    memcpy(b[0], fx.params[(size_t)fx.pool_idx[0]].value.data(), 256);
+    memcpy(b[16], cnt.data(), 16);
+    for (int i = 2; i < 5; ++i) {
+        const std::vector<uint8_t> &v = fx.params[(size_t)fx.pool_idx[i]].value;
+        memcpy(b[15 + i], v.data(), std::min<size_t>(v.size(), 16));
+    }
+    pl.pool_fuse = fx.pool_mode;
+    pl.pool_fx = fx.self;
+    pl.pool_vs = pl.vs.data();
+    pl.pool_ps = pl.ps.data();
+}
+
+// Remaster C1: `commit` (ID3DXEffect::CommitChanges) re-applies only the pass states whose value depends on
+// parameters (a preshader); static states were applied at BeginPass and, as in D3DX, are not applied again.
+// Shaders, sampler textures and constants are still resolved, because parameters can change them.
+// RECOMP_AB switch "commit" keeps the earlier full re-apply in old periods (and RECOMP_AB_FORCE_OLD=1 always).
+static void apply_pass(FxEffect &fx, bool commit = false) {
+    // Remaster A4 gate (TEST ONLY): switch nullfx skips the pass in OLD periods (with nulldraw, which skips the draws
+    // in d3d9.cpp, the A/B bounds all the work A4 would move; each alone splits it). Opt-in only.
+    if (recomp_ab::old(recomp_ab::NULLFX))
+        return;
+    rprof::Scope prof_total(rprof::PASS); // Remaster A4 design input (RECOMP_REMASTER_PROF=1)
     if (fx.technique >= fx.techniques.size())
         return;
     FxTechnique &tech = fx.techniques[fx.technique];
@@ -1393,8 +1464,14 @@ static void apply_pass(FxEffect &fx) {
     if (pass.label.empty())
         pass.label = fx.resource + "/" + tech.name + "/" + pass.name;
     pl.label = pass.label.c_str();
+    uint64_t prof_t = rprof::start();
     for (const FxState &s : pass.states)
-        apply_state(fx, pl, s, 0xffffffffu);
+        if (!commit || !s.preshader.empty()) {
+            apply_state(fx, pl, s, 0xffffffffu);
+            if (rprof::on())
+                ++rprof::cur.states[rprof::kind];
+        }
+    prof_t = rprof::klap(rprof::PASS_STATES, prof_t);
     // A pass may also bind a texture to a stage directly.
     for (const FxState &s : pass.states)
         if (s.op == FXS_SAMPLER_TEXTURE && s.index < 16) {
@@ -1403,10 +1480,13 @@ static void apply_pass(FxEffect &fx) {
                 if (FxParam *tex = param_named(fx, it->second.param))
                     pl.sampler_tex[s.index] = tex->texture;
         }
+    prof_t = rprof::klap(rprof::PASS_TEXTURES, prof_t);
     uint32_t missing = 0;
     uint32_t bound =
         bind_constants(fx, pl.vs.vec(), pl.vconst, 256, pl, &missing, pl.vs_key, pl.vbool, &pl.vbinder);
-    bound += bind_constants(fx, pl.ps.vec(), pl.pconst, 32, pl, &missing, pl.ps_key, pl.pbool, &pl.pbinder);
+    bound += bind_constants(fx, pl.ps.vec(), pl.pconst, 224, pl, &missing, pl.ps_key, pl.pbool, &pl.pbinder);
+    rprof::klap(rprof::PASS_CONSTS, prof_t);
+    pool_fuse_update(fx, pl);   // Remaster run 10
     static uint32_t reported = 0;
     if (++reported <= 16) {
         char samplers[160] = "";
@@ -1950,6 +2030,37 @@ void Fx_Begin(X86 *c) {
     fx->pass = 0xffffffffu;
     com_ret(c, D3D_OKX);
 }
+// Remaster P1 (TEST ONLY, RECOMP_REMASTER_PROF=1): is the pass now set on this effect the clean pool pass?
+static bool p1_pool_pass(FxEffect &fx, X86 *c) {
+    if (fx.pool_fx < 0) {
+        fx.pool_fx = param_named(fx, "CleanPoolCount") ? 1 : 0;
+        if (fx.pool_fx)
+            LOGW("d3dx9: prof: pool effect %s: self %08x guest this %08x", fx.resource.c_str(), fx.self, arg(c, 0));
+    }
+    if (!fx.pool_fx || fx.technique >= fx.techniques.size())
+        return false;
+    const FxTechnique &t = fx.techniques[fx.technique];
+    return fx.pass < t.passes.size() && t.passes[fx.pass].name == "clean_pools";
+}
+static void p1_after_apply(FxEffect &fx, bool pool, uint64_t t0) {
+    rprof::cur.ns[rprof::kind] += os_monotonic_ns() - t0;
+    ++rprof::cur.n[rprof::kind];
+    if (pool) {
+        rprof::last_pool_fx = fx.self;
+        rprof::pool_active = true;
+        static uint32_t sampled = 0;   // the pass's effective depth-write / fog state, now and then
+        if (++sampled % 20000 == 1) {
+            const D9Pipeline &pl = d9_pipeline(fx.device);
+            LOGW("d3dx9: prof: pool pass %s: ZWRITEENABLE %u (set %d) FOGENABLE %u (set %d) ALPHABLEND %u SRC %u DST %u ZFUNC %u",
+                 fx.resource.c_str(), pl.rs[14], (int)pl.rs_set[14], pl.rs[28], (int)pl.rs_set[28], pl.rs[27], pl.rs[19],
+                 pl.rs[20], pl.rs[23]);
+        }
+    } else {
+        rprof::last_pool_fx = 0;
+        rprof::pool_active = false;
+    }
+    rprof::kind = rprof::K_BP;
+}
 void Fx_BeginPass(X86 *c) {
     FxEffect *fx = this_fx(c);
     if (!fx) {
@@ -1957,17 +2068,77 @@ void Fx_BeginPass(X86 *c) {
         return;
     }
     fx->pass = arg(c, 1);
-    apply_pass(*fx);
+    if (rprof::on()) {   // Remaster P1 (TEST ONLY)
+        const bool pool = p1_pool_pass(*fx, c);
+        rprof::kind = pool ? rprof::K_PBP : (fx->self == rprof::last_pool_fx && fx->pass == 0 ? rprof::K_RS : rprof::K_BP);
+        if (fx->self != rprof::last_fx)
+            ++rprof::cur.fx_switches;
+        rprof::last_fx = fx->self;
+        const uint64_t t0 = os_monotonic_ns();
+        apply_pass(*fx);
+        p1_after_apply(*fx, pool, t0);
+    } else
+        apply_pass(*fx);
     com_ret(c, D3D_OKX);
+}
+// Remaster C1 is off until its W4 identity check passes: RECOMP_REMASTER_COMMIT_DELTA=1 turns it on.
+static bool commit_delta_on() {
+    static const bool on = [] { const char *e = getenv("RECOMP_REMASTER_COMMIT_DELTA"); return e && *e == '1'; }();
+    return on;
+}
+// Remaster run 9 item C (TEST ONLY): RECOMP_REMASTER_FXPARAM_LOG=<substring> logs, at a CommitChanges of an effect whose
+// resource name contains the substring, every float parameter up to 16 values (name, semantic, values) with the
+// technique/pass, once per effect and then every 20,000 commits. For the reflection-energy calibration (car env map,
+// road specular colour). Unset: one branch.
+static void fxparam_log(FxEffect &fx) {
+    static const char *want = [] { const char *e = getenv("RECOMP_REMASTER_FXPARAM_LOG"); return e && *e ? e : nullptr; }();
+    if (!want || fx.resource.find(want) == std::string::npos)
+        return;
+    static std::unordered_map<uint32_t, uint64_t> seen;
+    uint64_t &n = seen[fx.self];
+    if (n++ % 20000)
+        return;
+    const char *tech = fx.technique < fx.techniques.size() ? fx.techniques[fx.technique].name.c_str() : "?";
+    const char *pass = fx.technique < fx.techniques.size() && fx.pass < fx.techniques[fx.technique].passes.size()
+                           ? fx.techniques[fx.technique].passes[fx.pass].name.c_str() : "?";
+    LOGW("d3dx9: fxparam: %s/%s/%s (commit %llu)", fx.resource.c_str(), tech, pass, (unsigned long long)n);
+    for (const FxParam &p : fx.params) {
+        if (!p.t.numeric() || p.t.type != FXT_FLOAT || p.value.size() < 4)
+            continue;
+        const size_t k = std::min<size_t>(p.value.size() / 4, 16);
+        char buf[400];
+        int at = snprintf(buf, sizeof buf, "d3dx9: fxparam:   %s [%s]", p.t.name.c_str(), p.t.semantic.c_str());
+        for (size_t i = 0; i < k && at > 0 && at < (int)sizeof buf - 16; ++i) {
+            float f;
+            memcpy(&f, p.value.data() + 4 * i, 4);
+            at += snprintf(buf + at, sizeof buf - at, " %.4g", f);
+        }
+        LOGW("%s", buf);
+    }
 }
 void Fx_CommitChanges(X86 *c) {
     FxEffect *fx = this_fx(c);
     if (fx)
-        apply_pass(*fx);
+        fxparam_log(*fx);   // Remaster run 9 item C (TEST ONLY)
+    if (fx && rprof::on()) {   // Remaster P1 (TEST ONLY)
+        const bool pool = p1_pool_pass(*fx, c);
+        rprof::kind = pool ? rprof::K_PCC : rprof::K_CC;
+        const uint64_t t0 = os_monotonic_ns();
+        apply_pass(*fx, commit_delta_on() && !recomp_ab::old(recomp_ab::COMMIT));
+        p1_after_apply(*fx, pool, t0);
+    } else if (fx)
+        apply_pass(*fx, commit_delta_on() && !recomp_ab::old(recomp_ab::COMMIT));
     com_ret(c, D3D_OKX);
 }
 void Fx_EndPass(X86 *c) {
     FxEffect *fx = this_fx(c);
+    if (fx) {   // Remaster run 10: a fuse request ends with its effect's pass
+        D9Pipeline &pl = d9_pipeline(fx->device);
+        if (pl.pool_fx == fx->self)
+            pl.pool_fuse = 0;
+    }
+    if (fx && fx->self == rprof::last_pool_fx)
+        rprof::pool_active = false;   // Remaster P1: the pool pass is no longer in effect (the restore flag stays)
     if (fx)
         fx->pass = 0xffffffffu;
     com_ret(c, D3D_OKX);
@@ -2283,4 +2454,26 @@ void d3dx9_register() {
     com_bind(IF_D3DXEFFECT, K_D3DXEFFECT);
     com_set_destructor(K_D3DXEFFECT, fx_destroy);
     imports_register(g_d3dx9_exports, std::size(g_d3dx9_exports));
+}
+
+// Remaster run 10: the native two-pass fallback (d3d9_pipeline.h).
+bool d3dx9_pool_second_pass(D9Pipeline &pl, void (*draw)(void *), void *ctx) {
+    auto it = effects().find(pl.pool_fx);
+    if (it == effects().end())
+        return false;
+    FxEffect &fx = it->second;
+    if (fx.technique >= fx.techniques.size() || fx.pass != 0)
+        return false;
+    const FxTechnique &t = fx.techniques[fx.technique];
+    uint32_t pool_pass = 0;
+    while (pool_pass < t.passes.size() && t.passes[pool_pass].name != "clean_pools")
+        ++pool_pass;
+    if (pool_pass == 0 || pool_pass >= t.passes.size())
+        return false;
+    fx.pass = pool_pass;
+    apply_pass(fx);   // as the game's BeginPass(1) + CommitChanges
+    draw(ctx);
+    fx.pass = 0;
+    apply_pass(fx);   // as the mod's restore (EndPass + BeginPass(0)); the request stays, so the fuse is set again
+    return true;
 }

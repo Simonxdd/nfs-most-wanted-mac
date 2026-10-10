@@ -1,12 +1,13 @@
-/* Helicopter takedown bounty and announcement (the Extra Options mod's
- * HelicopterBountyFix behaviour, rebuilt natively and narrowed). Included by nfsmw.c.
+/* Helicopter takedown bounty and announcement (Test70; owner-authorized Extra Options
+ * HelicopterBountyFix, rebuilt natively and narrowed). Included by nfsmw.c.
  *
- * Retail PC 1.3: when a pursuit vehicle is taken out, 00418f30 reads its
+ * Retail (PC 1.3 and the USA Xbox 360 alike): when a pursuit vehicle is taken out, 00418f30 reads its
  * bounty from the pursuit attributes (00454810 key c07c8040 -> [this+0xf4]), hashes its name
  * (005cc240 at 00418f94 -> [this+0xf8]) and multiplies the bounty by the combo count at 00418fe4. For
  * "copheli" the attribute is <= 10, so a downed helicopter pays almost nothing; and the announcement
- * chain in 00595b00 (name hash -> text) has no "copheli" entry, so no message is shown. This is a
- * community enhancement (the Extra Options mod's HelicopterBountyFix behaviour, reimplemented).
+ * chain in 00595b00 (name hash -> text) has no "copheli" entry, so no message is shown. The USA image's
+ * chain (822a70c0..822a7140: copsuv, copsuvpatrol, copsuvl) has no copheli entry either: this is a
+ * community enhancement, not a console restoration.
  *
  * ExOpts' caves replace ANY bounty <= 10 with 100,000 and add copheli -> the copsporthench text
  * ("Federal Pursuit Vehicle"). Here only the helicopter is changed:

@@ -13,10 +13,12 @@
 #define CC_MAXP 48   /* passes */
 #define CC_MAXS 4    /* samplers s0..s3 per pass */
 #define CC_MAXC 8    /* constants per pass */
-#define CC_MAXG 16   /* global constants */
+#define CC_MAXG 24   /* global constants (16 until 7 Oct: module G adds 4) */
 #define CC_SRC_NONE  (-1)
 #define CC_FRAME     (-2)   /* source: the copy of the finished frame; destination: the frame itself */
 #define CC_DEPTH     (-4)   /* source only: the main view's device depth, R32F at frame size (module E; DepthInfo.x says if valid) */
+#define CC_GRADELUT  (-5)   /* source only: the G2 LUT, 256x1 (clean_grade.h) */
+#define CC_MIRROR    (-6)   /* destination of mirror=1 passes: the mirror texture (clean_grade.h) */
 #define CC_FX_MAX    (256 * 1024)
 
 typedef struct {
@@ -26,6 +28,9 @@ typedef struct {
     int history;             /* ping-pong pair: .cur (written this frame) and .prev (last frame's) */
     uint32_t tex[2], surf[2];
     unsigned w[2], h[2];
+    int ao;                  /* used only by ssao passes: made only while ssao is on (clean_ao.h) */
+    int grade, mirror;       /* grade: routes using it, bit 1 pc, bit 2 vt (made while that G2 route is on); mirror: size `mirror` (clean_grade.h) */
+    int f16;                 /* PLAN_R2 item 10: flag `f16`: made RGBA16F (D3DFMT 113) while the chain runs in its HDR form */
 } CcTarget;
 typedef struct {
     char tech[32];
@@ -36,15 +41,29 @@ typedef struct {
     uint32_t cparam[CC_MAXC];
     float cval[CC_MAXC][4];
     unsigned nc;
+    int sun;                                 /* module G pass (clean_sun_*): skipped when the host's sun intensity is 0 */
+    int glow;                                /* module H pass (clean_glow*): skipped when no lamp is near */
+    int ao, aoblur;                          /* ssao pass (clean_ao*; aoblur: clean_ao_blur*): skipped when ssao is off */
+    int recopy;                              /* `recopy ao`: StretchRect the frame into its copy again (no draw) */
+    int alt;                                 /* alt=TARGET: the destination while the G2 grade is on (else CC_SRC_NONE) */
+    int grade, mirror;                       /* clean_grade pass (skipped while G2 is off); mirror=1: drawn on the mirror */
+    int gmask;                               /* grade=off,pc,vt: G2 states it draws in (bit 0 off, 1 pc, 2 vt; clean_grade.h) */
 } CcPass;
 
 static int g_cc_env = -1;                    /* 0 unset, 1 forced on (TEST) */
 static int g_cc_state;                       /* 0 untried, 1 ready, -1 failed */
+/* PLAN_R2 item 10 real HDR (review/run14/hdr-design.md s2.4): the kit's frame is float (private render state 249,
+ * read-only): the chain loads clean-chain-hdr.fx and makes its `f16` targets and the frame copy RGBA16F. 0 = the
+ * ordinary chain, exactly as before (the state is 0 whenever HDR output is off). g_cc_hdr_off: the HDR form failed to
+ * load once; the ordinary chain from then on. */
+static int g_cc_hdr, g_cc_hdr_off;
+static uint64_t g_cc_hdr_switches;
 static CcTarget g_cc_t[CC_MAXT];
 static CcPass g_cc_p[CC_MAXP];
 static unsigned g_cc_nt, g_cc_np, g_cc_ng, g_cc_stages;   /* g_cc_stages: bit mask of sampler stages any pass uses */
 static uint32_t g_cc_gparam[CC_MAXG];
 static float g_cc_gval[CC_MAXG][4];
+static int g_cc_gao[CC_MAXG];                /* an Ao constant: set only on frames that draw ssao (clean_ao.h) */
 static uint32_t g_cc_fx, g_cc_mem, g_cc_frame_tex, g_cc_frame_surf;
 static unsigned g_cc_frame_w, g_cc_frame_h, g_cc_out_w, g_cc_out_h, g_cc_cur;
 static uint32_t g_cc_p_host, g_cc_p_dst, g_cc_p_src[CC_MAXS], g_cc_p_finish;
@@ -85,6 +104,11 @@ static void cc_set4(uint32_t param, const float v[4]) {
     const uint32_t a[] = {param, CC_VALS, 16};
     pfx_call(g_cc_fx, 0x50, a, 3);                                       /* SetValue */
 }
+#include "clean_sun.h"   /* module G host inputs (R2 N4) */
+#include "clean_glow.h"  /* module H host inputs (R2 run 8) */
+#include "clean_ao.h"    /* SSAO v1 host inputs (run 13) */
+#include "clean_grade.h" /* G2 golden colour filter + mirror grade/glass (run 13) */
+
 
 /* Creates an fx_2_0 effect from a file in the mod folder through the game's D3DXCreateEffectFromResourceA import,
  * swapping the verified IDI_OVERBRIGHT_FX resource entry for the one call and putting it back (the PC OverBright
@@ -168,6 +192,7 @@ static void cc_release_targets(void) {
     g_cc_depth_w = g_cc_depth_h = 0;
     g_cc_frame_w = g_cc_frame_h = 0;
     pfx_release(&g_cc_trace_sys);
+    cc_grade_release();
     g_cc_out_w = g_cc_out_h = 0;
 }
 
@@ -186,6 +211,8 @@ static int cc_ref(const char *s, int *prev) {
     *prev = 0;
     if (!strcmp(s, "frame")) return CC_FRAME;
     if (!strcmp(s, "depth")) return CC_DEPTH;
+    if (!strcmp(s, "GradeLut")) return CC_GRADELUT;
+    if (!strcmp(s, "mirror")) return CC_MIRROR;
     char n[32];
     snprintf(n, sizeof n, "%s", s);
     char *dot = strchr(n, '.');
@@ -225,7 +252,9 @@ static int cc_parse(const PopModApi *api, char *fxname, size_t fxn) {
         if (!nt) continue;
         if (!strcmp(tok[0], "effect") && nt == 2) {
             snprintf(fxname, fxn, "%s", tok[1]);
-        } else if ((!strcmp(tok[0], "target") || !strcmp(tok[0], "history")) && nt == 4) {
+            char *dot = g_cc_hdr ? strstr(fxname, ".fx") : NULL;   /* item 10: NAME.fx -> NAME-hdr.fx */
+            if (dot && strlen(fxname) + 5 <= fxn) { memmove(dot + 4, dot, strlen(dot) + 1); memcpy(dot, "-hdr", 4); }
+        } else if ((!strcmp(tok[0], "target") || !strcmp(tok[0], "history")) && (nt == 4 || (nt == 5 && !strcmp(tok[4], "f16")))) {
             if (g_cc_nt >= CC_MAXT) { ok = cc_fail_load("too many targets for the host runner (CC_MAXT)", ln); break; }
             if (cc_find(tok[1]) >= 0 || strlen(tok[1]) >= sizeof g_cc_t[0].name || strchr(tok[1], '.')) { ok = cc_fail_load("bad or duplicate target name", ln); break; }
             CcTarget *t = &g_cc_t[g_cc_nt];
@@ -235,10 +264,13 @@ static int cc_parse(const PopModApi *api, char *fxname, size_t fxn) {
             if (!strcmp(tok[2], "argb8")) t->fmt = 21;
             else if (!strcmp(tok[2], "r32f")) t->fmt = 114;
             else { ok = cc_fail_load("format must be argb8 or r32f", ln); break; }
+            t->f16 = nt == 5;                                   /* item 10: RGBA16F only in the HDR form */
+            if (t->f16 && g_cc_hdr) t->fmt = 113;
             if (!strcmp(tok[3], "frame")) t->div = 1;
             else if (sscanf(tok[3], "frame/%u", &t->div) == 1 && t->div >= 1 && t->div <= 256) {}
+            else if (!strcmp(tok[3], "mirror")) { t->mirror = 1; t->div = 0; t->aw = t->ah = 1; }   /* the mirror texture's size */
             else if (sscanf(tok[3], "%ux%u", &t->aw, &t->ah) == 2 && t->aw >= 1 && t->ah >= 1 && t->aw <= 4096 && t->ah <= 4096) t->div = 0;
-            else { ok = cc_fail_load("size must be frame, frame/N or WxH", ln); break; }
+            else { ok = cc_fail_load("size must be frame, frame/N, WxH or mirror", ln); break; }
             ++g_cc_nt;
         } else if (!strcmp(tok[0], "const") && nt == 3) {
             if (g_cc_ng >= CC_MAXG) { ok = cc_fail_load("too many constants", ln); break; }
@@ -250,11 +282,17 @@ static int cc_parse(const PopModApi *api, char *fxname, size_t fxn) {
             CcPass *p = &g_cc_p[g_cc_np];
             memset(p, 0, sizeof *p);
             snprintf(p->tech, sizeof p->tech, "%s", tok[1]);
+            p->sun = !strncmp(tok[1], "clean_sun_", 10);
+            p->glow = !strncmp(tok[1], "clean_glow", 10);
+            p->ao = !strncmp(tok[1], "clean_ao", 8);
+            p->aoblur = !strncmp(tok[1], "clean_ao_blur", 13);
+            p->grade = !strncmp(tok[1], "clean_grade", 11);
+            p->alt = CC_SRC_NONE;
             const uint32_t a[] = {cc_name(tok[1])};
             p->htech = pfx_call(g_cc_fx, 0x34, a, 1);                     /* GetTechniqueByName */
             if (!p->htech || p->htech == 0x80004005u) { ok = cc_fail_load("technique not in the effect", ln); break; }
             p->dst = cc_ref(tok[3], &p->dst_prev);
-            if (p->dst == -3 || p->dst == CC_DEPTH || p->dst_prev) { ok = cc_fail_load("destination must be frame, a target or HISTORY.cur", ln); break; }
+            if (p->dst == -3 || p->dst == CC_DEPTH || p->dst == CC_GRADELUT || p->dst_prev) { ok = cc_fail_load("destination must be frame, a target or HISTORY.cur", ln); break; }
             for (unsigned s = 0; s < CC_MAXS; ++s) p->src[s] = CC_SRC_NONE;
             p->write = p->dst == CC_FRAME ? 7u : 15u;                  /* the frame keeps its alpha */
             for (unsigned i = 4; ok && i < nt; ++i) {
@@ -285,7 +323,25 @@ static int cc_parse(const PopModApi *api, char *fxname, size_t fxn) {
                     if (p->src[s] == -3) { ok = cc_fail_load("unknown source", ln); break; }
                     if (p->src[s] == CC_DEPTH) g_cc_uses_depth = 1;
                     if (p->src[s] >= 0 && p->src[s] == p->dst && p->src_prev[s] == p->dst_prev) { ok = cc_fail_load("a pass reads its own destination", ln); break; }
+                    if (p->src[s] == CC_MIRROR && p->dst == CC_MIRROR) { ok = cc_fail_load("a pass reads its own destination", ln); break; }
                     g_cc_stages |= 1u << s;
+                } else if (!strcmp(k, "alt")) {          /* G2: the destination while the grade is on (a plain target) */
+                    int prev = 0;
+                    p->alt = cc_ref(v, &prev);
+                    if (p->alt < 0 || g_cc_t[p->alt].history || p->alt == p->dst) { ok = cc_fail_load("alt must be a plain target", ln); break; }
+                    for (unsigned q = 0; q < CC_MAXS; ++q)
+                        if (p->src[q] == p->alt) ok = cc_fail_load("alt must not be a source of the same pass", ln);
+                    if (!ok) break;
+                } else if (!strcmp(k, "grade")) {        /* G2 states the pass draws in: a list of off, pc, vt */
+                    char b[32];
+                    snprintf(b, sizeof b, "%s", v);
+                    for (char *q = strtok(b, ","); q; q = strtok(NULL, ","))
+                        if (!strcmp(q, "off")) p->gmask |= 1; else if (!strcmp(q, "pc")) p->gmask |= 2;
+                        else if (!strcmp(q, "vt")) p->gmask |= 4; else ok = cc_fail_load("grade must list off, pc, vt", ln);
+                    if (!ok) break;
+                } else if (!strcmp(k, "mirror")) {
+                    if (strcmp(v, "1")) { ok = cc_fail_load("mirror must be 1", ln); break; }
+                    p->mirror = 1;
                 } else {
                     if (p->nc >= CC_MAXC) { ok = cc_fail_load("too many pass constants", ln); break; }
                     if (!(p->cparam[p->nc] = cc_param(k))) { ok = cc_fail_load("pass constant not in the effect", ln); break; }
@@ -293,7 +349,20 @@ static int cc_parse(const PopModApi *api, char *fxname, size_t fxn) {
                     ++p->nc;
                 }
             }
+            if (!p->gmask) p->gmask = p->grade ? 6 : 7;   /* G2: clean_grade* in pc and vt; the rest in every state */
+            if (!(p->gmask & 1)) p->grade = 1;           /* never drawn with G2 off: a grade pass */
             if (ok) ++g_cc_np;
+        } else if (!strcmp(tok[0], "recopy") && nt == 2 && !strcmp(tok[1], "ao")) {   /* ssao: the frame copy again */
+            if (g_cc_np >= CC_MAXP) { ok = cc_fail_load("too many passes", ln); break; }
+            CcPass *p = &g_cc_p[g_cc_np];
+            memset(p, 0, sizeof *p);
+            snprintf(p->tech, sizeof p->tech, "recopy");
+            p->ao = p->recopy = 1;
+            p->alt = CC_SRC_NONE;
+            p->gmask = 7;                            /* every G2 state */
+            p->dst = CC_FRAME;
+            for (unsigned s = 0; s < CC_MAXS; ++s) p->src[s] = CC_SRC_NONE;
+            ++g_cc_np;
         } else {
             ok = cc_fail_load("unknown line", ln);
         }
@@ -315,7 +384,7 @@ static void cc_log_fail(const PopModApi *api) {
     g_cc_state = -1;
 }
 static int cc_load(const PopModApi *api) {
-    if (api->guest_alloc(api, CC_MEM_SIZE, &g_cc_mem) != POP_OK) { snprintf(g_cc_fail, sizeof g_cc_fail, "no guest memory"); return 0; }
+    if (!g_cc_mem && api->guest_alloc(api, CC_MEM_SIZE, &g_cc_mem) != POP_OK)   /* kept across an item-10 reload */ { snprintf(g_cc_fail, sizeof g_cc_fail, "no guest memory"); return 0; }
     char fx[64];
     if (!cc_parse(api, fx, sizeof fx)) return 0;
     g_cc_p_host = cc_param("HostFrame");
@@ -327,7 +396,14 @@ static int cc_load(const PopModApi *api) {
     g_cc_p_flags = cc_param("cameraFlags");
     g_cc_p_focus = cc_param("CameraFocus");
     g_cc_p_motion = cc_param("MotionSettings");
+    g_cc_p_sun = cc_param("SunParams");          /* module G host inputs (clean_sun.h) */
+    g_cc_p_suncol = cc_param("SunColour");
+    g_cc_p_glamps = cc_param("GlowLamps");       /* module H host inputs (clean_glow.h) */
+    g_cc_p_gdepth = cc_param("GlowDepth");
+    g_cc_p_gparams = cc_param("GlowParams");
     g_cc_p_dst = cc_param("DstTexelSize");
+    cc_ao_resolve(api);                          /* ssao parameters, lazy targets, Ao constants */
+    if (!cc_grade_resolve()) return 0;           /* G2 + mirror parameters, lazy targets, checks */
     for (unsigned s = 0; s < CC_MAXS; ++s) {
         char n[24];
         snprintf(n, sizeof n, "SrcTexelSize%u", s);
@@ -335,7 +411,7 @@ static int cc_load(const PopModApi *api) {
     }
     const char *tt = getenv("NFSMW_TEST_CLEAN_TRACE_TARGET");   /* TEST ONLY: per-frame value of a 1x1 R32F target */
     const char *tf = getenv("NFSMW_TEST_CLEAN_TRACE");
-    if (tt && *tt && tf && *tf) {
+    if (tt && *tt && tf && *tf && !g_cc_trace) {
         char list[128];
         snprintf(list, sizeof list, "%s", tt);
         int ok = 1;
@@ -379,7 +455,7 @@ static int clean_chain_mode(void) {
     int m = 0;
     /* Without the TEST switch, the setting clean_effects (on by default) runs the chain in the Definitive look. If
      * clean-chain.fx/.txt are missing or fail to load, the frame stays the plain picture and the log says why. */
-    if (g_cc_env == 0 && g_cc_state >= 0 && g_look == LOOK_HYBRID && setting("clean_effects", 1)) m = g_pfx_live ? 1 : 2;
+    if (g_cc_env == 0 && g_cc_state >= 0 && g_look != LOOK_PC && setting("clean_effects", 1)) m = g_pfx_live ? 1 : 2;
     if (g_cc_env == 1) m = g_pfx_live ? 1 : 2;
     if (m != 1) g_cc_stale = 1;   /* a frame without the clean chain: its history is stale when it comes back */
     return m;
@@ -389,6 +465,8 @@ static int cc_make_targets(uint32_t dev, unsigned out_w, unsigned out_h) {
     int made = 0;
     for (unsigned i = 0; i < g_cc_nt; ++i) {
         CcTarget *t = &g_cc_t[i];
+        if (t->ao) continue;                     /* made by cc_ao_targets only while ssao is on */
+        if (t->grade || t->mirror) continue;     /* made by clean_grade.h only while G2 / a mirror setting is on */
         const unsigned w = t->div ? (out_w + t->div - 1) / t->div : t->aw, h = t->div ? (out_h + t->div - 1) / t->div : t->ah;
         for (unsigned k = 0; k < (t->history ? 2u : 1u); ++k) {
             if (t->surf[k] && t->w[k] == w && t->h[k] == h) continue;
@@ -400,7 +478,7 @@ static int cc_make_targets(uint32_t dev, unsigned out_w, unsigned out_h) {
         }
     }
     if (!g_cc_frame_surf || g_cc_frame_w != out_w || g_cc_frame_h != out_h) {
-        if (!pfx_target(dev, &g_cc_frame_tex, &g_cc_frame_surf, &g_cc_frame_w, &g_cc_frame_h, out_w, out_h, 21)) {
+        if (!pfx_target(dev, &g_cc_frame_tex, &g_cc_frame_surf, &g_cc_frame_w, &g_cc_frame_h, out_w, out_h, g_cc_hdr ? 113u : 21u)) {
             snprintf(g_cc_fail, sizeof g_cc_fail, "frame copy could not be made");
             return -1;
         }
@@ -413,6 +491,8 @@ static int cc_make_targets(uint32_t dev, unsigned out_w, unsigned out_h) {
 static void cc_size(int t, int prev, unsigned *w, unsigned *h) {
     if (t == CC_FRAME) { *w = g_cc_frame_w; *h = g_cc_frame_h; return; }
     if (t == CC_DEPTH) { *w = g_cc_depth_w ? g_cc_depth_w : 1u; *h = g_cc_depth_h ? g_cc_depth_h : 1u; return; }
+    if (t == CC_GRADELUT) { *w = 256u; *h = 1u; return; }
+    if (t == CC_MIRROR) { *w = g_cc_mirror_w ? g_cc_mirror_w : 1u; *h = g_cc_mirror_h ? g_cc_mirror_h : 1u; return; }
     const unsigned k = g_cc_t[t].history ? (g_cc_cur ^ (unsigned)prev) : 0u;
     *w = g_cc_t[t].w[k];
     *h = g_cc_t[t].h[k];
@@ -420,10 +500,14 @@ static void cc_size(int t, int prev, unsigned *w, unsigned *h) {
 static uint32_t cc_tex(int t, int prev) {
     if (t == CC_FRAME) return g_cc_frame_tex;
     if (t == CC_DEPTH) return g_cc_depth_tex;
+    if (t == CC_GRADELUT) return g_cc_grade_lut;
+    if (t == CC_MIRROR) return g_cc_mirror_tex;
     return g_cc_t[t].tex[g_cc_t[t].history ? (g_cc_cur ^ (unsigned)prev) : 0u];
 }
 static uint32_t cc_surf(int t, int prev, uint32_t bb) {
     if (t == CC_FRAME) return bb;
+    if (t == CC_MIRROR) return g_cc_mirror_surf;
+    if (t < 0) return 0;
     return g_cc_t[t].surf[g_cc_t[t].history ? (g_cc_cur ^ (unsigned)prev) : 0u];
 }
 
@@ -459,6 +543,7 @@ static void cc_e_inputs(const PopModApi *api, uint32_t dev, unsigned out_w, unsi
         }
         if (have_depth) ++g_cc_depth_frames; else ++g_cc_depth_missing;
     }
+    g_cc_have_depth = have_depth;
     const float di[4] = {have_depth ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
     cc_set4(g_cc_p_depthinfo, di);
     const uint32_t view = 0x009195e0u + 0x70u, cam = get_u32(view + 0x40u);
@@ -515,17 +600,85 @@ static void cc_e_inputs(const PopModApi *api, uint32_t dev, unsigned out_w, unsi
     }
 }
 
+/* One clean pass into `dst` (its destination, its alt= target while G2 is on, or the mirror); same calls as before. */
+static void cc_pass(uint32_t dev, const CcPass *p, int dst, uint32_t bb) {
+    unsigned dw, dh;
+    cc_size(dst, 0, &dw, &dh);
+    cc_state(dev, p->blend, p->write);
+    const uint32_t rt[] = {0, cc_surf(dst, 0, bb)};
+    if (pfx_call(dev, 0x94, rt, 2) != 0) { ++g_cc_pass_errors; return; }   /* SetRenderTarget (sets the viewport) */
+    for (unsigned s = 0; s < CC_MAXS; ++s) {
+        if (!(g_cc_stages & (1u << s))) continue;
+        const uint32_t tx = p->src[s] == CC_SRC_NONE ? 0u : cc_tex(p->src[s], p->src_prev[s]);
+        const uint32_t a[] = {s, tx};
+        pfx_call(dev, 0x104, a, 2);                                    /* SetTexture (null where unused) */
+        if (tx) cc_sampler(dev, s, p->linear[s]);
+        if (tx && g_cc_p_src[s]) {
+            unsigned sw, sh;
+            cc_size(p->src[s], p->src_prev[s], &sw, &sh);
+            const float ts[4] = {1.0f / (float)sw, 1.0f / (float)sh, (float)sw, (float)sh};
+            cc_set4(g_cc_p_src[s], ts);
+        }
+    }
+    const float ds[4] = {1.0f / (float)dw, 1.0f / (float)dh, (float)dw, (float)dh};
+    cc_set4(g_cc_p_dst, ds);
+    for (unsigned k = 0; k < p->nc; ++k) cc_set4(p->cparam[k], p->cval[k]);
+    const uint32_t te[] = {p->htech};
+    pfx_call(g_cc_fx, 0xe8, te, 1);                                   /* SetTechnique */
+    const uint32_t b[] = {CC_OUT + 0x3cu, 0};
+    if (pfx_call(g_cc_fx, 0xfc, b, 2) != 0) { ++g_cc_pass_errors; return; }   /* Begin */
+    const uint32_t pz[] = {0};
+    pfx_call(g_cc_fx, 0x100, pz, 1);                                  /* BeginPass */
+    cc_quad(dev, CC_VERTS, dw, dh);
+    pfx_call(g_cc_fx, 0x108, NULL, 0);                                /* EndPass */
+    pfx_call(g_cc_fx, 0x10c, NULL, 0);                                /* End */
+}
+
 /* Called by pfx_frame_body inside its save/restore of render target, viewport, stage-0 texture and sampler state,
  * render states and vertex declaration (the quad declaration is set). Stages 1-3 are saved and restored here. */
+/* PLAN_R2 item 10: the chain switches form (the kit's frame went float or back): everything it made goes, and the next
+ * frame loads the other form from the start (a history reset, like a device reset). */
+static void cc_unload(void) {
+    cc_release_targets();
+    pfx_release(&g_cc_fx);
+    g_cc_nt = g_cc_np = g_cc_ng = g_cc_stages = 0;
+    g_cc_state = 0;
+    g_cc_reset_pending = 1;
+}
 static void clean_chain_run(const PopModApi *api, uint32_t dev, uint32_t bb, unsigned out_w, unsigned out_h, uint32_t game_frame) {
     if (g_cc_state < 0) return;
+    {   /* item 10: private render state 249 (read-only, the kit): 1 while the frame is float */
+        const uint32_t a[] = {249, PFX_OUT};
+        const int hdr = !g_cc_hdr_off && pfx_call(dev, 0xe8, a, 2) == 0 && get_u32(PFX_OUT) == 1;
+        if (hdr != g_cc_hdr) {
+            if (g_cc_state > 0) cc_unload();
+            g_cc_hdr = hdr;
+            ++g_cc_hdr_switches;
+            char line[160];
+            snprintf(line, sizeof line, "core.nfsmw: effects: HDR frame %s: the chain reloads in its %s form (switch %llu)",
+                     hdr ? "on" : "off", hdr ? "HDR (clean-chain-hdr.fx, f16 targets)" : "ordinary", (unsigned long long)g_cc_hdr_switches);
+            api->log(api, line);
+        }
+    }
     if (!g_cc_state) {
-        if (!cc_load(api)) { cc_log_fail(api); return; }
+        int ok = cc_load(api);
+        if (!ok && g_cc_hdr) {   /* item 10: no HDR form: the ordinary chain, for good */
+            char line[240];
+            snprintf(line, sizeof line, "core.nfsmw: effects: the HDR form did not load (%s); the ordinary chain", g_cc_fail);
+            api->log(api, line);
+            cc_unload();
+            g_cc_hdr = 0;
+            g_cc_hdr_off = 1;
+            ok = cc_load(api);
+        }
+        if (!ok) { cc_log_fail(api); return; }
         g_cc_state = 1;
     }
     int reset = g_cc_reset_pending || g_cc_stale || g_pfx_reseeds != g_cc_seen_reseeds;
     const int made = cc_make_targets(dev, out_w, out_h);
     if (made < 0) { cc_release_targets(); cc_log_fail(api); return; }
+    cc_ao_want_update();
+    cc_ao_targets(api, dev, out_w, out_h);       /* ssao targets: only while ssao is on; never a history reset */
     if (made) {
         reset = 1;
         ++g_cc_target_sets;
@@ -546,7 +699,7 @@ static void clean_chain_run(const PopModApi *api, uint32_t dev, uint32_t bb, uns
     if (pfx_call(dev, 0x88, sr, 5) != 0) { ++g_cc_pass_errors; return; }  /* StretchRect frame -> copy */
     const float host[4] = {dt, reset ? 1.0f : 0.0f, (float)out_w, (float)out_h};
     cc_set4(g_cc_p_host, host);
-    for (unsigned i = 0; i < g_cc_ng; ++i) cc_set4(g_cc_gparam[i], g_cc_gval[i]);
+    for (unsigned i = 0; i < g_cc_ng; ++i) if (!g_cc_gao[i]) cc_set4(g_cc_gparam[i], g_cc_gval[i]);   /* Ao: cc_ao_inputs */
     for (unsigned i = 0; g_cc_p_expo && i < g_cc_ng; ++i)   /* setting hybrid_exposure (auto brightness %) */
         if (g_cc_gparam[i] == g_cc_p_expo) {
             float e[4] = {g_cc_gval[i][0], g_cc_gval[i][1], g_cc_gval[i][2], (float)setting("hybrid_exposure", 50) / 100.0f};
@@ -573,7 +726,11 @@ static void clean_chain_run(const PopModApi *api, uint32_t dev, uint32_t bb, uns
         }
     }
 
-    cc_e_inputs(api, dev, out_w, out_h, game_frame);   /* module E host inputs (depth copy + camera data) */
+    cc_e_inputs(api, dev, out_w, out_h, game_frame);
+    cc_g_inputs(api, out_w, out_h, game_frame);        /* module G host inputs; g_cc_sun_on = 0 skips its passes */
+    cc_h_inputs(api, out_w, out_h);                    /* module H host inputs; g_cc_glow_on = 0 skips its passes */
+    cc_ao_inputs(api, out_w, out_h, game_frame);       /* ssao host inputs; g_cc_ao_on = 0 skips its passes and the recopy */
+    cc_grade_inputs(api, dev, out_w, out_h, game_frame);   /* G2; g_cc_grade_on = 0 skips clean_grade and every alt= */
     /* stages 1-3: save texture and sampler state (stage 0 is the chain's) */
     uint32_t stex[CC_MAXS] = {0}, sss[CC_MAXS][6];
     static const uint32_t sst[6] = {1, 2, 5, 6, 7, 11};
@@ -586,39 +743,26 @@ static void clean_chain_run(const PopModApi *api, uint32_t dev, uint32_t bb, uns
             sss[s][k] = pfx_call(dev, 0x110, g, 3) == 0 ? get_u32(CC_OUT) : 0;
         }
     }
+    /* item 10: while the frame is float the chain's own draws carry private render state 249 = 1, so the kit clamps them
+     * at the light ceiling (64), not at SDR white (its clamp of the game's opaque draws); reset right after. */
+    const uint32_t hdr_on[] = {249, 1}, hdr_off[] = {249, 0};
+    if (g_cc_hdr) pfx_call(dev, 0xe4, hdr_on, 2);
     for (unsigned i = 0; i < g_cc_np; ++i) {
         const CcPass *p = &g_cc_p[i];
-        unsigned dw, dh;
-        cc_size(p->dst, 0, &dw, &dh);
-        cc_state(dev, p->blend, p->write);
-        const uint32_t rt[] = {0, cc_surf(p->dst, 0, bb)};
-        if (pfx_call(dev, 0x94, rt, 2) != 0) { ++g_cc_pass_errors; continue; }   /* SetRenderTarget (sets the viewport) */
-        for (unsigned s = 0; s < CC_MAXS; ++s) {
-            if (!(g_cc_stages & (1u << s))) continue;
-            const uint32_t tx = p->src[s] == CC_SRC_NONE ? 0u : cc_tex(p->src[s], p->src_prev[s]);
-            const uint32_t a[] = {s, tx};
-            pfx_call(dev, 0x104, a, 2);                                    /* SetTexture (null where unused) */
-            if (tx) cc_sampler(dev, s, p->linear[s]);
-            if (tx && g_cc_p_src[s]) {
-                unsigned sw, sh;
-                cc_size(p->src[s], p->src_prev[s], &sw, &sh);
-                const float ts[4] = {1.0f / (float)sw, 1.0f / (float)sh, (float)sw, (float)sh};
-                cc_set4(g_cc_p_src[s], ts);
-            }
+        if ((p->sun && !g_cc_sun_on) || (p->glow && !g_cc_glow_on)) continue;
+        if (p->ao && (!g_cc_ao_on || (p->aoblur && g_cc_ao_view == 2))) continue;   /* ssao off: before any device call */
+        if (p->mirror || !(p->gmask >> (g_cc_grade_on ? g_cc_grade_route : 0) & 1)) continue;   /* mirror: below; G2 state: before any device call */
+        if (p->recopy) {                                                  /* the AO'd frame into the copy (as above) */
+            if (pfx_call(dev, 0x88, sr, 5) != 0) ++g_cc_pass_errors; else ++g_cc_ao_recopies;
+            continue;
         }
-        const float ds[4] = {1.0f / (float)dw, 1.0f / (float)dh, (float)dw, (float)dh};
-        cc_set4(g_cc_p_dst, ds);
-        for (unsigned k = 0; k < p->nc; ++k) cc_set4(p->cparam[k], p->cval[k]);
-        const uint32_t te[] = {p->htech};
-        pfx_call(g_cc_fx, 0xe8, te, 1);                                   /* SetTechnique */
-        const uint32_t b[] = {CC_OUT + 0x3cu, 0};
-        if (pfx_call(g_cc_fx, 0xfc, b, 2) != 0) { ++g_cc_pass_errors; continue; }   /* Begin */
-        const uint32_t pz[] = {0};
-        pfx_call(g_cc_fx, 0x100, pz, 1);                                  /* BeginPass */
-        cc_quad(dev, CC_VERTS, dw, dh);
-        pfx_call(g_cc_fx, 0x108, NULL, 0);                                /* EndPass */
-        pfx_call(g_cc_fx, 0x10c, NULL, 0);                                /* End */
+        cc_pass(dev, p, g_cc_grade_on && g_cc_grade_route == 1 && p->alt >= 0 ? p->alt : p->dst, bb);
     }
+    if (g_cc_mirror_np && cc_mirror_prepare(api, dev)) {   /* mirror grade + glass: after every main pass */
+        for (unsigned i = 0; i < g_cc_np; ++i) if (g_cc_p[i].mirror) cc_pass(dev, &g_cc_p[i], CC_MIRROR, bb);
+        cc_mirror_done();
+    }
+    if (g_cc_hdr) pfx_call(dev, 0xe4, hdr_off, 2);
     for (unsigned s = 1; s < CC_MAXS; ++s) {
         if (!(g_cc_stages & (1u << s))) continue;
         const uint32_t a[] = {s, stex[s]};
@@ -657,16 +801,18 @@ static void clean_chain_run(const PopModApi *api, uint32_t dev, uint32_t bb, uns
 
 static int clean_chain_init(const PopModApi *api) {
     clean_chain_mode();
-    if (!g_cc_env) return 0;
+    /* Remaster N3-A: the device-reset hook whenever the chain can run (the setting clean_effects, on by default, or
+     * the TEST switch), not only under the TEST switch. */
+    if (!g_cc_env && !setting("clean_effects", 1)) return 0;
     if (!g_hooks[104] &&   /* slot 104 (hook_slot_free is defined after this file) */
         api->hook_install(api, 0x006db0d0u, cc_device_reset, POP_HOOK_BEFORE, NULL, &g_hooks[104]) == POP_OK)
-        api->log(api, "core.nfsmw: TEST clean chain: forced on");
+        api->log(api, g_cc_env ? "core.nfsmw: TEST clean chain: forced on" : "core.nfsmw: effects: device reset hook on");
     else
         api->log(api, "core.nfsmw: TEST clean chain: device reset hook failed; targets are still made again on size changes");
     return 1;
 }
 static void clean_chain_exit(const PopModApi *api) {
-    if (!g_cc_env) return;
+    if (!g_cc_env && !g_cc_state && !g_hooks[104]) return;   /* Remaster N3-A: logs in production too */
     char line[320];
     if (g_cc_uses_depth || g_cc_p_depthinfo) {
         snprintf(line, sizeof line, "core.nfsmw: TEST clean chain: depth for module E: %llu frames with the view's depth, %llu without",
@@ -678,6 +824,19 @@ static void clean_chain_exit(const PopModApi *api) {
              (unsigned long long)g_cc_target_sets, (unsigned long long)g_cc_pass_errors, g_cc_state < 0 ? "; failed: " : "",
              g_cc_state < 0 ? g_cc_fail : "");
     api->log(api, line);
+    if (g_cc_p_sun) {
+        snprintf(line, sizeof line, "core.nfsmw: clean chain: module G sun rays on %llu frames, skipped %llu (last uv %.3f %.3f intensity %.3f)",
+                 (unsigned long long)g_cc_sun_frames, (unsigned long long)g_cc_sun_skipped, (double)g_cc_sun_last[0],
+                 (double)g_cc_sun_last[1], (double)g_cc_sun_last[2]);
+        api->log(api, line);
+    }
+    if (g_cc_p_glamps) {
+        snprintf(line, sizeof line, "core.nfsmw: clean chain: module H lamp glow on %llu frames (mean %.2f lamps)",
+                 (unsigned long long)g_cc_glow_frames, g_cc_glow_frames ? (double)g_cc_glow_lamps / (double)g_cc_glow_frames : 0.0);
+        api->log(api, line);
+    }
+    cc_ao_exit(api);
+    cc_grade_exit(api);
     if (g_cc_trace) { fclose(g_cc_trace); g_cc_trace = NULL; }
     g_cc_env = 0;
 }

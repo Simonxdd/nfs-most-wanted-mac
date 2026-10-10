@@ -40,8 +40,8 @@ static void memory_jump_watch(const PopModApi *api) {
                  vm.resident_size / 1048576.0, ms.size_in_use / 1048576.0);
         api->log(api, line);
     }
-    /* Development safety stop (Test155, external review 4 Oct): the game normally stays near 3 GB. Past 8 GB of footprint
-     * (external review: 16 GB adds no evidence at 13 GB/s) it is in the rain runaway (21:14: +13 GB/s), and macOS would soon kill it and other apps for low swap. Stop
+    /* Development safety stop (Test155, review 4 Oct): the game normally stays near 3 GB. Past 8 GB of footprint
+     * (review: 16 GB adds no evidence at 13 GB/s) it is in the rain runaway (21:14: +13 GB/s), and macOS would soon kill it and other apps for low swap. Stop
      * the game first, saying so; the kit's "ALLOCATION GROWTH" lines are already in the log by then. */
     if (mb > 8192.0) {
         char line[200];

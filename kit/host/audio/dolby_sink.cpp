@@ -1,6 +1,6 @@
 // dolby_sink.cpp - the mixer's 5.1 output as a Dolby Digital (AC-3) bitstream,
-// the way game consoles feed a receiver or soundbar. Some TV/soundbar chains
-// (a TV -> eARC -> soundbar chain, Test54) misplace multichannel PCM from
+// the way the Xbox 360 feeds a receiver or soundbar. Some TV/soundbar chains
+// (for example a TV -> eARC -> soundbar chain) misplace multichannel PCM from
 // an HDMI source but decode Dolby Digital correctly, because the bitstream
 // carries its own channel roles.
 //
@@ -132,7 +132,7 @@ AudioObjectPropertyAddress addr(AudioObjectPropertySelector s,
     return {s, scope, kAudioObjectPropertyElementMain};
 }
 
-// Test83 (test report: the bad-audio launches were fixed by switching the Mac's Sound output to the MacBook
+// Test83 (owner, 1 Oct: the bad-audio launches were fixed by switching the Mac's Sound output to the MacBook
 // speakers and back to the TV; while this sink holds the TV exclusively macOS also moves its own default output to
 // the speakers). Before taking the device, its HDMI link is refreshed the same way: the default output goes to
 // another output device (the built-in speakers when present) and back. When the sink releases the device, the
@@ -482,7 +482,7 @@ class DolbySink final : public AudioSink {
             fflush(stdout);
         }
     }
-    // Test83: a workaround for a bad HDMI audio link (robotic sound after sleep/wake or a
+    // Test83: the owner's workaround for a bad HDMI audio link (robotic sound after sleep/wake or a
     // controller/refresh-rate change, fixed by switching the Sound output away and back), done by the
     // sink itself before it takes the device.
     void refresh_link() {

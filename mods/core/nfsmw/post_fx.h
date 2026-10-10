@@ -168,6 +168,9 @@ static int pfx_create(const PopModApi *api, uint32_t dev) {
 }
 
 static void pfx_frame_body(const PopModApi *api) {
+    /* run 13 mirror parity: the mirror is drawn before this seam (006de300) and composited after it; latch "drawn this
+     * frame" for the mirror grade (clean_grade.h) and clear it for the next frame on every path. */
+    g_cc_mirror_fresh = g_mirror_fresh;
     g_mirror_fresh = 0;
     if (!g_pfx_enabled || g_pfx_broken) return;
     if (get_u32(0x009017fcu) || get_u32(0x00901828u)) {                /* PC OverBright / visual treatment on */
@@ -252,7 +255,14 @@ static void pfx_frame_body(const PopModApi *api) {
     /* HDR output: mark the finished pre-HUD scene - alpha 1 over the whole frame (colour untouched); the D3D9
      * renderer clears it under everything drawn after the marker set below (the HUD, mirror, menus), and the
      * presenter expands highlights only where it is still 1. */
-    const int hdr_mark = g_pfx_alpha_tech && g_pfx_live && setting("hdr_output", 0);
+    /* PLAN_R2 item 10 (COMB14B): also while the kit's frame is float (private render state 249, read-only; 0 whenever
+     * the float frame is off), so the kit's HUD split has its scene mark on the TEST float path without hdr_output. */
+    int hdr_float = 0;
+    if (g_pfx_alpha_tech && g_pfx_live && !setting("hdr_output", 0)) {
+        const uint32_t a249[] = {249, PFX_OUT};
+        hdr_float = pfx_call(dev, 0xe8, a249, 2) == 0 && get_u32(PFX_OUT) == 1;
+    }
+    const int hdr_mark = g_pfx_alpha_tech && g_pfx_live && (setting("hdr_output", 0) || hdr_float);
     if (hdr_mark) {
         const uint32_t st[][2] = {{27, 0}, {168, 8}};
         for (unsigned i = 0; i < 2; ++i) pfx_call(dev, 0xe4, st[i], 2);

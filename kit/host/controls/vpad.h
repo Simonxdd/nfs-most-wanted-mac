@@ -75,7 +75,9 @@ struct PadEdge {
     int32_t value;
 };
 
-enum { kPadSourceTouch = 0, kPadSourceController = 1, kPadSourceCount = 2 };
+// kPadSourceTest: the app's test-only script runner (Remaster U4); the touch router rewrites kPadSourceTouch every
+// frame in the app host, so a script needs its own source.
+enum { kPadSourceTouch = 0, kPadSourceController = 1, kPadSourceTest = 2, kPadSourceCount = 3 };
 
 // Thread-safe (one mutex): the host (input thread) writes through
 // set_source/request_rumble/set_controller_connected, and the guest (game

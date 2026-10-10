@@ -1,5 +1,5 @@
-/* Sparks and light trails (XenonEffects): the particle list of the NGEffect system - contrails and sparks - for
- * 'xbox_particles'. Pure: no guest or GPU access (the world collision query is a
+/* Xbox 360 particles (task 145, Test119): the particle list of the Xbox 360's NGEffect system - contrails and
+ * sparks - for Definitive's 'xbox_particles'. Pure: no guest or GPU access (the world collision query is a
  * callback), shared with native/tests/xenon_particle_tests.cpp.
  *
  * Behaviour from NFSMW_XenonEffects by xan1242 (Lovro Plese), MIT licence, commit b5070080 (the PC Carbon routines
@@ -294,14 +294,14 @@ static inline uint32_t xp_build_quads(const XenonParticle *list, uint32_t count,
     return q;
 }
 
-/* The effect intensity for an effect without a piggyback (contrails), as the reference computes it:
- * lerp(0.1, 0.75, (|v| - 44) / 44) over the effect's velocity (all four components), the step clamped to 0..1;
- * such effects spawn without collisions. Effects with a piggyback (sparks) use 1.0 and collide. */
+/* The Xbox 360's own effect intensity for an effect without a piggyback (contrails): NGEffect::NGEffect (USA
+ * 8245a5f8, PROVEN from the image, 2 Oct): k = (|v| - 44) / 30 over the effect's velocity (all four components),
+ * at least 0.1 and at most 0.75; such effects spawn without collisions. Effects with a piggyback (sparks) use 1.0 and
+ * collide. (XenonEffects used lerp(0.1, 0.75, (|v| - 44) / 44) instead.) */
 static inline float xp_contrail_intensity(const float v[4]) {
-    float t = (sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2] + v[3] * v[3]) - 44.0f) * (1.0f / 44.0f);
-    if (!(t > 0.0f)) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-    return 0.1f + (0.75f - 0.1f) * t;
+    const float k = (sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2] + v[3] * v[3]) - 44.0f) * (1.0f / 30.0f);
+    if (!(k > 0.1f)) return 0.1f;
+    return k > 0.75f ? 0.75f : k;
 }
 
 #endif

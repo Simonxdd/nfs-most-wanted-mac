@@ -37,7 +37,7 @@ struct D9Pipeline {
     D9ShaderBytes vs, ps;                   // bound shader bytecode, empty for none
     uint64_t vs_key = 0, ps_key = 0;        // d9sh::code_key of each, 0 for none
     float vconst[256][4] = {};              // vertex shader float registers
-    float pconst[32][4] = {};               // pixel shader float registers
+    float pconst[224][4] = {};              // pixel shader float registers (ps_3_0: 224; Remaster R2, was 32)
     int32_t vbool[16] = {}, pbool[16] = {}; // shader Boolean registers (D3D BOOL)
     // Test75: the effect (COM id) and shader (code key) whose constants the float and Boolean registers
     // of each stage hold, and the D3DX parameter stamp of that bind. The next CommitChanges of the same
@@ -59,8 +59,20 @@ struct D9Pipeline {
     // Changes whenever sampler_state, rs or rs_set may have: a draw passes it
     // on so the host can skip copying state it already holds. 0: unknown.
     uint64_t state_version = 0;
-    void states_changed() {
-        static uint64_t next = 0;
+    // Remaster A4-lite step 1 (host/gpu/state_delta.h): which entries changed since the last queued draw, so the
+    // queue can send a delta. Every writer of sampler_state, rs or rs_set calls one of the two below (there is no
+    // plain "changed" any more, so the compiler finds every site).
+    uint64_t state_dirty[8] = {};
+    void rs_changed(uint32_t i) {
+        state_dirty[(224 + i) >> 6] |= 1ull << ((224 + i) & 63);
+        bump_state_version();
+    }
+    void ss_changed(uint32_t stage, uint32_t type) {
+        state_dirty[(stage * 14 + type) >> 6] |= 1ull << ((stage * 14 + type) & 63);
+        bump_state_version();
+    }
+    void bump_state_version() {
+        static uint64_t next = 0; // global, so versions are unique across pipelines
         state_version = ++next;
     }
     uint32_t viewport[4] = {};          // X, Y, Width, Height
@@ -78,6 +90,13 @@ struct D9Pipeline {
     uint32_t color_target[4] = {}; // render target 0 lives on the device too
     int32_t scissor[4] = {};       // left, top, right, bottom
     const char *label = nullptr;   // effect/technique/pass that bound the shaders, for diagnostics
+    // Remaster run 10 fused pool shader: a pool-copy effect's pass 0 applied with a fuse request (the mod set
+    // CleanPoolCount.y = 1 for this entry): the pool block (CleanPools[16], CleanPoolCount, TextureOffset,
+    // CleanPoolParams, LocalEyePos) and the effect and programs it belongs to. Every apply_pass sets or clears it,
+    // and so does the owner's EndPass; gpu_draw fuses only while the bound programs are still the ones recorded.
+    uint32_t pool_fuse = 0, pool_fx = 0;   // pool_fuse: 0 none, else the pool form (d9msl::PixelVariant::pool)
+    const void *pool_vs = nullptr, *pool_ps = nullptr;   // pl.vs/ps bytes at the request
+    float pool_block[20][4] = {};
 
     // Direct3D 9's documented defaults. ZENABLE also depends on whether the
     // device was made with a depth buffer; CreateDevice and Reset set it.
@@ -145,3 +164,7 @@ struct D9Pipeline {
 
 // The record for one device, created on first use and kept for its lifetime.
 D9Pipeline &d9_pipeline(uint32_t device_id);
+// Remaster run 10: the two-pass fallback for a fuse request the draw cannot fuse (d3dx9.cpp): applies the pool-copy
+// effect's clean_pools pass, calls draw(ctx), then re-applies pass 0, all natively (the game's own pass loop is not
+// involved). False when the effect or its pool pass is gone (nothing drawn).
+bool d3dx9_pool_second_pass(D9Pipeline &pl, void (*draw)(void *), void *ctx);

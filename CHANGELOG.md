@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.0.0 — Definitive Edition
+
+- **Look** (Definitive / Xbox 360 / PC) replaces *Overall look*; every finished improvement follows it, and each keeps
+  its own switch under Advanced.
+- **Definitive look, extended:** smooth leaves and fences, soft particles, natural wet roads, road sun sheen, car
+  reflections, building glass, water, wall depth, ambient occlusion, sun rays, lamp glow, softer
+  shadows, garage floor shadows, denser tyre smoke and the Stuff Pack's extra smoke layers; a golden colour filter
+  (Auto / On / Off).
+- **Day and weather cycles** (60 and 20 minutes; both optional; the weather starts at a random point each session).
+- **Real HDR** picture, tone-mapped to your TV's range; with HDR on, 4x anti-aliasing runs as 2x.
+- **Anti-aliasing** is Off / 2x / 4x (default Off; a saved 4x from 1.0 is moved to Off once).
+- Settings menu in seven pages (Graphics, Display, Audio, Xbox 360, PC, Mods, Controls); an Xbox 360 page; rumble
+  style, cobbles and metal rumble and a crash fade; Dolby Digital on by default for new profiles. Settings still in
+  development are listed, marked *(in development)*, and stay off.
+- More Extra Options: always rain, all police on the minimap, bounty / prologue / Busted-scene fixes, one-lap
+  percent, HUD on look-back, subtitles, heat keys, World Map in races, no catch-up.
+- Retired: the scene-depth blur switch (always on), mirror glow, grass blades.
+- Setup: the rebuilt effects are now assembled at setup from `effects/` (nothing prebuilt in the repository), the
+  light pools also cover the tunnel props, and the Xbox 360 Stuff Pack's texture list is converted for the new
+  *Xbox 360 textures* setting.
+- Known issues: the first minutes of driving after a new build may hitch once per new shader; rain at 4K with HDR and
+  2x anti-aliasing is near the GPU's limit on an M5 Pro; the mouse pointer is offset after resizing the window to
+  another aspect ratio. No HD texture pack yet (a later release makes it on your Mac).
+
 ## 1.0.3 — setup fix for newer Pythons
 
 - **Setup stopped with the pypi.org message on Macs with Python 3.13 or later** (for example from Homebrew), although

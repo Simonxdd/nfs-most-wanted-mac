@@ -1,4 +1,4 @@
-/* Police numbers at heat 6-10 (Test161). Included by nfsmw.c.
+/* Police numbers at heat 6-10 (owner choice 5 Oct 2026, Test161). Included by nfsmw.c.
  *
  * Heat 6-10 exist only through Heat Level Override, and their retail "cops" tables are leftovers: 10, 6, 8, 4 and 1
  * cars (heat 10 sends one car). With heat_level_override on, those tables are scaled to 8 cars, the game's own limit

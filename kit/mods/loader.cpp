@@ -305,7 +305,7 @@ void build_api(ModContext &c) {
         return mods_settings_get(a->mod_index, k, v);
     };
     c.live.settings_set = [](const PopModApi *a, const char *k, int64_t v) {
-        return mods_settings_set(a->mod_index, k, v);
+        return mods_settings_set_derived(a->mod_index, k, v); // run 16: mod code's writes never make intent
     };
     mods_fill_hooks_api(&c.live);
     mods_fill_memory_api(&c.live);
@@ -365,6 +365,7 @@ void build_api(ModContext &c) {
     c.api.screen_size = guarded<&PopModApi::screen_size>;
     c.api.rumble_pulse = guarded<&PopModApi::rumble_pulse>;
     c.api.audio_output = guarded<&PopModApi::audio_output>;
+    c.api.d3d9_texture_tag = guarded<&PopModApi::d3d9_texture_tag>;
     c.api.hook_install_ex = guarded<&PopModApi::hook_install_ex>;
 }
 

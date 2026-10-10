@@ -49,6 +49,7 @@ def c73 = 9.99999975e-05, 3.00000000e+00, 2.00000000e+00, 1.00000000e+00
 def c74 = -5.00000000e-01, -5.00000000e-01, 2.00000000e+00, 2.00000000e+00
 def c75 = 0.00000000e+00, 9.99999975e-05, 3.00000000e+00, 2.00000000e+00
 def c76 = 1.00000000e+00, 1.00000000e+00, 1.00000000e+00, 0.00000000e+00
+; hdr+: def c220 = 1.0, 0.0, 0.0, 0.0   ; HDR constants: one, zero
 dcl_2d s2
 dcl_2d s1
 dcl_2d s0
@@ -359,7 +360,7 @@ mul r24.xyz, r25.xyzx, r24.xyzx
 add r23.xyz, r23.xyzx, r24.xyzx
 mov r2.x, r2.wxxx
 mov_sat r2.x, r2.x
-mul r2.x, r14.z, r2.x
+; run 16 blurzone: the ease-in profile applies in every view (was: mul r2.x, r14.z, r2.x = in-car only)
 mov r2.y, r19.xzxx
 mov r2.z, r19.xxyx
 mul r2.y, r2.y, r2.z
@@ -375,6 +376,7 @@ mov r2.z, r2.z
 mov r2.w, r0.x
 mov r0.xy, r2.zwxx
 mov r2.zw, c41.xxxy
+mad r2.w, r2.z, c27.w, r2.w   ; run 16 blurzone: q.y *= 1 + ERigCar.w (clear-zone ellipse; 0 = the old circle)
 mul r0.xy, r0.xyxx, r2.zwxx
 mov r2.z, r0.x
 mov r2.z, r2.z
@@ -1211,6 +1213,7 @@ mul r0.z, r0.z, r0.w
 mov r0.w, r15.xxxy
 mov r2.x, c70.w
 max r0.w, r0.w, r2.x
+; hdr+: add r30.xyz, r1.yzww, -c220.xxxx | max r30.xyz, r30.xyzz, c220.yyyy   ; excess of the blended colour
 mov_sat r1.yzw, r1.xyzw
 mov r2.x, r1.yxxx
 mov r2.w, r1.xxxz
@@ -1300,6 +1303,7 @@ add r0.z, r0.w, r0.z
 mov r1.yzw, r2.xxyz
 mov r2.xyz, r0.zzzx
 mul r1.yzw, r1.xyzw, r2.xxyz
+; hdr+: mul r30.xyz, r30.xyzz, r2.xxxx   ; D-110 F3: the excess above white darkens at the screen edges like the rest
 mov r0.zw, c74.xxxy
 add r0.xy, r0.xyxx, r0.zwxx
 mov r0.zw, c74.xxzw
@@ -1341,6 +1345,7 @@ mov r2.xyz, r0.x
 mul r0.xyz, r0.yzwx, r2.xyzx
 add r0.xyz, r1.yzwx, r0.xyzx
 mov_sat r0.xyz, r0.xyzx
+; hdr+: add r0.xyz, r0.xyzz, r30.xyzz   ; excess back on top
 mov_sat r0.w, r1.x
 mov r1.x, r0.x
 mov r2.x, r0.yxxx

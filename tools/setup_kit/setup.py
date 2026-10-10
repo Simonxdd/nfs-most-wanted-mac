@@ -5,8 +5,8 @@ into the native Mac app. Run through ./setup.sh, which prepares the Python envir
     ./setup.sh "/path/to/Need for Speed Most Wanted" [--xenon-effects FILE] [--no-pools] [--out DIR] [--check-only]
 
 Steps: check the game folder and speed.exe -> link the game (nothing in it is changed) -> fetch Ghidra and a Java
-runtime (pinned hashes) -> analyse speed.exe once -> translate and build -> build the light pools and texture-pack
-map from your files -> package dist/NFS Most Wanted Native.app. Everything stays on this Mac."""
+runtime (pinned hashes) -> analyse speed.exe once -> translate and build -> build the effects, the light pools and
+the Xbox 360 texture map from your files -> package dist/NFS Most Wanted Native.app. Everything stays on this Mac."""
 import argparse
 import hashlib
 import json
@@ -233,10 +233,15 @@ def main():
     if not (ROOT / "build/SpeedRecomp.app/Contents/MacOS/SpeedRecomp").is_file():
         fail("the build finished without build/SpeedRecomp.app")
 
-    say("5/7 Building the extras from your game")
+    say("5/7 Building the effects and the extras from your game")
     gen = ROOT / "build/generated"
     shutil.rmtree(gen, ignore_errors=True)
     gen.mkdir(parents=True)
+    # The rebuilt post-processing chain (our own programs in effects/; the HDR form for HDR output) and its pass list.
+    run([PY, "tools/effects/gen_ssao.py", "--fx", gen / "clean-chain.fx"])
+    run([PY, "tools/effects/gen_ssao.py", "--fx", gen / "clean-chain-hdr.fx", "--hdr"])
+    run([PY, "tools/effects/fxgen.py", "effects/post-host.hlsl", "effects", gen / "post-host.fx"])
+    shutil.copyfile(ROOT / "effects/clean-chain.txt", gen / "clean-chain.txt")
     if args.no_pools:
         say("  light pools: skipped (--no-pools)")
     else:
@@ -244,11 +249,11 @@ def main():
         run([PY, "tools/effects/pools_fx.py", "effects", ROOT / "original/retail/speed.exe", gen])
 
     say("6/7 Optional packs")
-    r = subprocess.run([PY, "tools/setup_kit/texture_pack_map.py", ROOT / "original/retail", gen / "texture-pack.map"],
+    r = subprocess.run([PY, "tools/setup_kit/x360_textures_map.py", ROOT / "original/retail", gen / "x360-textures.map"],
                        cwd=ROOT, capture_output=True, text=True, env=ENV)
     say("  " + (r.stdout.strip() or r.stderr.strip()))
     if r.returncode not in (0, 2):
-        fail("the texture pack's name list could not be read")
+        fail("the Xbox 360 texture pack's name list could not be read")
     tpk, where = None, ""
     if args.xenon_effects:
         tpk = args.xenon_effects.expanduser()

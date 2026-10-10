@@ -6,6 +6,7 @@ def c30 = 0.00000000e+00, 0.00000000e+00, 2.50000000e-01, 1.44269502e+00
 def c31 = 1.00000000e+00, -1.00000000e+00, 0.00000000e+00, 0.00000000e+00
 def c32 = 0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00
 def c33 = 1.00000000e+00, 1.00000000e+00, 1.00000000e+00, 0.00000000e+00
+; hdr+: def c220 = 1.0, 0.0, 0.0, 0.0   ; HDR constants: one, zero
 dcl_2d s2
 dcl_2d s1
 dcl_2d s3
@@ -94,7 +95,7 @@ mov r0.xyz, r1.xyzx
 mov r1.xyz, c32.xyzx
 max r0.xyz, r0.xyzx, r1.xyzx
 mov r1.xyz, c33.xyzx
-min r0.xyz, r0.xyzx, r1.xyzx
+min r0.xyz, r0.xyzx, r1.xyzx   ; hdr: ; dropped in HDR: the exposed frame keeps values above 1
 mov r0.w, r0.x
 mov r1.x, r0.w
 mov r0.w, r0.xxxy

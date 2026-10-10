@@ -24,25 +24,32 @@ also build in Terminal with `./setup.sh`.
 
 ## What you get
 
-- Native Apple Silicon app (tested at 4K 60 fps on an M5 Pro MacBook Pro), any resolution and aspect ratio, true widescreen
-  (field of view, HUD and minimap moved out to the edges, widescreen movies fitted correctly).
-- **Definitive look** (default): the XBOX 360 game's heavy gold haze removed, with rebuilt effects written for this
-  port: glow, gentle auto brightness for tunnels, motion blur at speed and movie-style depth of field in
-  cut-scenes. **PC - Original** shows the game exactly as it shipped.
+- Native Apple Silicon app (tested at 4K 60 fps on an M5 Pro MacBook Pro with HDR off; with HDR and 2x anti-aliasing
+  heavy rain is near the limit), any resolution and aspect ratio, true widescreen (field of view, HUD and minimap
+  moved out to the edges, widescreen movies fitted correctly).
+- **One Look setting:** **Definitive** (default), **Xbox 360** or **PC**. Definitive is every finished improvement:
+  rebuilt effects written for this port (glow, gentle auto brightness for tunnels, motion blur at speed, movie-style
+  depth of field), natural wet roads, road sun sheen, car and glass reflections, water, wall depth,
+  ambient occlusion, sun rays, lamp glow, softer shadows, soft particles, smooth leaves and fences, and a golden colour
+  filter to taste. *Xbox 360* is the console look rebuilt for this port; *PC* shows the game exactly as it shipped.
+  Every improvement also has its own switch.
+- **Day and weather cycles** (both optional): a slow day, and clear, overcast, rain and drying roads.
 - **Light pools** cast by the PC game's own street lamps and tunnel lights onto the road and walls.
 - Rear-view mirror: sharp HD picture, full scenery, car shadows, headlights and police lights, knocked-over props.
-- **HDR output** for HDR TVs, and 4x MSAA anti-aliasing.
+- **Real HDR** for HDR TVs, and **anti-aliasing Off / 2x / 4x**.
 - **Audio:** the game's own 5.1 mix as Mono, Stereo or 5.1 PCM, switchable live, plus an optional **Dolby Digital
   5.1** bitstream for TVs and soundbars that misplace multichannel PCM.
 - **Controllers:** DualSense tested over USB and Bluetooth (other controllers macOS supports should work), PlayStation-style layout and button icons, any
   button remappable in the game's own Controls menu, analog triggers as pedals, rumble from the game's own
-  force-feedback.
+  force-feedback in an Xbox 360 or PC style.
 - **Extra Options, built in:** Black Edition content, replay beaten Blacklist rivals, special vinyls, max-performance
   shop button, 6 rival reward markers, longer profile names, starting cash, police heat levels 1–10, helicopter
-  takedown bounty, skip the music track while driving (T or L3), and optional unlock-everything and barrier
-  removal.
+  takedown bounty, skip the music track while driving (T or L3), the bounty, prologue and Busted-scene fixes, the
+  World Map in races, subtitles, always rain, and optional unlock-everything, barrier removal and no catch-up.
 - Optional community packs you already own work too: the Xbox 360 Stuff Pack's **textures** and the
   **XenonEffects** sparks and light trails. See the [companion guide](docs/COMPANION_GUIDE.md).
+
+What's new in 2.0 and the known issues: [companion guide](docs/COMPANION_GUIDE.md#whats-new-in-20).
 
 ## Get started
 
@@ -57,8 +64,10 @@ The translator, runtime, Direct3D 9 → Metal renderer, audio and input hosts ar
 [recomp-kit](https://github.com/veritr1x/recomp-kit) by veritr1x, included in `kit/` with this port's changes; this game's configuration started as
 veritr1x's [nfsmw-recomp](https://github.com/veritr1x/nfsmw-recomp). This repository adds the fixes, features and
 setup kit that make it a complete, playable Mac game: `game.toml` (the game's identity, addresses and translation
-fixes), `mods/core/nfsmw/` (the core mod: widescreen, settings, effects, controls, audio, Extra Options), `effects/`
-(the rebuilt effects' shader sources) and `tools/setup_kit/` (the setup).
+fixes), `native/` (native replacements for a few game functions), `mods/core/nfsmw/` (the core mod: widescreen,
+settings, effects, controls, audio, Extra Options), `effects/` (the rebuilt effects' shader programs, assembled at
+setup by `tools/effects/`) and `tools/setup_kit/` (the setup). The Xbox 360 look is our own rebuild: the console
+version was studied as a reference only, and none of its code, shaders or files are included.
 
 You provide your own game folder, including its `speed.exe`. The setup checks that the exe is one the port can use
 before it builds anything.
