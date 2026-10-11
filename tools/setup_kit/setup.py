@@ -228,10 +228,22 @@ def main():
         run([PY, "tools/analyze.py", "--ghidra-home", ghidra, "--java-home", java])
 
     say("4/7 Translating and building")
+    # A new source version never reuses the earlier version's compiled tree: the unpacked source carries the commit
+    # time as its file dates, so Ninja could keep an older object that is newer than that and link a mixed app (the
+    # 2.0.0 black screen: "plugin abi api_size 416 is not a usable prefix of this host's 408").
+    stamp = ROOT / "build/source-stamp"
+    version = next((l for l in (ROOT / "CHANGELOG.md").read_text().splitlines() if l.startswith("## ")), "")
+    ident = version + " " + hashlib.sha256((KIT / "mods/pop_mod_api.h").read_bytes()).hexdigest()
+    if not stamp.is_file() or stamp.read_text() != ident:
+        if (ROOT / "build/cmake").exists():
+            say("  new source version: rebuilding from scratch (the earlier build is not reused)")
+        for p in (ROOT / "build/cmake", ROOT / "build/SpeedRecomp.app", ROOT / "build/recomp/mods"):
+            shutil.rmtree(p, ignore_errors=True)
     run([PY, "tools/build.py", "--regenerate", "--allow-table-gaps", ALLOW_GAPS])
     run([PY, "tools/build.py", "--target", "plugins"])
     if not (ROOT / "build/SpeedRecomp.app/Contents/MacOS/SpeedRecomp").is_file():
         fail("the build finished without build/SpeedRecomp.app")
+    stamp.write_text(ident)
 
     say("5/7 Building the effects and the extras from your game")
     gen = ROOT / "build/generated"

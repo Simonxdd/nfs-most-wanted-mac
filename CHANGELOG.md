@@ -8,6 +8,9 @@
   picture matches native brightness. Native resolution is unchanged.
 - **A rare crash at start-up is fixed** (about 1 start in 900, a few seconds after the sound starts; the game closed
   without a report): the list of the game's threads could be changed while another thread was reading it.
+- **Updating rebuilds the game from scratch once.** The Setup kept the earlier version's compiled files to save time,
+  and in some cases parts of an earlier build were mixed into the new one (the likely cause of a black screen with a
+  nearly empty F10 menu after updating to 2.0.0). A new version now never reuses them.
 - A crash message now also names where in the app's own code the fault happened, to make reports easier to follow.
 
 ## 2.0.0 — Definitive Edition
