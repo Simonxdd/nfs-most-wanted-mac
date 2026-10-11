@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.1 — fixes
+
+- **Upscaling no longer darkens the picture.** With *Upscaling* on (Quality or Performance), the mid-tones were about
+  10 % darker than at native resolution: ambient occlusion read a stair-stepped copy of the upscaled scene's depth
+  and shaded every slope (roads, walls). The depth copy is now smooth on surfaces and sharp at edges; the upscaled
+  picture matches native brightness. Native resolution is unchanged.
+- **A rare crash at start-up is fixed** (about 1 start in 900, a few seconds after the sound starts; the game closed
+  without a report): the list of the game's threads could be changed while another thread was reading it.
+- A crash message now also names where in the app's own code the fault happened, to make reports easier to follow.
+
 ## 2.0.0 — Definitive Edition
 
 - **Look** (Definitive / Xbox 360 / PC) replaces *Overall look*; every finished improvement follows it, and each keeps

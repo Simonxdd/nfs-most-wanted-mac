@@ -379,6 +379,22 @@ fragment float4 depth_copy_ms_fs(QuadOut i [[stage_in]], depth2d_ms<float> t [[t
         d = min(d, t.read(p, k));
     return float4(d);
 }
+// R3 run 22: the post chain's depth copy (StretchRect depth -> R32F) of an UPSCALED scene, built from the render-size
+// depth: bilinear where the 2x2 footprint is one surface (linear depth within 5 %: the receding road, walls), the
+// nearest texel at a silhouette. A nearest-only 1.5x copy is a staircase of tiny depth steps on every slope, which
+// the SSAO reads as occluders (run 22 R22D/R22E: the upscaled picture 10 % darker in the mids, ssao=0 removes it).
+fragment float4 depth_copy_up_fs(QuadOut i [[stage_in]], depth2d<float> t [[texture(0)]]) {
+    const uint2 size = uint2(t.get_width(), t.get_height()), m = size - uint2(1);
+    const float2 x = i.uv * float2(size) - 0.5;
+    const float2 b = floor(x), f = x - b;
+    const int2 p0 = int2(b);
+    const uint2 a0 = uint2(clamp(p0, int2(0), int2(m))), a1 = uint2(clamp(p0 + int2(1), int2(0), int2(m)));
+    const float d00 = t.read(a0), d10 = t.read(uint2(a1.x, a0.y)), d01 = t.read(uint2(a0.x, a1.y)), d11 = t.read(a1);
+    const float lo = min(min(d00, d10), min(d01, d11)), hi = max(max(d00, d10), max(d01, d11));
+    if (hi - lo > 0.05 * max(1.0 - hi, 1.0e-7))   // 1 - d ~ n / z: a > 5 % linear-depth step = an edge
+        return float4(t.read(min(uint2(i.uv * float2(size)), m)));
+    return float4(mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y));
+}
 // Remaster run 13 MetalFX upscaling: the upscaled scene into the native back buffer with the scene's depth (by UV,
 // nearest; a multisampled depth gives its nearest sample), so what draws after the scene tests against it.
 struct UpscaleOut { float4 color [[color(0)]]; float depth [[depth(any)]]; };
@@ -4203,6 +4219,15 @@ class Renderer final : public D9Backend {
         if (!st || src.level || t.pixelFormat == MTLPixelFormatDepth32Float_Stencil8)
             return;
         id<MTLTexture> d = st->drawn_depth ? st->drawn_depth : st->texture;
+        // R3 run 22: the upscaled scene's own depth (this frame, smaller than the copy): the edge-aware upsample
+        // (depth_copy_up_fs). TEST RECOMP_REMASTER_UPSCALE_DEPTH_NEAREST=1 = the old nearest copy (the control).
+        static const bool nearest_test = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_DEPTH_NEAREST"); return e && *e == '1'; }();
+        const bool up = !nearest_test && up_.scene_z && src.id == up_.scene_z_ds && up_.scene_z_frame == up_.frames &&
+                        up_.scene_z.width < ((uint32_t)t.width >> dst.level) && (up_.scene_z.usage & MTLTextureUsageShaderRead);
+        if (up) {
+            d = up_.scene_z;
+            ++up_.depth_up_copies;
+        }
         if (!d || !(d.usage & MTLTextureUsageShaderRead))
             return;
         const bool ms = d.textureType == MTLTextureType2DMultisample;
@@ -4217,8 +4242,9 @@ class Renderer final : public D9Backend {
         MTLPixelFormat cf[4] = {t.pixelFormat, MTLPixelFormatInvalid, MTLPixelFormatInvalid,
                                 MTLPixelFormatInvalid};
         id<MTLRenderPipelineState> pso =
-            utility_pipeline(mix(ms ? 0xd3c1ull : 0xd3c0ull, t.pixelFormat),
-                             ms ? @"depth_copy_ms_fs" : @"depth_copy_fs", cf, MTLPixelFormatInvalid, true);
+            up ? utility_pipeline(mix(0xd3c2ull, t.pixelFormat), @"depth_copy_up_fs", cf, MTLPixelFormatInvalid, true)
+               : utility_pipeline(mix(ms ? 0xd3c1ull : 0xd3c0ull, t.pixelFormat),
+                                  ms ? @"depth_copy_ms_fs" : @"depth_copy_fs", cf, MTLPixelFormatInvalid, true);
         if (!pso) {
             end_pass();
             return;
@@ -5237,6 +5263,10 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             out = scene; // still a picture: the compose pass stretches it bilinearly
         }
         upscale_compose(out, scene_z, up_.bb, up_.ds);
+        // R3 run 22: this frame's render-size scene depth for the post chain's depth copy (stretch_depth)
+        up_.scene_z = scene_z && scene_z.textureType == MTLTextureType2D ? scene_z : nil;
+        up_.scene_z_ds = up_.ds;
+        up_.scene_z_frame = up_.frames;
         ++up_.scaled;
     }
     // MTLFXSpatialScaler: scene -> a private output at the native size. Null when it could not run.
@@ -5399,7 +5429,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                     "[remaster] upscale: frames %llu scaled %llu skipped %llu mode %d in %ux%u out %lux%lu "
                     "(factor %.2f, temporal %s) | must be 0: bb_before %llu fitted %llu failures %llu nested %llu "
                     "refused %llu | info: stray_end %llu no_end %llu depth_mismatch %llu replayed %llu allocs %llu "
-                    "aborts %llu\n",
+                    "aborts %llu depth_up %llu\n",
                     (unsigned long long)up_.frames, (unsigned long long)up_.scaled,
                     (unsigned long long)up_.skipped, upscale_factor_ <= 1.5f ? 1 : 2, up_.in_w, up_.in_h,
                     (unsigned long)up_.sc_ow, (unsigned long)up_.sc_oh, upscale_factor_,
@@ -5409,7 +5439,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                     (unsigned long long)up_.refused, (unsigned long long)up_.stray_end,
                     (unsigned long long)up_.no_end, (unsigned long long)up_.depth_mismatch,
                     (unsigned long long)up_.replayed, (unsigned long long)up_.allocs,
-                    (unsigned long long)up_.aborts);
+                    (unsigned long long)up_.aborts, (unsigned long long)up_.depth_up_copies);
     }
     // The back buffer or scene depth is redefined or dropped inside the scene: the other one goes back to native
     // and this frame's scene is lost (counted).
@@ -7116,6 +7146,9 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         bool checked = false, supported = false;
         bool open = false, begun_frame = false;
         uint32_t bb = 0, ds = 0, last_bb = 0, last_ds = 0, in_w = 0, in_h = 0;
+        id<MTLTexture> scene_z = nil;   // R3 run 22: the last upscaled scene's render-size depth (single-sample only)
+        uint32_t scene_z_ds = 0;
+        uint64_t scene_z_frame = ~0ull, depth_up_copies = 0;
         uint64_t draws = 0, pre_frame = 0;
         bool clr_color = false, clr_depth = false, clr_stencil = false;
         float clr_rgba[4] = {}, clr_z = 0.0f;
