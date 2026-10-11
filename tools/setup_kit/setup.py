@@ -193,6 +193,22 @@ def analysis_done():
         return False
 
 
+def fresh_build_tree(root):
+    """A new source version never reuses the earlier version's compiled tree: the unpacked source carries the commit
+    time as its file dates, so Ninja could keep an older object that is newer than that and link a mixed app (the
+    2.0.0 black screen: "plugin abi api_size 416 is not a usable prefix of this host's 408"). Returns the stamp file and
+    this source's identity; the caller writes it once the build succeeded."""
+    stamp = root / "build/source-stamp"
+    version = next((l for l in (root / "CHANGELOG.md").read_text().splitlines() if l.startswith("## ")), "")
+    ident = version + " " + hashlib.sha256((root / "kit/mods/pop_mod_api.h").read_bytes()).hexdigest()
+    if not stamp.is_file() or stamp.read_text() != ident:
+        if (root / "build/cmake").exists():
+            say("  new source version: rebuilding from scratch (the earlier build is not reused)")
+        for p in (root / "build/cmake", root / "build/SpeedRecomp.app", root / "build/recomp/mods"):
+            shutil.rmtree(p, ignore_errors=True)
+    return stamp, ident
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("game", type=Path, help="your installed game folder (holds speed.exe, GLOBAL, TRACKS, ...)")
@@ -228,17 +244,7 @@ def main():
         run([PY, "tools/analyze.py", "--ghidra-home", ghidra, "--java-home", java])
 
     say("4/7 Translating and building")
-    # A new source version never reuses the earlier version's compiled tree: the unpacked source carries the commit
-    # time as its file dates, so Ninja could keep an older object that is newer than that and link a mixed app (the
-    # 2.0.0 black screen: "plugin abi api_size 416 is not a usable prefix of this host's 408").
-    stamp = ROOT / "build/source-stamp"
-    version = next((l for l in (ROOT / "CHANGELOG.md").read_text().splitlines() if l.startswith("## ")), "")
-    ident = version + " " + hashlib.sha256((KIT / "mods/pop_mod_api.h").read_bytes()).hexdigest()
-    if not stamp.is_file() or stamp.read_text() != ident:
-        if (ROOT / "build/cmake").exists():
-            say("  new source version: rebuilding from scratch (the earlier build is not reused)")
-        for p in (ROOT / "build/cmake", ROOT / "build/SpeedRecomp.app", ROOT / "build/recomp/mods"):
-            shutil.rmtree(p, ignore_errors=True)
+    stamp, ident = fresh_build_tree(ROOT)
     run([PY, "tools/build.py", "--regenerate", "--allow-table-gaps", ALLOW_GAPS])
     run([PY, "tools/build.py", "--target", "plugins"])
     if not (ROOT / "build/SpeedRecomp.app/Contents/MacOS/SpeedRecomp").is_file():
