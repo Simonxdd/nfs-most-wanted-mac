@@ -17,6 +17,12 @@
   starting with `_` is skipped. `Mods/mods-report.txt` lists what loaded and why anything did not. The setup makes a
   list of your game's texture names (numbers and sizes only) so the report can check names and shapes. F10 →
   Graphics → Advanced → **Player mods** turns it off. See the companion guide's *Optional mods*.
+- **If the game won't start, it says why**: a message with the reason and a **Show Log** button when the start stops
+  before the game or the game quits within its first seconds; every start's log now begins with the app version,
+  macOS and Mac model, for reports.
+- **Locked game files no longer block an update**: if some files in your game folder have the Finder *Locked* flag,
+  the app's own copies are unlocked, so building again (or moving the app to the Trash) works. Your game folder is
+  not changed.
 
 ## 2.0.3 — the game's own movies
 

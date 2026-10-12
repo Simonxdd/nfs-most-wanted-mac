@@ -49,6 +49,11 @@ then run `./setup.sh` again. If it still fails, open an issue with the last 50 l
 
 ## Playing
 
+**The game won't open, or quits at once** — since 2.0.4 the app says why in a message (**Show Log** opens the log in
+Finder). Every start writes a log in `Logs/` in `~/Library/Application Support/NFS Most Wanted Native/`, beginning
+with the app version, your macOS and your Mac; please include it when you report a problem. A crash also leaves a
+report in `~/Library/Logs/DiagnosticReports` (a file starting `SpeedRecomp`).
+
 **Black screen or crash at start** — check `Logs/` in `~/Library/Application Support/NFS Most Wanted Native/`.
 A line starting `mods: rejected` means a settings file was edited by hand and is invalid; remove the line or the
 file, and the defaults return.
