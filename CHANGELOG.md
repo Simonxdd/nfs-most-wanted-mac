@@ -7,6 +7,7 @@
   bumper, the title screen's moving background and the story scenes from them. Only the exact original files are
   used (each one's size and checksum are checked); the movies are not part of this download.
 - Without them, the boot keeps the PC game's own movie order (2.0 asked for the Xbox 360-only EA HD bumper there).
+- Setup's image library (Pillow) updated to 12.3.0 (security fixes).
 
 ## 2.0.1 — fixes
 
