@@ -225,6 +225,7 @@ instead. All are optional and use **your own** downloads; you don't need a PC. O
 | Mod | What to copy from the download | Where it goes in your game folder |
 |---|---|---|
 | **Xbox 360 Stuff Pack 4.2** (its textures) | the `TexWizardX360` folder (in the *Easy Installation* download: `Files/TRACKS/TexWizardX360`) | `TRACKS` → so you have `TRACKS/TexWizardX360` |
+| **Xbox 360 Stuff Pack 4.2** (its front end: menus, title and loading art, garages) | the whole unzipped **Easy Installation** folder, as it is (or choose it in the Setup app) | anywhere in your game folder's top level; nothing in the game folder is replaced |
 | **XenonEffects** (sparks and light trails) | `XenonEffects.tpk` (in the XenonEffects mod's `scripts` folder; the Stuff Pack has it too, in `Files/scripts`) | `scripts` (make the folder if it isn't there) |
 | **PlayStation button icons** (Original Button Pack or NFS XtendedInput) | `XtendedInputButtons.tpk` from the pack's **NFSMW** folder (`NFSMW/GLOBAL`), not the NFSC or NFSPS ones | `GLOBAL` |
 
@@ -235,6 +236,10 @@ After the build:
 
 - **Xbox 360 textures:** F10 → Xbox 360 → **Xbox 360 textures** is on by default. The *PC* look launches without
   them.
+- **Xbox 360 front end:** F10 → Xbox 360 → **Xbox 360 front end** (on by default; off brings the PC menus back at the
+  next start, and so does the *PC* look). The setup uses only the pack's front-end files, checked one by one, and
+  lists what it leaves out (its Windows code, shaders, sound, in-race HUD files and track bundle). If you installed the
+  pack into your game folder before, the setup says so: with the switch off the game then uses that changed copy.
 - **Sparks and light trails:** F10 → Xbox 360 → **Sparks and light trails** (on by default).
 - **Button icons:** F10 → Controls → **PlayStation button icons** (on by default).
 
@@ -274,6 +279,7 @@ here (not from mirror sites), and copy only the files named.
 | Pack | Page | What you get | What to copy |
 |---|---|---|---|
 | Xbox 360 Stuff Pack 4.2 (textures) | [nfsmods.xyz/mod/1200](https://nfsmods.xyz/mod/1200) | Xbox 360 world and garage textures | `TexWizardX360` → `TRACKS` (see [Optional mods](#optional-mods)) |
+| Xbox 360 Stuff Pack 4.2 (front end) | the same download | the Xbox 360 menus, title and loading art and garages | the unzipped *Easy Installation* folder → your game folder (see [Optional mods](#optional-mods)) |
 | XenonEffects | [github.com/xan1242/NFSMW_XenonEffects](https://github.com/xan1242/NFSMW_XenonEffects) | Xbox 360 sparks and light trails | `XenonEffects.tpk` → `scripts` |
 | NFS XtendedInput (button icons) | [github.com/xan1242/NFS-XtendedInput](https://github.com/xan1242/NFS-XtendedInput) | PlayStation / Xbox button icons | `NFSMW/GLOBAL/XtendedInputButtons.tpk` → `GLOBAL` |
 | Xbox 360 Converted Movies | [nfsmods.xyz/mod/3006](https://nfsmods.xyz/mod/3006) (its download link opens a Google Drive folder, about 2 GB) | the Xbox 360 intro (with the EA HD bumper) and story scenes at 1280x720, as `.vp6` files | the 33 `*_english_ntsc.vp6` files from the download's `Mod/MOVIES` folder → `MOVIES` (beside the game's own; nothing is overwritten) |
@@ -288,7 +294,7 @@ shaders and ReShade filters (this port has its own Xbox 360 look).
 **Won't work here** (Windows code): any `.asi` or `.dll` mod, for example the Unlimiter, Xbox Rain Droplets (the port
 has its own Xbox 360 raindrops), the Realistic Plugin, Mod Menu, and Eternal Textures (a Texmod `.tpf` with an ENB).
 
-**Not tested yet:** mods that replace game data files (cars, vinyls, the Stuff Pack's front-end and HUD files,
+**Not tested yet:** mods that replace game data files (cars, vinyls, the Stuff Pack's in-race HUD files,
 Remastered UI, Xbox 360 UI Texts) may work if the PC game accepts them; keep a copy of your game folder before trying
 one. Recompiled Vinyls 1024x needs a Windows tool for its full install.
 

@@ -53,8 +53,9 @@ then run `./setup.sh` again. If it still fails, open an issue with the last 50 l
 A line starting `mods: rejected` means a settings file was edited by hand and is invalid; remove the line or the
 file, and the defaults return.
 
-**Stutter on the first drive** — Metal prepares shaders the first time it sees each one. It settles after a few
-minutes and does not come back on later launches.
+**Stutter on the first drive** — Metal prepares shaders the first time it sees each one. The setup's shader warm-up
+(step 6, on unless you skipped it) prepares them ahead; if the setup log says "shader warm-up: skipped", run the setup
+again to make it. Without it the stutter settles after a few minutes and does not come back on later launches.
 
 **Low frame rate at 4K** — lower *Smooth edges* to *Off*, or set the game's resolution to 2560x1440 in its Video
 menu. On a TV, the TV's own refresh setting matters: 60 Hz is right for this game.

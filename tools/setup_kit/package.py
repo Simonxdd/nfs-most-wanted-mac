@@ -67,6 +67,8 @@ def main():
     ap.add_argument("--generated", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--movies", type=Path, help="the verified Xbox 360 movies (setup.py step 6) for Resources/USA-Movies")
+    ap.add_argument("--warm-seed", type=Path, help="the shader warm-up made on this Mac (tools/warm_seed/warmseed.py) for "
+                    "Resources/ShaderWarmSeed")
     a = ap.parse_args()
     built = ROOT / "build/SpeedRecomp.app"
     cfg = tomllib.loads((ROOT / "game.toml").read_text())
@@ -98,7 +100,11 @@ def main():
         if p.is_file():
             t = core / p.relative_to(a.generated)
             t.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(p, t)
+            # An APFS clone when the disk allows it (the Stuff Pack's front end is 160 MB), else a plain copy.
+            if subprocess.run(["/bin/cp", "-c", str(p), str(t)], capture_output=True).returncode != 0:
+                shutil.copyfile(p, t)
+    if a.warm_seed and (a.warm_seed / "order.txt").is_file():
+        clone_tree(a.warm_seed, res / "ShaderWarmSeed", set())
     if a.movies and a.movies.is_dir():
         # The game's own list (native/usa_movie_manifest.h) is checked again before each file plays.
         clone_tree(a.movies, res / "USA-Movies", set())
@@ -108,7 +114,7 @@ def main():
     info = tmp / "Contents/Info.plist"
     p = plistlib.loads(info.read_bytes())
     p.update(CFBundleDisplayName=NAME, CFBundleName="NFSMW Native", CFBundleExecutable="Launch",
-             CFBundleIdentifier="io.github.nfsmw-native-mac", CFBundleShortVersionString="2.0.3", CFBundleVersion="8",
+             CFBundleIdentifier="io.github.nfsmw-native-mac", CFBundleShortVersionString="2.0.4", CFBundleVersion="9",
              LSMinimumSystemVersion=min_macos(tmp / "Contents/MacOS/SpeedRecomp") or "13.0", NSHighResolutionCapable=True, LSApplicationCategoryType="public.app-category.racing-games")
     p.pop("CFBundleIconFile", None)
     info.write_bytes(plistlib.dumps(p))
@@ -132,6 +138,8 @@ def main():
         "speed_exe_sha256": sha(app / "Contents/Resources/Game/speed.exe"),
         "generated": sorted(str(q.relative_to(a.generated)) for q in a.generated.rglob("*") if q.is_file()),
         "signed": signed,
+        "shader_seed": (app / "Contents/Resources/ShaderWarmSeed/stamp.txt").read_text().splitlines()[:4]
+        if (app / "Contents/Resources/ShaderWarmSeed/stamp.txt").is_file() else None,
     }
     (ROOT / "build/package.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"packaged {app}")

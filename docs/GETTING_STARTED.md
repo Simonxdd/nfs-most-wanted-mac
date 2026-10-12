@@ -11,7 +11,7 @@ It runs on your Mac only. Nothing is uploaded, and nothing it makes is meant to 
 | **Mac** | Apple Silicon (M1 or later). Developed and tested on macOS 27 (M5 Pro); earlier macOS versions are untested. The app is built for the macOS version your Mac runs. About 10 GB free: the setup's tools and working files take about 4–5 GB, and the finished app is about the size of your game folder. |
 | **The game** | Your own **Need for Speed: Most Wanted (2005)** for PC (Black Edition), as an **installed game folder** with its own working `speed.exe` (the folder that holds `speed.exe`, `GLOBAL`, `TRACKS`, `MOVIES` and so on). Copy it to the Mac from a Windows PC where it is installed, or from a backup. The setup checks first that the exe is one it can use, and stops without changing anything if it is not. |
 | **Xcode Command Line Tools** | Apple's free developer tools. The Setup app offers to install them; in Terminal, `xcode-select --install`. |
-| **Time** | About 10 minutes the first time on an M5 Pro, including the one-time analysis of `speed.exe`; allow longer on older Macs. Updates are quicker. |
+| **Time** | About 10 minutes the first time on an M5 Pro, including the one-time analysis of `speed.exe`, plus about 25 minutes for the shader warm-up (optional, see below); allow longer on older Macs. Updates are quicker. |
 
 The setup downloads the free developer tools it needs into its own folder (`~/Library/NFSMW-Native-Setup`):
 **Ghidra** (the NSA's open-source disassembler, used once to map the functions in your `speed.exe`), a **Java
@@ -58,9 +58,11 @@ The setup prints each step and what it found:
    [companion guide](COMPANION_GUIDE.md#optional-mods).
 7. **Package:** `dist/NFS Most Wanted Native.app` is written, with your game data inside it.
 
-Move the app to Applications if you like and open it. The first launch takes a little longer while Metal prepares
-its shaders, and the first minutes of driving may hitch once at each new sight while the rest are prepared; after
-that they are kept in your profile folder.
+Before packaging, step 6 also prepares the game's shaders (2.0.4, about 25 minutes): the built game drives a few
+Quick Races offscreen, with no window, and keeps every shader it translates, so your first drive does not stutter.
+Skip it with `--no-shader-seed` (or untick *Prepare the shaders now* in the Setup app); the game then prepares them
+while you drive, and the first minutes may hitch once at each new sight. Either way they are kept in your profile
+folder after the first time.
 
 ### Options
 

@@ -206,6 +206,25 @@ def game_movies_line(game):
     return "game movies: " + ", ".join(kinds) + " in MOVIES; they play in the game"
 
 
+# The PC game's own FRONTEND/FrontB.lzc (retail 1.3) and the Xbox 360 Stuff Pack's.
+FRONTB_PC = (2921586, "3e2dcbb970ad9ec607ed516143f42a6e39a68af8d1e216173c09cdd2ec362fe7")
+FRONTB_STUFF = 13895352
+
+
+def front_end_line(game):
+    """2.0.4: whether the game folder's own FrontB.lzc is the PC original; a copy changed by a mod is used as it is
+    when the Stuff Pack's front end is off (said, never changed: the game folder is never written to)."""
+    f = find_ci(game, "FRONTEND", "FrontB.lzc")
+    if not f:
+        return "PC front end: FRONTEND/FrontB.lzc not found in your game folder"
+    size = f.stat().st_size
+    if size == FRONTB_PC[0] and hashlib.sha256(f.read_bytes()).hexdigest() == FRONTB_PC[1]:
+        return "PC front end: your game's own FrontB.lzc is the original"
+    what = "the Stuff Pack's (installed into the game folder)" if size == FRONTB_STUFF else "changed by a mod"
+    return (f"PC front end: your game's own FrontB.lzc is not the original ({size} bytes, {what}); with the Xbox 360 "
+            "front end off the game uses it as it is (restore the original from your backup to get the PC menus)")
+
+
 def find_dir_ci(base, name):
     """base/name, a folder, matching the name without regard to case."""
     base = Path(base)
@@ -246,7 +265,12 @@ def main():
                     "(found automatically in the game folder's scripts folder)")
     ap.add_argument("--x360-movies", type=Path, help="a folder with your own copy of the US Xbox 360 disc's movies "
                     "(*_english_ntsc.wmv; default: an X360-Movies folder in your game folder, if it's there)")
+    ap.add_argument("--x360-stuff", type=Path, help="your unzipped Xbox 360 Stuff Pack download (the Easy Installation "
+                    "folder) for the Xbox 360 front end (default: an X360-Stuff or Easy Installation folder in your game "
+                    "folder, if it's there)")
     ap.add_argument("--no-pools", action="store_true", help="do not build the light pools")
+    ap.add_argument("--no-shader-seed", action="store_true", help="skip the shader warm-up (about 25 minutes; without it "
+                    "the first drive stutters once while the game prepares its shaders)")
     ap.add_argument("--out", type=Path, default=ROOT / "dist", help="where to write the app (default dist/)")
     ap.add_argument("--check-only", action="store_true", help="only check the game folder and speed.exe")
     ap.add_argument("--ghidra-home", type=Path, help="use this Ghidra 12.1.3 instead of downloading one")
@@ -352,11 +376,47 @@ def main():
         say("  Xbox 360 movies: not added (put your own copy of the US Xbox 360 disc's movies in a folder named "
             "X360-Movies in your game folder, or pass --x360-movies FOLDER); the game's own PC movies play")
 
+    # 2.0.4: the Xbox 360 Stuff Pack's front end (menus, title and loading art, garages) from the player's download,
+    # as an overlay beside the mod; F10 -> Xbox 360 -> "Xbox 360 front end" turns it off at the next start.
+    stuff_src = args.x360_stuff.expanduser() if args.x360_stuff else game
+    if args.x360_stuff and not stuff_src.is_dir():
+        fail(f"{stuff_src} is not a folder")
+    r = subprocess.run([PY, "tools/setup_kit/x360_stuff.py", stuff_src, gen / "x360fe"], cwd=ROOT, capture_output=True,
+                       text=True, env=ENV)
+    for line in (r.stdout.strip() or r.stderr.strip()).splitlines():
+        say("  " + line.strip())
+    if r.returncode not in (0, 2):
+        fail("the Xbox 360 Stuff Pack could not be checked")
+    if r.returncode == 2 and not args.x360_stuff:
+        say("  (optional: put the unzipped Stuff Pack download's Easy Installation folder in your game folder, "
+            "or pass --x360-stuff FOLDER)")
+    say("  " + front_end_line(game))
+
+    # 2.0.4: the shader warm-up, made on this Mac (offscreen Quick Races). Never fails the setup: without it the first
+    # drive only stutters once.
+    seed = ROOT / "build/warm/seed"
+    if args.no_shader_seed:
+        say("  shader warm-up: skipped (--no-shader-seed); the first drive will stutter once")
+    else:
+        say("  shader warm-up: preparing the game's shaders (about 25 minutes; offscreen, no window)")
+        with LOG.open("a") as log:
+            p = subprocess.Popen([PY, "tools/warm_seed/warmseed.py", "--cache", ROOT / "build/warm", "--out", seed],
+                                 cwd=ROOT, env=ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in p.stdout:
+                log.write(line)
+                if line.startswith("shader warm-up:"):
+                    say("  " + line.strip())
+            rc = p.wait()
+        if rc or not (seed / "order.txt").is_file():
+            say("  shader warm-up: skipped (see build/setup.log); the first drive will stutter once")
+
     say("7/7 Packaging")
     pack = [PY, "tools/setup_kit/package.py", "--game", game, "--image", ROOT / "original/retail/speed.exe",
             "--generated", gen, "--out", args.out.expanduser().resolve()]
     if movies.is_dir():
         pack += ["--movies", movies]
+    if not args.no_shader_seed and (seed / "order.txt").is_file():
+        pack += ["--warm-seed", seed]
     run(pack)
     app = args.out.expanduser().resolve() / "NFS Most Wanted Native.app"
     say(f"\nDone: {app}\nOpen it, or move it to Applications first. Your saves and settings will be in "

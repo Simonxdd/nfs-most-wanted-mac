@@ -28,7 +28,7 @@ func parseStep(_ line: String) -> StepInfo? {
 }
 
 /// The share of the whole build each step usually takes (the analysis and the compile dominate).
-let stepWeights: [Double] = [0, 0.01, 0.01, 0.55, 0.38, 0.02, 0.01, 0.02]
+let stepWeights: [Double] = [0, 0.01, 0.01, 0.40, 0.28, 0.02, 0.26, 0.02]   // 6: the packs and the shader warm-up (2.0.4)
 
 func overallProgress(step: Int, within: Double) -> Double {
     guard step >= 1 else { return 0 }
@@ -99,12 +99,15 @@ func prepareSource() throws {
     try version.write(to: marker, atomically: true, encoding: .utf8)
 }
 
-func setupArguments(game: URL, dest: URL, xenon: URL?, movies: URL? = nil, checkOnly: Bool) -> [String] {
+func setupArguments(game: URL, dest: URL, xenon: URL?, movies: URL? = nil, stuff: URL? = nil, shaderSeed: Bool = true,
+                    checkOnly: Bool) -> [String] {
     var a = [workDir.appendingPathComponent("setup.sh").path, game.path]
     if checkOnly { return a + ["--check-only"] }
     a += ["--out", dest.path]
     if let x = xenon { a += ["--xenon-effects", x.path] }
     if let m = movies { a += ["--x360-movies", m.path] }
+    if let st = stuff { a += ["--x360-stuff", st.path] }
+    if !shaderSeed { a += ["--no-shader-seed"] }
     return a
 }
 
@@ -130,6 +133,14 @@ func logProgress(_ text: Substring) -> (fraction: Double?, detail: String?) {
                 break
             }
         }
+        if let r = line.range(of: "shader warm-up: drive "), let of = line.range(of: " of ") {   // 2.0.4
+            let a = Double(line[r.upperBound..<of.lowerBound]) ?? 0
+            let b = Double(line[of.upperBound...].prefix(while: { $0.isNumber })) ?? 0
+            if b > 0 { fraction = (a - 1) / b }
+            detail = "Preparing the shaders: drive \(Int(a)) of \(Int(b)) (offscreen)"
+            break
+        }
+        if line.contains("shader warm-up: seed ready") { fraction = 1; detail = "Shaders prepared"; break }
         if let r = line.range(of: "Exported "), line.contains("functions") {
             detail = "Analysing: " + line[r.lowerBound...].replacingOccurrences(of: ";", with: ",")
             break
@@ -167,6 +178,8 @@ final class Setup: ObservableObject {
     @Published var gameOK = false
     @Published var xenon: URL?
     @Published var movies: URL?
+    @Published var stuff: URL?
+    @Published var shaderSeed = true
     @Published var dest: URL
     @Published var tools = hasCommandLineTools()
     @Published var installingTools = false
@@ -226,6 +239,16 @@ final class Setup: ObservableObject {
         panel.message = "Choose the folder with your own copy of the US Xbox 360 disc's movies (files ending _english_ntsc.wmv)."
         panel.prompt = "Choose"
         if panel.runModal() == .OK { movies = panel.url }
+    }
+
+    func chooseStuff() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose your unzipped Xbox 360 Stuff Pack download (the Easy Installation folder)."
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK { stuff = panel.url }
     }
 
     func chooseDest() {
@@ -308,7 +331,8 @@ final class Setup: ObservableObject {
                                                          reason: "Building \(gameAppName)")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = setupArguments(game: game, dest: dest, xenon: xenon, movies: movies, checkOnly: false)
+        p.arguments = setupArguments(game: game, dest: dest, xenon: xenon, movies: movies, stuff: stuff, shaderSeed: shaderSeed,
+                                     checkOnly: false)
         p.currentDirectoryURL = workDir
         p.environment = setupEnvironment()
         let pipe = Pipe()
@@ -359,7 +383,7 @@ final class Setup: ObservableObject {
         let tail = readLogTail(workDir.appendingPathComponent("build/setup.log"))
         let (fraction, d) = logProgress(tail)
         if let d { detail = d }
-        progress = overallProgress(step: step, within: (step == 4 ? fraction : nil) ?? 0)
+        progress = overallProgress(step: step, within: (step == 4 || step == 6 ? fraction : nil) ?? 0)
     }
 
     func cancel() {
@@ -479,6 +503,8 @@ struct ContentView: View {
 
             GroupBox(label: Text("3. Options").bold()) {
                 VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Prepare the shaders now (about 25 minutes more; without it the first drive stutters once)",
+                           isOn: $s.shaderSeed).disabled(s.busy)
                     HStack {
                         Text("Put the game in:")
                         Text(s.dest.path).lineLimit(1).truncationMode(.middle)
@@ -499,7 +525,14 @@ struct ContentView: View {
                         if s.movies != nil { Button("Remove") { s.movies = nil }.disabled(s.busy) }
                         Button("Choose…") { s.chooseMovies() }.disabled(s.busy)
                     }
-                    Text("Found automatically in your game folder: a TexWizard texture pack (TRACKS/TexWizardX360), XenonEffects.tpk (scripts) and your Xbox 360 movies (an X360-Movies folder). See the guide for adding them.")
+                    HStack {
+                        Text("Xbox 360 front end, Stuff Pack (optional):")
+                        Text(s.stuff?.lastPathComponent ?? "from your game folder, if it's there").foregroundStyle(.secondary)
+                        Spacer()
+                        if s.stuff != nil { Button("Remove") { s.stuff = nil }.disabled(s.busy) }
+                        Button("Choose…") { s.chooseStuff() }.disabled(s.busy)
+                    }
+                    Text("Found automatically in your game folder: a TexWizard texture pack (TRACKS/TexWizardX360), XenonEffects.tpk (scripts), your Xbox 360 movies (an X360-Movies folder) and the Xbox 360 Stuff Pack download (its Easy Installation folder, for the Xbox 360 menus and garages). See the guide for adding them.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(4)
             }

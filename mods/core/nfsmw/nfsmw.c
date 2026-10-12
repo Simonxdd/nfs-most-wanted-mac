@@ -181,7 +181,7 @@ static int look_read(void) {
 /* Xbox 360 resources a PC-look launch leaves out (they replace PC data at load time). */
 static int look_pc_boot_off(const char *key) {
     static const char *const keys[] = {"x360_textures", "x360_sky", "x360_scenery_lights", "x360_scenery_light_pass",
-                                       "x360_light_pools", "clean_pools"};
+                                       "x360_light_pools", "clean_pools", "x360_frontend"};
     for (unsigned i = 0; i < sizeof keys / sizeof keys[0]; ++i)
         if (!strcmp(key, keys[i])) return 1;
     return 0;
@@ -523,6 +523,7 @@ static PopModStatus install_at(uint32_t addr, uint32_t ret, PopHookFn fn, int32_
 #include "scenery_lod_probe.h" /* TEST ONLY (Test127); likewise */
 #include "mirror_flare_probe.h" /* TEST ONLY (Test131); likewise */
 #include "xenon_fx.h"        /* Xbox 360 particles (task 145); needs install/install_at above */
+#include "x360_frontend.h"   /* 2.0.4: the Stuff Pack front end (overlay) */
 #include "smoke.h"           /* denser tyre smoke (run 14); likewise */
 #include "smoke_light.h"     /* lit smoke (run 14 stage 1); needs install and post_fx.h's pfx_call above */
 #include "mirror_car_shadows.h" /* car shadows in the mirror (Test134) */
@@ -839,6 +840,7 @@ PopModStatus pop_mod_init(const PopModApi *api) {
     fe_shadows_init(api);       /* setting fe_shadows: no car ground shadow in the front end (as on the 360) */
     if (api->on_key) api->on_key(api, tskip_key, NULL, &g_tskip_hook);   /* keyboard T skips the track (owner 7 Oct) */
     xfx_init(api);             /* Xbox 360 particles (task 145) */
+    x360fe_init(api);          /* 2.0.4: the Stuff Pack front end */
     smoke_init(api);           /* denser tyre smoke (run 14): slot 152, same function as the spark hook */
     smoke_light_init(api);     /* lit smoke (run 14 stage 1): slot 153, the per-emitter particle draw */
     /* x360_exposure (label "Glow and auto brightness"; the key name is historical) gates the rebuilt effects. */

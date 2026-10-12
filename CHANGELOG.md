@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.4 — the Xbox 360 front end
+
+- **The Xbox 360 Stuff Pack's front end, optional**: the Xbox 360 menus, title and loading art and garages, from your
+  own download of the Stuff Pack. Put the unzipped *Easy Installation* folder in your game folder (or choose it in the
+  Setup app) and build. Only the pack's front-end files are used, each one checked; the setup lists everything it
+  leaves out. Your game folder is never changed.
+- **F10 → Xbox 360 → Xbox 360 front end** turns it off (the PC menus come back at the next start); the *PC* look
+  starts with the PC front end too.
+- **Shader warm-up in the setup**: the setup now prepares the game's shaders on your Mac (about 25 minutes, offscreen
+  Quick Races, no window), so the first drive no longer stutters while they are made. Optional (`--no-shader-seed`, or
+  the checkbox in the Setup app).
+
 ## 2.0.3 — the game's own movies
 
 - **The PC game's own movies play**: the EA logo, the PSA and the intro at start-up, and the story scenes, tutorials
