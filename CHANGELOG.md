@@ -17,11 +17,18 @@
   starting with `_` is skipped. `Mods/mods-report.txt` lists what loaded and why anything did not. The setup makes a
   list of your game's texture names (numbers and sizes only) so the report can check names and shapes. F10 →
   Graphics → Advanced → **Player mods** turns it off. See the companion guide's *Optional mods*.
+- **Saves and the Stuff Pack**: installing the Xbox 360 Stuff Pack over the game folder replaces its gameplay data,
+  and the game then refuses careers saved with the original files ("appears to be damaged"). The setup now says so
+  when it sees this; the guide says how to get those careers back. The 2.0.4 front end (taken from the download)
+  does not change gameplay data.
+- **Your saves are copied before each new build is first played**: `Save Backups/` in your profile folder keeps the
+  ten newest copies; the guide says how to bring one back.
 - **If the game won't start, it says why**: a message with the reason and a **Show Log** button when the start stops
   before the game or the game quits within its first seconds; every start's log now begins with the app version,
   macOS and Mac model, for reports.
 - **Locked game files no longer block an update**: if some files in your game folder have the Finder *Locked* flag,
-  the app's own copies are unlocked, so building again (or moving the app to the Trash) works. Your game folder is
+  the app's own copies are unlocked, and the setup unlocks an earlier app before replacing it, so building again
+  works. To drag an app built by 2.0.3 or earlier to the Trash, see the troubleshooting guide. Your game folder is
   not changed.
 
 ## 2.0.3 — the game's own movies

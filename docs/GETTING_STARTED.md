@@ -28,8 +28,9 @@ This project does not provide, link to, or explain how to obtain any game file. 
    **Done**, then go to **System Settings → Privacy & Security** and click **Open Anyway** next to its name.
 3. **Choose your game folder.** The app checks your `speed.exe` straight away and changes nothing if it can't be used.
 4. If asked, **install Apple's Command Line Tools**; the app waits for them.
-5. Optional: add your copy of `XenonEffects.tpk` or of the Xbox 360 movies, or choose where the game goes
-   (Applications by default).
+5. Optional: add your copy of `XenonEffects.tpk`, of the Xbox 360 movies or of the Xbox 360 Stuff Pack download
+   (its unzipped *Easy Installation* folder), turn the shader warm-up off (it is on: it adds time but removes the
+   first-drive stutter), or choose where the game goes (Applications by default).
 6. Click **Build**. You see each step, the progress and the time; the Mac stays awake while it runs. When it finishes,
    click **Open the game**.
 
@@ -87,7 +88,7 @@ git pull
 ./setup.sh "/path/to/Need for Speed Most Wanted"
 ```
 
-The analysis is reused, so an update only translates, builds and packages again. Your saves and settings are kept:
+The analysis is reused, so an update translates, builds, prepares the shaders (if on) and packages again. Your saves and settings are kept:
 they live in your profile folder, not in the app (see the [companion guide](COMPANION_GUIDE.md#saves-and-settings)).
 
 **From 1.0 to 2.0:** your saves and settings carry over. Anti-aliasing starts at Off once (choose 2x or 4x again),

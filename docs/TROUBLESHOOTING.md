@@ -84,8 +84,13 @@ the setup was run on, and the setup must be run again after adding it. F10 → X
 on, and the *PC* look shows the original textures.
 
 **A short hitch the first time you see something new** — each new shader is prepared the first time it is needed and
-then kept in your profile folder (`ShaderWarm/`), so it happens once per build. A later release prepares them during
-the setup.
+then kept in your profile folder (`ShaderWarm/`), so it happens once per build. Since 2.0.4 the setup prepares them
+ahead (step 6, the shader warm-up); if the setup log says "shader warm-up: skipped", it could not, and the first
+drive hitches once as before.
+
+**An old app can't be moved to the Trash ("locked")** — an app built before 2.0.4 can hold copies of game files
+that have the Finder *Locked* flag (building again with 2.0.4 or later unlocks and replaces it by itself). In Terminal: `chflags -R nouchg "/Applications/NFS Most Wanted
+Native.app"` (or wherever the app is), then delete it or build again. Apps built by 2.0.4 or later don't need this.
 
 **Sparks and light trails missing** — the log line starting `core.nfsmw: sparks and light trails` says why; usually
 `XenonEffects.tpk` wasn't in the game folder's `scripts` folder when the setup ran (add it and build again).

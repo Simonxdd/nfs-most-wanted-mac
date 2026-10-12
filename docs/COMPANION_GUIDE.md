@@ -37,8 +37,8 @@ for new profiles (plain 5.1 PCM lost the menu music on some TV chains); a 1.0 pr
 unused Busted scenes, percent in one-lap races, the HUD while looking back, subtitles, heat keys (F7, Page Up), the
 World Map in races, and an optional no catch-up. Controller remapping from 1.0.2 is unchanged.
 
-**Known issues.** The first minutes of driving after a new build may hitch once while each new shader is prepared
-(the Setup app will prepare them ahead in a later release). Rain at 4K with HDR and 2x anti-aliasing sits at the
+**Known issues.** If the setup's shader warm-up was skipped, the first minutes of driving after a new build hitch once
+while each new shader is prepared (since 2.0.4 the setup prepares them ahead). Rain at 4K with HDR and 2x anti-aliasing sits at the
 GPU's limit on an M5 Pro. The mouse pointer is offset after you resize the window to another aspect ratio (a fix is
 planned). There is no HD texture pack yet: *Remaster HD textures* and *Sunlit wall relief* show the game's own textures until
 a later release lets the Setup app make the pack on your Mac.
@@ -171,13 +171,20 @@ The game's own camera button (R3 on a controller) cycles the bumper, hood and ch
 
 Your profile folder is `~/Library/Application Support/NFS Most Wanted Native/`. It holds:
 
-- your **saves** (the game's own profile files, exactly as on PC);
+- your **saves** (the game's own profile files, exactly as on PC), in `Documents/NFS Most Wanted/`;
+- `Save Backups/` — a copy of your saves made at the first start of each new build (since 2.0.4; the ten newest);
 - `mod-settings.json` — the F10 settings;
 - `NativeOptions.ini` — optional overrides (below);
 - `Logs/` — the latest run's log, useful for bug reports.
 - `Mods/` — texture mods you add (see [Optional mods](#optional-mods)) and `mods-report.txt`.
 
 Back up this folder to keep your career. PC save files can be copied in, and back out to a PC.
+
+**Getting a career back from a backup:** quit the game, open `Save Backups/`, pick the copy from before the change
+(each is named by date and the version it was made before), and copy its `Documents` folder over the one in your
+profile folder (replace when asked). Start the game. A career the game reports as "appears to be damaged" right
+after you changed game files (for example the Xbox 360 Stuff Pack installed over the game folder) is usually not
+damaged: see [Optional mods](#optional-mods).
 
 ### NativeOptions.ini
 
@@ -295,6 +302,11 @@ this download. Without them the game plays its own PC movies (2.0.3), and any ti
 the game's own movies too. (The Xbox 360 title-screen art, the BMW behind the logo, comes from the Stuff Pack's
 front-end files in your game folder, not from the movies.)
 
+**Don't install the Stuff Pack over your game folder** (its installer, or copying its `Files` over `GLOBAL`,
+`SOUND`, `TRACKS` …). The setup takes the front end straight from the download, kept as its own folder. Installed
+over the game, the pack replaces the game's gameplay data (`GLOBAL/attributes.bin`), and the game then refuses
+careers saved with the original files ("appears to be damaged"); the save files themselves are not changed, and
+putting the original `GLOBAL` folder back and building again makes them load. The setup says so when it sees this.
 If your game folder came from a PC that already had the Stuff Pack installed, its textures are used as above; the
 pack's other changed game files were made for its Windows code and are untested with this port.
 
