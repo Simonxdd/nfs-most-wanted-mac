@@ -89,7 +89,9 @@ git pull
 ```
 
 The analysis is reused, so an update translates, builds, prepares the shaders (if on) and packages again. Your saves and settings are kept:
-they live in your profile folder, not in the app (see the [companion guide](COMPANION_GUIDE.md#saves-and-settings)).
+they live in your profile folder, not in the app, and since 2.0.4 the first start of each new build copies your saves
+to `Save Backups/` first (see the [companion guide](COMPANION_GUIDE.md#keeping-your-game-and-saves-safe)). Don't
+install mods or packs over your game folder: the guide lists what is safe to add and how.
 
 **From 1.0 to 2.0:** your saves and settings carry over. Anti-aliasing starts at Off once (choose 2x or 4x again),
 and the look is now *Look* (Definitive by default). A 1.0 profile keeps its own Dolby Digital choice (new profiles

@@ -180,11 +180,7 @@ Your profile folder is `~/Library/Application Support/NFS Most Wanted Native/`. 
 
 Back up this folder to keep your career. PC save files can be copied in, and back out to a PC.
 
-**Getting a career back from a backup:** quit the game, open `Save Backups/`, pick the copy from before the change
-(each is named by date and the version it was made before), and copy its `Documents` folder over the one in your
-profile folder (replace when asked). Start the game. A career the game reports as "appears to be damaged" right
-after you changed game files (for example the Xbox 360 Stuff Pack installed over the game folder) is usually not
-damaged: see [Optional mods](#optional-mods).
+Backups, moving saves and what's safe to add: [Keeping your game and saves safe](#keeping-your-game-and-saves-safe).
 
 ### NativeOptions.ini
 
@@ -216,6 +212,41 @@ customization* (2.0 adds the fixes, minimap, heat-key, World Map and no catch-up
 | Open the Old Bridge | off |
 
 Career options apply to new careers; the others after a restart.
+
+## Keeping your game and saves safe
+
+**Your saves survive updates.** They live in your profile folder
+(`~/Library/Application Support/NFS Most Wanted Native/Documents/NFS Most Wanted/`), never inside the app, so
+building a new version doesn't touch them. Since 2.0.4 the app also copies them to `Save Backups/` (same profile
+folder) the first time each new build starts, before the game reads them; the ten newest copies are kept.
+
+- **Bring a career back:** quit the game, open `Save Backups/`, pick the copy from before the change (each is named
+  by date and version), copy its `Documents` folder over the one in your profile folder, and start the game.
+- **Move saves to another Mac:** copy the `Documents/NFS Most Wanted/` folder to the same place in the other Mac's
+  profile folder. PC saves can be copied in the same way (from your PC's `Documents/NFS Most Wanted/`).
+- **Before you change your game files** (adding a mod, replacing folders), copy your whole profile folder somewhere
+  safe as well. It's small.
+
+**Safe to add** (they never change your saves):
+
+| What | Where | Rebuild? |
+|---|---|---|
+| Texture mods (`.dds` files) | your **Mods** folder ([below](#texture-mods-the-mods-folder)) | no |
+| The Xbox 360 Stuff Pack's front end | its unzipped **Easy Installation** folder, kept **as its own folder** in your game folder (or chosen in the Setup app) | yes |
+| `XenonEffects.tpk`, `TexWizardX360`, button icons | as in [PC mods' data files](#pc-mods-data-files-needs-a-rebuild) | yes |
+| Xbox 360 or converted movies | as in [Xbox 360 movies](#xbox-360-movies-optional) | yes |
+
+**Not safe: installing a pack over your game folder.** Running a mod's installer or copying its files over
+`GLOBAL`, `FRONTEND`, `SOUND`, `TRACKS`, `FX` or `scripts` changes the game's own data. The Xbox 360 Stuff Pack
+installed this way replaces the gameplay data (`GLOBAL/attributes.bin` and others): the game then refuses careers
+saved before ("… appears to be damaged and cannot be used"; the files themselves are not changed), and players have
+seen the world's lighting look wrong. Windows parts (`scripts/*.asi`, `.dll` files, `FX/COMPILED` shaders) do nothing
+on a Mac. The setup tells you when it finds a game folder changed like this.
+
+**Undo it:** put the original folders back (from your backup, or reinstall the PC game and copy its folder again),
+build again with the Setup app, then bring your career back from `Save Backups/` if needed. Careers you started
+*with* the pack installed may be refused once it is removed (the same rule the other way round), so keep a copy of
+your profile folder from before.
 
 ## Optional mods
 
