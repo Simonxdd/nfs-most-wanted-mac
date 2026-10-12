@@ -493,7 +493,7 @@ struct ContentView: View {
                         Button("Choose…") { s.chooseXenon() }.disabled(s.busy)
                     }
                     HStack {
-                        Text("Xbox 360 intro and title movies (optional):")
+                        Text("Xbox 360 intro and story movies (optional):")
                         Text(s.movies?.lastPathComponent ?? "from your game folder, if it's there").foregroundStyle(.secondary)
                         Spacer()
                         if s.movies != nil { Button("Remove") { s.movies = nil }.disabled(s.busy) }

@@ -45,7 +45,9 @@ a later release lets the Setup app make the pack on your Mac.
 
 ## Playing
 
-Open **NFS Most Wanted Native**. The game starts as on PC: the EA logo and intro movies, then the title screen.
+Open **NFS Most Wanted Native**. The game starts at the title screen: the PC game's own intro movies don't play in this
+version. With your own Xbox 360 movies added (see [Xbox 360 movies](#xbox-360-movies-optional)), the Xbox 360 intro
+with the EA HD bumper plays first.
 Press **Return**, **Cross** or **A** to start. Everything in the game's own menus works as it did on PC.
 
 - **Full screen / window:** the app opens full screen on the display it starts on. F10 → Display → *Window*
@@ -238,15 +240,16 @@ After the build:
 If you choose the file in the Setup app instead (*XenonEffects… Choose*), or pass
 `--xenon-effects /path/to/XenonEffects.tpk` to `./setup.sh`, it doesn't need to be in the game folder.
 
-### Xbox 360 intro and title movies (optional)
+### Xbox 360 movies (optional)
 
 With your own copy of the **US Xbox 360 disc's movies** (33 files whose names end in `_english_ntsc.wmv`, such as
-`attract_movie_english_ntsc.wmv`), the game plays the Xbox 360 intro with the **EA HD bumper**, the title screen's
-moving background and the story scenes from them. Put the files in a folder named **`X360-Movies`** in your game
-folder (or choose that folder in the Setup app: *Xbox 360 intro and title movies… Choose*, or pass
+`attract_movie_english_ntsc.wmv`), the game plays the Xbox 360 intro with the **EA HD bumper** and the story scenes
+from them. Put the files in a folder named **`X360-Movies`** in your game
+folder (or choose that folder in the Setup app: *Xbox 360 intro and story movies… Choose*, or pass
 `--x360-movies /path/to/folder` to `./setup.sh`) and build again. Only the exact original files are used: the setup
 checks each one's size and checksum and leaves out anything else; nothing is converted. The movies are not part of
-this download. Without them the game asks for its own PC movies, as before.
+this download. Without them the game asks for its own PC movies, as before. (The Xbox 360 title-screen art, the
+BMW behind the logo, comes from the Stuff Pack's front-end files in your game folder, not from the movies.)
 
 If your game folder came from a PC that already had the Stuff Pack installed, its textures are used as above; the
 pack's other changed game files were made for its Windows code and are untested with this port.

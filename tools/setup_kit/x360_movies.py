@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The Xbox 360 movies (optional): the player's own copy of the US Xbox 360 disc's movies (33 files named
-*_english_ntsc.wmv) for the intro, the EA HD bumper, the title screen and the story scenes. Only the exact original
+*_english_ntsc.wmv) for the intro, the EA HD bumper and the story scenes. Only the exact original
 files are accepted: each one's name, size and SHA-256 must match native/usa_movie_manifest.h, the same list the game
 checks before it plays one. Nothing is converted or changed; matching files are copied as they are.
 
