@@ -37,3 +37,14 @@ def test_rebuild_removes_an_app_with_locked_copies(tmp_path):
     subprocess.run(['/usr/bin/chflags', 'uchg', str(f)], check=True)
     package.remove_app(app)
     assert not app.exists()
+
+
+def test_stuff_pack_download_not_copied(tmp_path):
+    game = tmp_path / 'game'
+    for d in ('GLOBAL', 'Easy Installation-20260924T001502Z-1-001/Easy Installation/Files', 'X360-Stuff'):
+        (game / d).mkdir(parents=True)
+    (game / 'GLOBAL/a.bin').write_bytes(b'x')
+    out = tmp_path / 'app/Game'
+    package.clone_tree(game, out, set())
+    assert (out / 'GLOBAL/a.bin').is_file()
+    assert not any(n.name.lower().startswith(('easy installation', 'x360-stuff')) for n in out.iterdir())

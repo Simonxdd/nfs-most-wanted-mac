@@ -70,6 +70,9 @@ def clone_tree(src, dst, exclude):
     for p in sorted(src.iterdir()):
         if p.name.lower() in exclude or p.name.lower() == "speed.exe" or p.name.startswith("."):
             continue
+        # run 28 review F8: the Stuff Pack download a player keeps in the game folder is Setup's input, not game data
+        if p.is_dir() and (p.name.lower() == "x360-stuff" or p.name.lower().startswith("easy installation")):
+            continue
         r = subprocess.run(["/bin/cp", "-cR", str(p), str(dst / p.name)], capture_output=True)
         if r.returncode:
             subprocess.run(["/bin/cp", "-R", str(p), str(dst / p.name)], check=True)

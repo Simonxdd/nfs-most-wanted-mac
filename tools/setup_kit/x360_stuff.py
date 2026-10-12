@@ -144,6 +144,10 @@ def main():
         if not bad:
             root = c
             break
+    if root is None and all(c.resolve() == folder.resolve() for c in cands):
+        # run 28 review F9: only the game folder itself was a candidate (its own FrontB.lzc): no download found
+        print("Xbox 360 Stuff Pack front end: not added (no Stuff Pack download found)")
+        sys.exit(2)
     if root is None:
         ok, bad = check(cands[0])
         print("Xbox 360 Stuff Pack front end: not added (these files are missing or not the pack's: "

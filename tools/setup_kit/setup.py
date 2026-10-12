@@ -226,6 +226,48 @@ def front_end_line(game):
             "front end off the game uses it as it is (restore the original from your backup to get the PC menus)")
 
 
+# The PC game's own GLOBAL/GlobalB.lzc (retail 1.3): the front end's file that also holds car and gameplay tables.
+GLOBALB_PC = (1520744, "696549f5551024617fb9b2743165863ee091e82b1a32e57e0949bc7777a0fde8")
+
+
+def global_b_line(game, x360fe):
+    """2.0.4 (run 28 review S3): the Stuff Pack front end overlays GlobalB.lzc, which also holds car and gameplay tables:
+    a player's own modded GlobalB is then not used while the front end is on. Say so (never changed: D-140)."""
+    pack = Path(x360fe) / "GLOBAL/GlobalB.lzc"
+    f = find_ci(game, "GLOBAL", "GlobalB.lzc")
+    if not pack.is_file() or not f:
+        return None
+    size = f.stat().st_size
+    if size == GLOBALB_PC[0] and hashlib.sha256(f.read_bytes()).hexdigest() == GLOBALB_PC[1]:
+        return None
+    if size == pack.stat().st_size and f.read_bytes() == pack.read_bytes():
+        return None
+    return (f"Note: your game's own GLOBAL/GlobalB.lzc is changed by a mod ({size} bytes). While the Xbox 360 front end "
+            "is on, the Stuff Pack's GlobalB.lzc is used instead, so changes it holds (cars, gameplay tables) do not "
+            "apply; F10 -> Xbox 360 -> Xbox 360 front end off uses yours (restart)")
+
+
+# The PC game's own GLOBAL/attributes.bin (retail 1.3): the attribute database (car and gameplay values).
+ATTRIBUTES_PC = (689728, "3d0362f2c052b2f93576852f504cb7806b14eefbf83b8531d45dc1d430ec6337")
+
+
+def attributes_line(game):
+    """2.0.4 (run 28, a player report): a game folder with the Xbox 360 Stuff Pack (or another mod) installed over it
+    has a changed GLOBAL/attributes.bin; careers saved with the original files are then refused as "damaged" (and the
+    reverse). Said, never changed (D-140). Seen on the owner's folder: the same save loads with the original files."""
+    f = find_ci(game, "GLOBAL", "attributes.bin")
+    if not f:
+        return None
+    size = f.stat().st_size
+    if size == ATTRIBUTES_PC[0] and hashlib.sha256(f.read_bytes()).hexdigest() == ATTRIBUTES_PC[1]:
+        return None
+    return (f"Note: your game's GLOBAL/attributes.bin is not the original ({size} bytes): the Xbox 360 Stuff Pack or "
+            "another mod was installed over the game folder. The game then refuses careers saved with the original "
+            "files (\"appears to be damaged\"), and the reverse; the save files themselves are not changed. To use those "
+            "careers, put the original GLOBAL folder back and build again (keep the Stuff Pack download as its own "
+            "folder: the setup takes its front end from there)")
+
+
 MOD_NAMES = ROOT / "build/modnames/known.tsv"
 
 
@@ -276,8 +318,13 @@ def fresh_build_tree(root):
     if not stamp.is_file() or stamp.read_text() != ident:
         if (root / "build/cmake").exists():
             say("  new source version: rebuilding from scratch (the earlier build is not reused)")
-        for p in (root / "build/cmake", root / "build/SpeedRecomp.app", root / "build/recomp/mods"):
-            shutil.rmtree(p, ignore_errors=True)
+        # run 28 review F1: the warm-up's offscreen runner and its drives belong to the earlier version too
+        for p in (root / "build/cmake", root / "build/SpeedRecomp.app", root / "build/recomp/mods",
+                  root / "build/recomp/pop_smoke", root / "build/warm"):
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            elif p.exists():
+                p.unlink()
     return stamp, ident
 
 
@@ -414,6 +461,12 @@ def main():
         say("  (optional: put the unzipped Stuff Pack download's Easy Installation folder in your game folder, "
             "or pass --x360-stuff FOLDER)")
     say("  " + front_end_line(game))
+    al = attributes_line(game)
+    if al:
+        say("  " + al)
+    gl = global_b_line(game, gen / "x360fe")
+    if gl:
+        say("  " + gl)
 
     # 2.0.4: the game texture list for the player's Mods folder (hashes and sizes only, from these game files and the
     # front-end overlay). Never fails the setup: without it every mod still loads, unchecked.
