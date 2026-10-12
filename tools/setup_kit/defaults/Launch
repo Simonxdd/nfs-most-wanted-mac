@@ -26,6 +26,9 @@ if ls "$app_resources/USA-Movies"/*.wmv >/dev/null 2>&1; then
 else
     unset RECOMP_NFSMW_USA_MOVIES NFSMW_USA_WMV_DIR
 fi
+# The game's own movies (its MOVIES folder, .vp6) play for any title without an Xbox 360 movie: the PC intro and
+# story scenes, or the converted Xbox 360 ones if the player's folder has them.
+export RECOMP_NFSMW_PC_MOVIES=1
 app_stamp=$(date +%Y%m%d-%H%M%S)-$$
 if [ "${RECOMP_DIAGNOSTICS:-0}" = 1 ]; then
     export RECOMP_FRAME_TIMINGS="$app_profile/Logs/$app_stamp-frames.csv"

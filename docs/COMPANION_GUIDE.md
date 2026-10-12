@@ -45,9 +45,10 @@ a later release lets the Setup app make the pack on your Mac.
 
 ## Playing
 
-Open **NFS Most Wanted Native**. The game starts at the title screen: the PC game's own intro movies don't play in this
-version. With your own Xbox 360 movies added (see [Xbox 360 movies](#xbox-360-movies-optional)), the Xbox 360 intro
-with the EA HD bumper plays first.
+Open **NFS Most Wanted Native**. The game's own movies play first (the EA logo, the PSA and the intro), from your
+game's `MOVIES` folder, then the title screen. With your own Xbox 360 movies added (see
+[Xbox 360 movies](#xbox-360-movies-optional)) or the converted ones (see
+[Recommended community packs](#recommended-community-packs)), the Xbox 360 intro with the EA HD bumper plays instead.
 Press **Return**, **Cross** or **A** to start. Everything in the game's own menus works as it did on PC.
 
 - **Full screen / window:** the app opens full screen on the display it starts on. F10 → Display → *Window*
@@ -248,21 +249,41 @@ from them. Put the files in a folder named **`X360-Movies`** in your game
 folder (or choose that folder in the Setup app: *Xbox 360 intro and story movies… Choose*, or pass
 `--x360-movies /path/to/folder` to `./setup.sh`) and build again. Only the exact original files are used: the setup
 checks each one's size and checksum and leaves out anything else; nothing is converted. The movies are not part of
-this download. Without them the game asks for its own PC movies, as before. (The Xbox 360 title-screen art, the
-BMW behind the logo, comes from the Stuff Pack's front-end files in your game folder, not from the movies.)
+this download. Without them the game plays its own PC movies (2.0.3), and any title the folder lacks plays from
+the game's own movies too. (The Xbox 360 title-screen art, the BMW behind the logo, comes from the Stuff Pack's
+front-end files in your game folder, not from the movies.)
 
 If your game folder came from a PC that already had the Stuff Pack installed, its textures are used as above; the
 pack's other changed game files were made for its Windows code and are untested with this port.
 
-### What else works
+### Recommended community packs
 
-- **Converted widescreen movies** that replace files in the game's `MOVIES` folder play, fitted to the screen
-  (`movie_fit`).
-- The **widescreen fix**, **HD Reflections** mirror improvements, **XtendedInput**'s controller support and the
-  **Extra Options** listed above are already built in — don't install them (only XtendedInput's button-icon file is
-  used, as above).
-- Anything else that is an `.asi`/`.dll` will not load. Mods that only replace game data files (cars, vinyls,
-  textures in `.BIN`/`.BUN` files) may work if the PC game accepts them; they are untested.
+The packs below are the PC community's own. They are never part of this download: get them from the pages linked
+here (not from mirror sites), and copy only the files named. "Built in" means the port already does what the mod
+does; don't install those.
+
+**Work with this port**
+
+| Pack | Page | What you get | What to copy |
+|---|---|---|---|
+| Xbox 360 Stuff Pack 4.2 (textures) | [nfsmods.xyz/mod/1200](https://nfsmods.xyz/mod/1200) | Xbox 360 world and garage textures | `TexWizardX360` → `TRACKS` (see [Optional mods](#optional-mods)) |
+| XenonEffects | [github.com/xan1242/NFSMW_XenonEffects](https://github.com/xan1242/NFSMW_XenonEffects) | Xbox 360 sparks and light trails | `XenonEffects.tpk` → `scripts` |
+| NFS XtendedInput (button icons) | [github.com/xan1242/NFS-XtendedInput](https://github.com/xan1242/NFS-XtendedInput) | PlayStation / Xbox button icons | `NFSMW/GLOBAL/XtendedInputButtons.tpk` → `GLOBAL` |
+| Xbox 360 Converted Movies | [nfsmods.xyz/mod/3006](https://nfsmods.xyz/mod/3006) | the Xbox 360 intro (with the EA HD bumper) and story scenes at 1280x720, as `.vp6` files | its `*_english_ntsc.vp6` files → `MOVIES` (beside the game's own; nothing is overwritten) |
+
+Your own US Xbox 360 disc's movies work too (see [Xbox 360 movies](#xbox-360-movies-optional)); they come first
+where both are there.
+
+**Built in, don't install:** Widescreen Fix (ThirteenAG), NFS HD Reflections, Extra Options (see
+[Extra Options](#extra-options)), XtendedInput's controller support, HUD Adapter, and the Stuff Pack's `X360Stuff.asi`,
+shaders and ReShade filters (this port has its own Xbox 360 look).
+
+**Won't work here** (Windows code): any `.asi` or `.dll` mod, for example the Unlimiter, Xbox Rain Droplets (the port
+has its own Xbox 360 raindrops), the Realistic Plugin, Mod Menu, and Eternal Textures (a Texmod `.tpf` with an ENB).
+
+**Not tested yet:** mods that replace game data files (cars, vinyls, the Stuff Pack's front-end and HUD files,
+Remastered UI, Xbox 360 UI Texts) may work if the PC game accepts them; keep a copy of your game folder before trying
+one. Recompiled Vinyls 1024x needs a Windows tool for its full install.
 
 ## Reporting a problem
 

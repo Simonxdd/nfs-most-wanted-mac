@@ -178,7 +178,11 @@ static void movie_fit(const PopModApi *api, pop_cpu_v1 *cpu,
     put_float(cpu->esp + 28, get_float(cpu->esp + 28) > 0.0f ? 1.0f : 0.0f);
     put_float(cpu->esp + 36, get_float(cpu->esp + 36) > 0.0f ? 1.0f : 0.0f);
     float aspect = (float)w / (float)h;
-    if (g_widescreen && aspect > 1.5f) {
+    /* The PC's own VP6 frames (1024x512) are a 4:3 frame stored 2:1, its 16:9
+     * picture letterboxed inside (rows 64-447): the game's own quad shows them,
+     * and the FMV slots above zoom the picture to the screen. */
+    int pc_frame = w == 2u * h;
+    if (g_widescreen && aspect > 1.5f && !pc_frame) {
         float mx = fabsf(get_float(cpu->ecx + 0x30));
         float my = fabsf(get_float(cpu->ecx + 0x44));
         if (mx > 0.0f && my > 0.0f) {
@@ -195,8 +199,8 @@ static void movie_fit(const PopModApi *api, pop_cpu_v1 *cpu,
     static float last_aspect;
     if (dimensions != last_dimensions || g_aspect != last_aspect) {
         char line[144];
-        snprintf(line, sizeof line, "core.nfsmw: movie %ux%u full-texture fit; screen aspect %.4f",
-                 w, h, g_aspect);
+        snprintf(line, sizeof line, "core.nfsmw: movie %ux%u %s; screen aspect %.4f",
+                 w, h, pc_frame ? "PC 4:3 frame, game quad" : "full-texture fit", g_aspect);
         api->log(api, line);
         last_dimensions = dimensions; last_aspect = g_aspect;
     }

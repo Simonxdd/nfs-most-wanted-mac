@@ -41,12 +41,21 @@ static int boot_guest_str_is(const PopModApi *api, uint32_t addr, const char *ex
  * exact PC 1.3 content, so a different executable can never be patched blindly. */
 static void boot_movies_apply(const PopModApi *api) {
     if (g_boot_hd_state) return;
-    /* 2.0.2: the EA HD bumper exists only among the Xbox 360 movies. Without them (Launch sets NFSMW_USA_WMV_DIR only
-     * when Setup added the player's own copy) the PC order stays, so the game's own PC clips are asked for. */
-    const char *x360 = getenv("NFSMW_USA_WMV_DIR");
-    if (!x360 || !*x360) {
+    /* 2.0.2: the EA HD bumper exists only among the Xbox 360 movies (Launch sets NFSMW_USA_WMV_DIR only when Setup
+     * added the player's own copy). 2.0.3: or as the Converted Movies mod's VP6 in the game folder, which the native
+     * adapter plays when Launch sets RECOMP_NFSMW_PC_MOVIES=1 (the working folder is the game folder). Without either
+     * the PC order stays, so the game's own PC clips are asked for. */
+    const char *x360 = getenv("NFSMW_USA_WMV_DIR"), *pc = getenv("RECOMP_NFSMW_PC_MOVIES");
+    int bumper = x360 && *x360;
+    if (!bumper && pc && !strcmp(pc, "1")) {
+        FILE *f = fopen("MOVIES/eahd_bumper_english_ntsc.vp6", "rb");
+        char magic[4] = {0};
+        bumper = f && fread(magic, 1, 4, f) == 4 && !memcmp(magic, "MVhd", 4);
+        if (f) fclose(f);
+    }
+    if (!bumper) {
         g_boot_hd_state = -1;
-        api->log(api, "core.nfsmw: boot movies: no Xbox 360 movies; the PC order kept");
+        api->log(api, "core.nfsmw: boot movies: no EA HD bumper movie; the PC order kept");
         return;
     }
     int ok = boot_guest_str_is(api, BOOT_PKG_EALOGO, "LS_EAlogo.fng") &&

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.3 — the game's own movies
+
+- **The PC game's own movies play**: the EA logo, the PSA and the intro at start-up, and the story scenes, tutorials
+  and Blacklist videos in the career, from the `MOVIES` folder of your game. They never played before: the game asks
+  for the US (`_ntsc`) movie names, and most PC copies have the European (`_pal`) ones, so it found nothing. The app
+  now plays either, natively (the same movie player as the Xbox 360 movies, now with the EA movie format), with the
+  picture zoomed to fill a widescreen display as on PC.
+- **Converted Xbox 360 movies** (the community *Xbox 360 Converted Movies* pack, in your game's `MOVIES` folder) play
+  too, fitted to the screen, with the EA HD bumper at start-up.
+- Your own Xbox 360 disc movies (2.0.2) still come first for every title they cover.
+
 ## 2.0.2 — Xbox 360 movies
 
 - **Your own Xbox 360 movies, optional.** Put your copy of the US Xbox 360 disc's movies in an `X360-Movies` folder

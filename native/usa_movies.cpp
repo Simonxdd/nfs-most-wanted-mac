@@ -1,4 +1,8 @@
-// Experimental USA WMV adapter for the pinned PC executable. Off by default.
+// Native movie adapter for the pinned PC executable. Off by default; Launch
+// turns it on. Two sources, in this order: the player's own USA Xbox 360 WMVs
+// (RECOMP_NFSMW_USA_MOVIES + NFSMW_USA_WMV_DIR, each checked against the
+// manifest), then the game's own VP6 movies from its MOVIES folder
+// (RECOMP_NFSMW_PC_MOVIES=1; FFmpeg's EA demuxer and VP6 decoder).
 // All calls (including focus) run under the guest scheduler baton. The native
 // decoder never impersonates an RCMP descriptor, AV handle or guest pointer.
 #include "runtime/guest.h"
@@ -10,10 +14,12 @@ extern "C" {
 #include "runtime/loader.h"
 #include "runtime/memory.h"
 #include "runtime/native_seam.h"
+#include "runtime/win32.h"
 #include "usa_movie_manifest.h"
 #include "usa_movie_color.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <optional>
@@ -32,15 +38,23 @@ uint64_t uploads = 0;
 uint32_t logged_routes = 0;
 std::string title;
 
-bool enabled() {
+bool usa_enabled() {
   const char *v = std::getenv("RECOMP_NFSMW_USA_MOVIES");
   return v &&
          (std::strcmp(v, "silent-qa") == 0 || std::strcmp(v, "audio-qa") == 0);
 }
 
+bool pc_enabled() {
+  const char *v = std::getenv("RECOMP_NFSMW_PC_MOVIES");
+  return v && std::strcmp(v, "1") == 0;
+}
+
+bool enabled() { return usa_enabled() || pc_enabled(); }
+
+// Only the USA "silent-qa" probe mode mutes; the PC source always plays sound.
 bool silent() {
   const char *v = std::getenv("RECOMP_NFSMW_USA_MOVIES");
-  return !v || std::strcmp(v, "audio-qa") != 0;
+  return v && std::strcmp(v, "silent-qa") == 0;
 }
 
 void ret(X86 *c) {
@@ -101,6 +115,56 @@ std::string verified_path(const UsaMovie *movie) {
       loader_hash_file(path.c_str()) != movie->sha256)
     return {};
   return path;
+}
+
+// The game's own movie for a listed title, from its MOVIES folder (through the
+// same case-insensitive resolver as the game's reads): the NTSC name the game
+// asks for first (US retail, or the Converted Movies mod), then the PAL name
+// (European retail; the game never asks for it, so it never played). A regular
+// file of at most 1 GiB with EA's MVhd header; nothing else is opened.
+struct PcMovie {
+  std::string path;
+  uint64_t bytes = 0;
+};
+PcMovie pc_movie(const UsaMovie *movie) {
+  if (!movie || !pc_enabled())
+    return {};
+  std::string base = movie->name;
+  base.resize(base.size() - std::strlen("_english_ntsc.wmv"));
+  for (const char *suffix : {"_english_ntsc.vp6", "_english_pal.vp6"}) {
+    const std::string path =
+        win32_host_path_op("MOVIES\\" + base + suffix, WIN32_FILE_READ);
+    OsStat stat{};
+    if (path.empty() || os_stat(path.c_str(), &stat) != 0 ||
+        !stat.is_regular || stat.size < 16 || stat.size > (1ull << 30))
+      continue;
+    char magic[4] = {};
+    FILE *file = std::fopen(path.c_str(), "rb");
+    const bool ea = file && std::fread(magic, 1, 4, file) == 4 &&
+                    std::memcmp(magic, "MVhd", 4) == 0;
+    if (file)
+      std::fclose(file);
+    if (ea)
+      return {path, stat.size};
+  }
+  return {};
+}
+
+// VP6 carries no colour tags; its frames are BT.601 limited range at any size.
+bool pc_movie_color(uint32_t, uint32_t, mf::VideoColorDescription source,
+                    VideoColorConversion *out) {
+  using C = mf::VideoColorDescription;
+  if (!out || source.matrix != C::Matrix::Unspecified ||
+      source.range != C::Range::Unspecified)
+    return false;
+  out->y_offset = 0.0625f;
+  out->uv_offset = 0.5f;
+  out->y_scale = 1.164382815361023f;
+  out->v_to_r = 1.5960273742675781f;
+  out->u_to_g = -0.3933164179325104f;
+  out->v_to_g = -0.8133906126022339f;
+  out->u_to_b = 2.016238212585449f;
+  return true;
 }
 
 // The movie queue's actual device/format at start and after each timeline
@@ -287,7 +351,9 @@ extern "C" void native_00542a40(X86 *c) {
   wr32(owner + 0x11c, 5);
   wr32(owner + 0x120, 0); // Failed open still takes original FE completion.
   const UsaMovie *movie = lookup(title);
-  const std::string path = verified_path(movie);
+  const std::string usa = verified_path(movie);
+  const PcMovie pc = usa.empty() ? pc_movie(movie) : PcMovie{};
+  const std::string &path = usa.empty() ? pc.path : usa;
   std::string why;
   {
     // The game's current Audio Mode presentation (core.nfsmw -> host).
@@ -301,7 +367,7 @@ extern "C" void native_00542a40(X86 *c) {
   } else if (!player.open(
                  path, silent(), &why,
                  mf::TimedPlayer::AudioTiming::PreserveDecodedSamples,
-                 usa_movie_color)) {
+                 usa.empty() ? pc_movie_color : usa_movie_color)) {
     LOGW("USA movie: open failed %s: %s", title.c_str(), why.c_str());
   } else {
     // Original MoviePlayer::Setup stores its per-title volume (0..127) at
@@ -313,9 +379,14 @@ extern "C" void native_00542a40(X86 *c) {
       ret(c);
       return;
     }
-    LOGW("USA movie: request=%s source=%s sha256=%s mode=%s volume=%u/127",
-         title.c_str(), movie->name, movie->sha256,
-         silent() ? "silent-qa" : "audio-qa", volume);
+    if (usa.empty())
+      LOGW("USA movie: request=%s source=pc-vp6 file=%s bytes=%llu volume=%u/127",
+           title.c_str(), path.substr(path.find_last_of('/') + 1).c_str(),
+           (unsigned long long)pc.bytes, volume);
+    else
+      LOGW("USA movie: request=%s source=%s sha256=%s mode=%s volume=%u/127",
+           title.c_str(), movie->name, movie->sha256,
+           silent() ? "silent-qa" : "audio-qa", volume);
     wr32(owner + 0x118, rd32(owner + 0x118) + 1);
     wr32(owner + 0x120, 5);
     player.pause(!focused);
@@ -331,14 +402,18 @@ extern "C" void native_0065f7a0(X86 *c) {
     return;
   }
   // FE checks the legacy VP6 filename before constructing MoviePlayer. Supply
-  // availability from the corresponding verified USA WMV only at these two
-  // actual PC movie callsites. No dummy file and no global filesystem alias.
+  // availability from the corresponding verified USA WMV, else the game's own
+  // VP6 (either regional name), only at these two actual PC movie callsites.
+  // No dummy file and no global filesystem alias.
   const std::string request = gm_str(rd32(c->r[R_ESP] + 4), 256);
   const UsaMovie *movie = lookup(request);
   const bool valid = !verified_path(movie).empty();
-  c->r[R_EAX] = valid ? uint32_t(movie->bytes + 1) : 0;
-  LOGW("USA movie: availability request=%s verified=%d", request.c_str(),
-       valid);
+  const PcMovie pc = valid ? PcMovie{} : pc_movie(movie);
+  c->r[R_EAX] = valid            ? uint32_t(movie->bytes + 1)
+                : pc.bytes != 0 ? uint32_t(pc.bytes + 1)
+                                : 0;
+  LOGW("USA movie: availability request=%s verified=%d pc-vp6=%d",
+       request.c_str(), valid, pc.bytes != 0);
   ret(c);
 }
 

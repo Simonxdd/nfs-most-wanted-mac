@@ -107,6 +107,10 @@ if(RECOMP_VIDEO)
     # WMV-numbered codec, and the demuxer that reads the container is no
     # use without the decoder that reads the frames.
     --enable-decoder=msmpeg4v1,msmpeg4v2,msmpeg4v3,indeo5,vorbis,adpcm_ima_wav,pcm_s16le,pcm_u8
+    # EA's own movie container (.vp6: the MVhd header, VP6 video, EA-R3 ADPCM
+    # audio), as Need for Speed Most Wanted's PC movies and the converted
+    # Xbox 360 ones are made.
+    --enable-decoder=vp6,adpcm_ea_r3 --enable-demuxer=ea
     # Dolby Digital output (host/audio/dolby_sink.cpp) encodes the 5.1 mix as
     # AC-3; the decoder is for tests that check the round trip.
     --enable-encoder=ac3 --enable-decoder=ac3
