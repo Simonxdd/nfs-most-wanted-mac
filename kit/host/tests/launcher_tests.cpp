@@ -554,6 +554,9 @@ void test_ui_desktop() {
     l.activate(kManage);
     l.activate(kOpenFolder);
     CHECK(fp.opened_folder == fp.pi.import_root);
+    l.activate(kOpenFolder + 2000);   // 2.0.4: the mods folder, created on demand
+    CHECK(fp.opened_folder == fp.pi.profile_dir + "/Mods");
+    CHECK(exists(fp.pi.profile_dir + "/Mods"));
     // Delete needs a second press.
     l.activate(kDeleteData);
     CHECK(exists(fp.pi.import_root));

@@ -6,7 +6,8 @@ into the native Mac app. Run through ./setup.sh, which prepares the Python envir
 
 Steps: check the game folder and speed.exe -> link the game (nothing in it is changed) -> fetch Ghidra and a Java
 runtime (pinned hashes) -> analyse speed.exe once -> translate and build -> build the effects, the light pools and
-the Xbox 360 texture map from your files -> package dist/NFS Most Wanted Native.app. Everything stays on this Mac."""
+the Xbox 360 texture map and the Mods folder's texture list from your files -> package dist/NFS Most Wanted
+Native.app. Everything stays on this Mac."""
 import argparse
 import hashlib
 import json
@@ -225,6 +226,28 @@ def front_end_line(game):
             "front end off the game uses it as it is (restore the original from your backup to get the PC menus)")
 
 
+MOD_NAMES = ROOT / "build/modnames/known.tsv"
+
+
+def mod_names_list(*extra, out=MOD_NAMES, timeout=1800):
+    """2.0.4: write the Mods folder's game texture list (tools/setup_kit/mod_names.py) from the linked game files and
+    any extra folders that exist. Returns the list's path, or None (said; the setup goes on)."""
+    out.unlink(missing_ok=True)
+    roots = [ROOT / "original/retail"] + [p for p in extra if Path(p).is_dir()]
+    try:
+        r = subprocess.run([PY, Path(__file__).with_name("mod_names.py"), out, *roots], cwd=ROOT, capture_output=True, text=True,
+                           env=ENV, timeout=timeout)
+        line = (r.stdout.strip() or r.stderr.strip()).splitlines()[-1:] or ["no output"]
+        ok = r.returncode == 0 and out.is_file()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        line, ok = [str(e)], False
+    if ok:
+        say("  " + line[0])
+        return out
+    say("  mods name list: not made (" + line[0].strip() + "); texture mods in the Mods folder still load, unchecked")
+    return None
+
+
 def find_dir_ci(base, name):
     """base/name, a folder, matching the name without regard to case."""
     base = Path(base)
@@ -392,6 +415,10 @@ def main():
             "or pass --x360-stuff FOLDER)")
     say("  " + front_end_line(game))
 
+    # 2.0.4: the game texture list for the player's Mods folder (hashes and sizes only, from these game files and the
+    # front-end overlay). Never fails the setup: without it every mod still loads, unchecked.
+    mod_names = mod_names_list(gen / "x360fe")
+
     # 2.0.4: the shader warm-up, made on this Mac (offscreen Quick Races). Never fails the setup: without it the first
     # drive only stutters once.
     seed = ROOT / "build/warm/seed"
@@ -415,6 +442,8 @@ def main():
             "--generated", gen, "--out", args.out.expanduser().resolve()]
     if movies.is_dir():
         pack += ["--movies", movies]
+    if mod_names:
+        pack += ["--mod-names", mod_names]
     if not args.no_shader_seed and (seed / "order.txt").is_file():
         pack += ["--warm-seed", seed]
     run(pack)

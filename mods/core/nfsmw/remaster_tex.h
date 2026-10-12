@@ -11,12 +11,14 @@
  * Settings (owner, 6 Oct: both on by default): remaster_textures turns tagging on and points the host at the pack
  * bundled with the app (Resources/RemasterPack, beside Resources/Game); remaster_a2c sets the host's alpha-to-coverage.
  * Explicit environment values (the harness) always win: RECOMP_REMASTER_PACK, NFSMW_REMASTER_TEXTAG,
- * RECOMP_REMASTER_A2C. The host reads them when the device is created, after this runs. */
+ * RECOMP_REMASTER_A2C. The host reads them when the device is created, after this runs.
+ * 2.0.4: player_mods (on, every Look) turns on the kit's Mods folder scan (kit remaster_mods.h). */
 #ifndef REMASTER_TEX_H
 #define REMASTER_TEX_H
 #include <stddef.h>
 #include <limits.h>
 #include <unistd.h>
+#include <dirent.h>
 
 static int g_rtex_on;
 static uint64_t g_rtex_calls, g_rtex_tagged, g_rtex_no_texture, g_rtex_rejected, g_rtex_no_api;
@@ -93,6 +95,18 @@ static void rtex_create_wrap(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvoc
     if ((g_rtex_calls & 1023u) == 0) rtex_report(api);
 }
 
+/* 2.0.4: 1 when the Mods folder holds anything besides hidden files and our report, 0 when empty or missing. */
+static int rmods_has_content(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    int found = 0;
+    struct dirent *e;
+    while (!found && (e = readdir(d)) != NULL)
+        found = e->d_name[0] != '.' && strcmp(e->d_name, "mods-report.txt") != 0;
+    closedir(d);
+    return found;
+}
+
 static void rtex_defaults(const PopModApi *api) {
     const int tex = setting("remaster_textures", 1) != 0, a2c = setting("remaster_a2c", 1) != 0;
     const char *pk = getenv("RECOMP_REMASTER_PACK");
@@ -129,6 +143,36 @@ static void rtex_defaults(const PopModApi *api) {
             setenv("NFSMW_REMASTER_TEXTAG", "1", 0);
             api->log(api, "core.nfsmw: Remaster texture keys on (no pack) for grass / natural water");
         }
+    }
+    /* 2.0.4 player mods: textures from <profile>/Mods, matched by file name, win over the pack; the kit scans the
+     * folder when the device is created and writes Mods/mods-report.txt (kit remaster_mods.h). Not in k_look_follow:
+     * a mod is the player's own choice, so it shows in every Look. The game texture list Setup made from the player's
+     * game files (Resources/ModNames/known.tsv, hashes and sizes only) lets the report judge names and shapes and
+     * resolves 23-character names; without it every mod file still loads. Texture keys go on only when the folder
+     * holds something (an empty folder changes nothing); RECOMP_REMASTER_PACK_MODS names another folder. */
+    if (setting("player_mods", 1) != 0) {
+        if (!getenv("RECOMP_REMASTER_MODS"))
+            setenv("RECOMP_REMASTER_MODS", "1", 0);
+        const char *exe = getenv("RECOMP_EXE");
+        const char *slash = exe ? strrchr(exe, '/') : NULL;
+        char known[PATH_MAX];
+        if (!getenv("RECOMP_REMASTER_MODS_KNOWN") && slash && (size_t)(slash - exe) + 32 < sizeof known) {
+            snprintf(known, sizeof known, "%.*s/../ModNames/known.tsv", (int)(slash - exe), exe);
+            if (access(known, R_OK) == 0)
+                setenv("RECOMP_REMASTER_MODS_KNOWN", known, 0);
+        }
+        const char *md = getenv("RECOMP_REMASTER_PACK_MODS"), *pd = getenv("RECOMP_PROFILE_DIR");
+        char dir[PATH_MAX];
+        dir[0] = 0;
+        if (md && *md) snprintf(dir, sizeof dir, "%s", md);
+        else if (pd && *pd) snprintf(dir, sizeof dir, "%s/Mods", pd);
+        const int content = dir[0] ? rmods_has_content(dir) : -1;   /* -1: the kit finds the profile itself */
+        if (content != 0 && !getenv("NFSMW_REMASTER_TEXTAG"))
+            setenv("NFSMW_REMASTER_TEXTAG", "1", 0);
+        api->log(api, content == 0 ? "core.nfsmw: player mods on (Mods folder empty)"
+                                   : "core.nfsmw: player mods on (texture keys on; the renderer reads the Mods folder)");
+    } else {
+        api->log(api, "core.nfsmw: player mods off (setting)");
     }
     if (!getenv("RECOMP_REMASTER_A2C"))
         setenv("RECOMP_REMASTER_A2C", a2c ? "1" : "0", 0);

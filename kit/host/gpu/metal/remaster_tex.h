@@ -5,6 +5,10 @@
 //   RECOMP_REMASTER_TEXDUMP=<dir>  write each keyed texture's top level once, as <key>.dds (or .bin for formats
 //                                  DDS does not describe here), plus keys.csv with per-key draw counts;
 //   RECOMP_REMASTER_TEXSTATS=1     counters only;
+//   RECOMP_REMASTER_MODS=1         2.0.4: the player's Mods folder (remaster_mods.h), read after the pack so a mod
+//                                  wins over it; the folder is RECOMP_REMASTER_PACK_MODS or <profile>/Mods, the game
+//                                  texture list RECOMP_REMASTER_MODS_KNOWN. Works alone too.
+//                                  RECOMP_REMASTER_MODS_LOG=1 (TEST) logs each mod key the first time it is drawn.
 //   RECOMP_REMASTER_PACK=<dir>     replacement pack (step 2): <dir>/index.tsv lines "<key hex16>\t<slot>\t<file>"
 //                                  (slot "albedo"; other material slots reserved) naming DDS files with full mip
 //                                  chains (see read_dds for formats). RECOMP_REMASTER_TEXSWAP=0 loads but binds the
@@ -14,6 +18,8 @@
 #pragma once
 
 #include "../../../dx/host_d9.h"
+#include "../../../runtime/layout.h"
+#include "remaster_mods.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -23,6 +29,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -49,6 +56,13 @@ public:
             on_ = true;
             pack_dir_ = p;
             read_index();
+        }
+        const char *m = std::getenv("RECOMP_REMASTER_MODS");
+        if (m && *m == '1') {
+            on_ = true;
+            read_mods();
+            const char *ml = std::getenv("RECOMP_REMASTER_MODS_LOG");
+            mod_log_ = ml && *ml == '1';
         }
         const char *w = std::getenv("RECOMP_REMASTER_TEXSWAP");
         swap_ = !(w && *w == '0');
@@ -92,25 +106,49 @@ public:
         return n;
     }
     bool swap() const { return swap_; }
-    bool has_pack() const { return !pack_dir_.empty(); }
+    bool has_pack() const { return !pack_dir_.empty() || !mod_keys_.empty(); }
+    // 2.0.4: a row from the player's Mods folder (read by the cache workers; fixed after construction).
+    bool is_mod(uint64_t key) const { return !mod_keys_.empty() && mod_keys_.count(key) != 0; }
     // Run 15: every pack key with its file (albedo rows and slot rows), for the cache's startup warm.
     std::vector<std::pair<uint64_t, std::string>> pack_files() const {
         std::vector<std::pair<uint64_t, std::string>> v;
         v.reserve(pack_.size());
         for (const auto &kv : pack_)
-            v.emplace_back(kv.first, kv.second[0] == '/' ? kv.second : pack_dir_ + "/" + kv.second);
+            if (!ondemand_.count(kv.first))   // 2.0.4: mod rows the list does not know, or over 2048 px, load when bound
+                v.emplace_back(kv.first, kv.second[0] == '/' ? kv.second : pack_dir_ + "/" + kv.second);
         return v;
     }
     void redefined() { ++redefined_; changed_ = true; }
     void load_failed() { ++look_fail_; changed_ = true; }
     void load_rejected() { ++look_reject_; changed_ = true; }
     void loaded() { ++look_loaded_; changed_ = true; }
-    void replaced_bind() { ++replaced_binds_; }
+    void replaced_bind(uint64_t key) {
+        ++replaced_binds_;
+        if (mod_binds_.empty())
+            return;
+        auto it = mod_binds_.find(key);
+        if (it != mod_binds_.end()) {
+            if (it->second++ == 0) {
+                ++mod_shown_;
+                if (mod_log_) { // TEST (RECOMP_REMASTER_MODS_LOG=1): each mod key the first time its file is drawn
+                    auto f = pack_.find(key);
+                    std::fprintf(stderr, "[remaster] mods: shown %08x %s\n", (uint32_t)(key >> 32),
+                                 f != pack_.end() ? f->second.c_str() : "?");
+                }
+            }
+            ++mod_replaced_binds_;
+        }
+    }
     void dropped_rewrite() { ++dropped_rewrite_; changed_ = true; }
 
-    // A DDS file's mip chain. Formats (all UNORM; sRGB variants are rejected: the game samples linear):
-    // legacy A8R8G8B8 (BGRA8), DXT1 (BC1), DXT5 (BC3); DX10 header BGRA8 87, RGBA8 28, BC1 71, BC3 77, BC7 98.
-    enum Fmt { F_NONE, F_BGRA8, F_RGBA8, F_BC1, F_BC3, F_BC7 };
+    // A DDS file's mip chain. Formats (all UNORM; sRGB variants are rejected for our packs: the game samples
+    // linear): legacy A8R8G8B8 (BGRA8), DXT1 (BC1), DXT3 (BC2, 2.0.4), DXT5 (BC3); DX10 header BGRA8 87, RGBA8 28,
+    // BC1 71, BC2 74, BC3 77, BC7 98. 2.0.4: the header is checked against the file size before anything is
+    // allocated (remaster_mods.h dds_probe); a player's mod file (`mod`) also takes the sRGB-tagged twins, X8 and
+    // RGBA-ordered uncompressed files, at most 8192 px, and gets a box-filtered mip chain when an uncompressed file
+    // has none.
+    enum Fmt { F_NONE = DDS_NONE, F_BGRA8 = DDS_BGRA8, F_RGBA8 = DDS_RGBA8, F_BC1 = DDS_BC1, F_BC2 = DDS_BC2,
+               F_BC3 = DDS_BC3, F_BC7 = DDS_BC7 };
     struct Image {
         uint32_t w = 0, h = 0;
         Fmt fmt = F_NONE;
@@ -123,61 +161,47 @@ public:
             return n;
         }
     };
-    static bool block_fmt(Fmt f) { return f == F_BC1 || f == F_BC3 || f == F_BC7; }
-    static Image read_dds(const std::string &path) {
+    static bool block_fmt(Fmt f) { return dds_block(f); }
+    static Image read_dds(const std::string &path, bool mod = false) {
         Image im;
-        std::FILE *f = std::fopen(path.c_str(), "rb");
-        if (!f)
+        const DdsProbe p = dds_probe_file(path, mod);
+        if (p.fmt == DDS_NONE)
             return im;
-        uint32_t h[31] = {}, dx10[5] = {};
-        char magic[4];
-        bool ok = std::fread(magic, 1, 4, f) == 4 && !std::memcmp(magic, "DDS ", 4) && std::fread(h, 4, 31, f) == 31 &&
-                  h[0] == 124 && h[18] == 32;
-        Fmt fmt = F_NONE;
-        if (ok && (h[19] & 0x4)) { // FOURCC
-            const uint32_t cc = h[20];
-            if (cc == fourcc('D', 'X', 'T', '1')) fmt = F_BC1;
-            else if (cc == fourcc('D', 'X', 'T', '5')) fmt = F_BC3;
-            else if (cc == fourcc('D', 'X', '1', '0')) {
-                ok = std::fread(dx10, 4, 5, f) == 5 && dx10[1] == 3 /* TEXTURE2D */ && dx10[3] <= 1 /* one image */;
-                switch (dx10[0]) {
-                case 87: fmt = F_BGRA8; break;
-                case 28: fmt = F_RGBA8; break;
-                case 71: fmt = F_BC1; break;
-                case 77: fmt = F_BC3; break;
-                case 98: fmt = F_BC7; break;
-                default: break; // includes the _SRGB variants (72, 78, 99, 91, 29): rejected
-                }
-            }
-        } else if (ok && (h[19] & 0x40) && h[21] == 32 && h[22] == 0x00ff0000 && h[23] == 0x0000ff00 &&
-                   h[24] == 0x000000ff) {
-            fmt = F_BGRA8;
+        std::FILE *f = std::fopen(path.c_str(), "rb");
+        if (!f || std::fseek(f, (long)p.data_offset, SEEK_SET)) {
+            if (f)
+                std::fclose(f);
+            return im;
         }
-        const uint32_t w = h[3], ht = h[2], mips = h[6] ? h[6] : 1;
-        if (ok && fmt != F_NONE && w && ht && w <= 16384 && ht <= 16384 && mips <= 15) {
-            const bool blk = block_fmt(fmt);
-            const uint32_t unit = fmt == F_BC1 ? 8 : 16; // bytes per 4x4 block
-            for (uint32_t l = 0; l < mips && ok; ++l) {
-                const uint32_t lw = std::max<uint32_t>(w >> l, 1), lh = std::max<uint32_t>(ht >> l, 1);
-                const uint32_t rows = blk ? (lh + 3) / 4 : lh;
-                const uint32_t rb = blk ? (lw + 3) / 4 * unit : lw * 4;
-                std::vector<uint8_t> px((size_t)rows * rb);
-                ok = std::fread(px.data(), 1, px.size(), f) == px.size();
-                if (ok) {
-                    im.levels.push_back(std::move(px));
-                    im.row_bytes.push_back(rb);
-                }
-            }
+        const Fmt fmt = (Fmt)p.fmt;
+        const bool blk = block_fmt(fmt);
+        const uint32_t unit = fmt == F_BC1 ? 8 : 16; // bytes per 4x4 block
+        bool ok = true;
+        for (uint32_t l = 0; l < p.mips && ok; ++l) {
+            const uint32_t lw = std::max<uint32_t>(p.w >> l, 1), lh = std::max<uint32_t>(p.h >> l, 1);
+            const uint32_t rows = blk ? (lh + 3) / 4 : lh;
+            const uint32_t rb = blk ? (lw + 3) / 4 * unit : lw * 4;
+            std::vector<uint8_t> px((size_t)rows * rb);
+            ok = std::fread(px.data(), 1, px.size(), f) == px.size();
             if (ok) {
-                im.w = w;
-                im.h = ht;
-                im.fmt = fmt;
-            } else {
-                im.levels.clear();
-                im.row_bytes.clear();
+                if (p.force_alpha)
+                    for (size_t i = 3; i < px.size(); i += 4)
+                        px[i] = 0xff;
+                im.levels.push_back(std::move(px));
+                im.row_bytes.push_back(rb);
             }
         }
         std::fclose(f);
+        if (!ok) {
+            im.levels.clear();
+            im.row_bytes.clear();
+            return im;
+        }
+        im.w = p.w;
+        im.h = p.h;
+        im.fmt = fmt;
+        if (mod && !blk && im.levels.size() == 1)
+            box_mips(im);
         return im;
     }
     bool on() const { return on_; }
@@ -227,7 +251,15 @@ public:
         changed_ = true;
     }
     void frame() {
-        if (++frames_ % 600 || !changed_)
+        if (++frames_ % 600)
+            return;
+        if (!mod_binds_.empty() && mod_replaced_binds_ != mod_logged_) {
+            mod_logged_ = mod_replaced_binds_;
+            std::fprintf(stderr, "[remaster] mods: frame %llu rows %zu shown %llu draw-binds replaced %llu\n",
+                         (unsigned long long)frames_, mod_binds_.size(), (unsigned long long)mod_shown_,
+                         (unsigned long long)mod_replaced_binds_);
+        }
+        if (!changed_)
             return;
         changed_ = false;
         std::fprintf(stderr,
@@ -254,6 +286,77 @@ private:
         uint64_t defines = 0, uploads = 0, binds = 0;
         bool dumped = false;
     };
+
+    // 2.0.4: a mod file without mips (uncompressed): each level the 2x2 average of the one above (an odd edge
+    // repeats its last texel), every channel apart, so a HUD texture drawn small does not shimmer.
+    static void box_mips(Image &im) {
+        uint32_t w = im.w, h = im.h;
+        while (w > 1 || h > 1) {
+            const uint32_t nw = std::max<uint32_t>(w >> 1, 1), nh = std::max<uint32_t>(h >> 1, 1);
+            const std::vector<uint8_t> &src = im.levels.back();
+            std::vector<uint8_t> dst((size_t)nw * nh * 4);
+            for (uint32_t y = 0; y < nh; ++y)
+                for (uint32_t x = 0; x < nw; ++x) {
+                    const uint32_t x0 = std::min(2 * x, w - 1), x1 = std::min(2 * x + 1, w - 1);
+                    const uint32_t y0 = std::min(2 * y, h - 1), y1 = std::min(2 * y + 1, h - 1);
+                    for (uint32_t c = 0; c < 4; ++c) {
+                        const uint32_t sum = src[((size_t)y0 * w + x0) * 4 + c] + src[((size_t)y0 * w + x1) * 4 + c] +
+                                             src[((size_t)y1 * w + x0) * 4 + c] + src[((size_t)y1 * w + x1) * 4 + c];
+                        dst[((size_t)y * nw + x) * 4 + c] = (uint8_t)((sum + 2) / 4);
+                    }
+                }
+            im.levels.push_back(std::move(dst));
+            im.row_bytes.push_back(nw * 4);
+            w = nw;
+            h = nh;
+        }
+    }
+
+    // 2.0.4: the player's Mods folder, scanned once here; its rows win over the pack.
+    void read_mods() {
+        const char *d = std::getenv("RECOMP_REMASTER_PACK_MODS");
+        std::string dir = d && *d ? d : "";
+        if (dir.empty()) {
+            const std::string &profile = host_layout().profile_dir;
+            if (profile.empty()) {
+                std::fprintf(stderr, "[remaster] mods: no profile folder; player mods off\n");
+                return;
+            }
+            dir = profile + "/Mods";
+        }
+        std::error_code ec;
+        const std::filesystem::path abs = std::filesystem::absolute(dir, ec);
+        if (!ec)
+            dir = abs.lexically_normal().string();
+        while (dir.size() > 1 && dir.back() == '/')
+            dir.pop_back();
+        const char *k = std::getenv("RECOMP_REMASTER_MODS_KNOWN");
+        const ModScan s = scan_mods(dir, k && *k ? k : "");
+        size_t replaced = 0, lazy = 0;
+        for (const ModRow &r : s.rows) {
+            replaced += pack_.count(r.key);
+            pack_[r.key] = r.file;
+            if (r.ondemand) {
+                ondemand_.insert(r.key);
+                ++lazy;
+            } else {
+                ondemand_.erase(r.key);
+            }
+            mod_keys_.insert(r.key);
+            mod_binds_[r.key] = 0;
+        }
+        std::string names;
+        for (size_t i = 0; i < s.mods.size() && names.size() < 160; ++i)
+            names += (i ? ", " : "") + s.mods[i];
+        std::fprintf(stderr,
+                     "[remaster] mods: %zu textures from %zu folder%s%s%s%s, %zu unknown names, %zu unsupported, %zu wrong "
+                     "shape, %zu corrupt, %zu too large, %zu shadowed; %zu rows (%zu on demand), %zu replace pack rows, "
+                     "%.1f MB; list %s; report %s\n",
+                     s.ok + s.unknown, s.mods.size(), s.mods.size() == 1 ? "" : "s", names.empty() ? "" : " (",
+                     names.c_str(), names.empty() ? "" : ")", s.unknown, s.unsupported, s.wrong_shape, s.corrupt,
+                     s.too_large, s.shadowed, s.rows.size(), lazy, replaced, s.bytes / 1048576.0,
+                     s.list ? "yes" : "no", s.report.empty() ? "(not written)" : s.report.c_str());
+    }
 
     static uint32_t fourcc(char a, char b, char c, char d) {
         return (uint32_t)(uint8_t)a | (uint32_t)(uint8_t)b << 8 | (uint32_t)(uint8_t)c << 16 |
@@ -347,6 +450,11 @@ private:
     }
 
     bool on_ = false, changed_ = false, swap_ = true;
+    std::unordered_set<uint64_t> ondemand_;                // 2.0.4: mod rows kept out of the startup warm
+    std::unordered_set<uint64_t> mod_keys_;                // 2.0.4: rows from the Mods folder (never changed later)
+    std::unordered_map<uint64_t, uint64_t> mod_binds_;     // draw-binds of each mod key's replacement
+    uint64_t mod_shown_ = 0, mod_replaced_binds_ = 0, mod_logged_ = 0;
+    bool mod_log_ = false;
     std::string pack_dir_;
     std::unordered_map<uint64_t, std::string> pack_;
     uint64_t redefined_ = 0;

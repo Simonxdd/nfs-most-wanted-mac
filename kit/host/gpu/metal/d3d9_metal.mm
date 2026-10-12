@@ -3491,7 +3491,7 @@ class Renderer final : public D9Backend {
                 id<MTLTexture> r = rcache_.bind(t->desc.key);
                 if (r && rtex_.swap()) {
                     tex = r;
-                    rtex_.replaced_bind();
+                    rtex_.replaced_bind(t->desc.key);
                 }
             }
             id<MTLTexture> use = tex     ? tex

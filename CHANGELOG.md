@@ -11,6 +11,12 @@
 - **Shader warm-up in the setup**: the setup now prepares the game's shaders on your Mac (about 25 minutes, offscreen
   Quick Races, no window), so the first drive no longer stutters while they are made. Optional (`--no-shader-seed`, or
   the checkbox in the Setup app).
+- **Mods folder for texture mods**: drop a texture mod's folder (`.dds` files: HUD art, fonts, logos, road and
+  building textures) into `~/Library/Application Support/NFS Most Wanted Native/Mods` and start the game; no rebuild.
+  Files replace the game textures with the same name, in every Look; several mods load in A to Z order and a folder
+  starting with `_` is skipped. `Mods/mods-report.txt` lists what loaded and why anything did not. The setup makes a
+  list of your game's texture names (numbers and sizes only) so the report can check names and shapes. F10 →
+  Graphics → Advanced → **Player mods** turns it off. See the companion guide's *Optional mods*.
 
 ## 2.0.3 — the game's own movies
 

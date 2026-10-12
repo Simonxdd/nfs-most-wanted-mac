@@ -407,7 +407,7 @@ private:
         }
     }
     void load(const Job &j, Done &d) {
-        TexKeys::Image im = TexKeys::read_dds(j.file);
+        TexKeys::Image im = TexKeys::read_dds(j.file, keys_.is_mod(j.key));   // 2.0.4: a player's mod file
         if (im.levels.empty())
             return; // LOAD_FAILED
         if ((TexKeys::block_fmt(im.fmt) && !bc_) || (j.game_w && j.game_h && !size_ok(im.w, im.h, j.game_w, j.game_h))) {
@@ -415,6 +415,7 @@ private:
             return;
         }
         const MTLPixelFormat pf = im.fmt == TexKeys::F_BC1     ? MTLPixelFormatBC1_RGBA
+                                  : im.fmt == TexKeys::F_BC2   ? MTLPixelFormatBC2_RGBA
                                   : im.fmt == TexKeys::F_BC3   ? MTLPixelFormatBC3_RGBA
                                   : im.fmt == TexKeys::F_BC7   ? MTLPixelFormatBC7_RGBAUnorm
                                   : im.fmt == TexKeys::F_RGBA8 ? MTLPixelFormatRGBA8Unorm

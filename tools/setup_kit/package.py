@@ -69,6 +69,8 @@ def main():
     ap.add_argument("--movies", type=Path, help="the verified Xbox 360 movies (setup.py step 6) for Resources/USA-Movies")
     ap.add_argument("--warm-seed", type=Path, help="the shader warm-up made on this Mac (tools/warm_seed/warmseed.py) for "
                     "Resources/ShaderWarmSeed")
+    ap.add_argument("--mod-names", type=Path, help="the game texture list for the Mods folder (tools/setup_kit/"
+                    "mod_names.py) for Resources/ModNames/known.tsv")
     a = ap.parse_args()
     built = ROOT / "build/SpeedRecomp.app"
     cfg = tomllib.loads((ROOT / "game.toml").read_text())
@@ -105,6 +107,9 @@ def main():
                 shutil.copyfile(p, t)
     if a.warm_seed and (a.warm_seed / "order.txt").is_file():
         clone_tree(a.warm_seed, res / "ShaderWarmSeed", set())
+    if a.mod_names and a.mod_names.is_file():
+        (res / "ModNames").mkdir()
+        shutil.copyfile(a.mod_names, res / "ModNames/known.tsv")
     if a.movies and a.movies.is_dir():
         # The game's own list (native/usa_movie_manifest.h) is checked again before each file plays.
         clone_tree(a.movies, res / "USA-Movies", set())
@@ -140,6 +145,8 @@ def main():
         "signed": signed,
         "shader_seed": (app / "Contents/Resources/ShaderWarmSeed/stamp.txt").read_text().splitlines()[:4]
         if (app / "Contents/Resources/ShaderWarmSeed/stamp.txt").is_file() else None,
+        "mod_names": (app / "Contents/Resources/ModNames/known.tsv").read_text().splitlines()[0]
+        if (app / "Contents/Resources/ModNames/known.tsv").is_file() else None,
     }
     (ROOT / "build/package.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"packaged {app}")

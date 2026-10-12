@@ -175,6 +175,7 @@ Your profile folder is `~/Library/Application Support/NFS Most Wanted Native/`. 
 - `mod-settings.json` — the F10 settings;
 - `NativeOptions.ini` — optional overrides (below);
 - `Logs/` — the latest run's log, useful for bug reports.
+- `Mods/` — texture mods you add (see [Optional mods](#optional-mods)) and `mods-report.txt`.
 
 Back up this folder to keep your career. PC save files can be copied in, and back out to a PC.
 
@@ -211,8 +212,44 @@ Career options apply to new careers; the others after a restart.
 
 ## Optional mods
 
-The app never runs Windows `.asi` or `.dll` mods. Three popular PC mods' **files** work through native loaders
-instead. All are optional and use **your own** downloads; you don't need a PC. On your Mac:
+The app never runs Windows `.asi` or `.dll` mods, and you don't need a PC. Two kinds of mod work, both optional and
+from **your own** downloads:
+
+- **Texture mods** (HUD art, fonts, logos, road and building textures): drop them in your **Mods** folder. No
+  rebuild. Try this first.
+- **Three popular PC mods' files** (below): copy the named file into your game folder and build again.
+
+### Texture mods: the Mods folder
+
+1. Download the mod and double-click it in Finder to unzip it (for a `.rar` or `.7z`, use a free unarchiver such as
+   *The Unarchiver* from the App Store).
+2. Open your Mods folder: in Finder choose **Go → Go to Folder…**, paste
+   `~/Library/Application Support/NFS Most Wanted Native/Mods` and press Return. The app makes this folder the first
+   time it starts.
+3. Drag the mod's whole folder into **Mods**. Any `.asi`, `.dll`, `.exe` or `.ini` files in it are Windows files and
+   are ignored.
+4. Start the game. Each `.dds` file replaces the game texture with the same name (`RADAR_ICON.dds` replaces
+   RADAR_ICON), in every Look.
+
+**Mods/mods-report.txt** is written at every start and says what happened to each file: **OK** (used), **UNKNOWN
+NAME** (no game texture by that name was found; the file is kept and used if the game ever draws that name),
+**WRONG SHAPE** (different proportions from the game's, or smaller: skipped), **UNSUPPORTED** or **CORRUPT**,
+**TOO LARGE** (over 8192 pixels), **SHADOWED** (a later mod replaces the same texture).
+
+- **Several mods:** one folder each. They load in A to Z order and the later one wins; put numbers in front of the
+  names to choose (`1 HUD`, `2 My fixes`).
+- **Turn a mod off:** rename its folder to start with `_` (for example `_HUD`), or move it out of Mods. **All mods
+  off:** F10 → Graphics → Advanced → **Player mods** (restart).
+- **Works:** `.dds` (DXT1, DXT3, DXT5, BC7 and uncompressed 32-bit), up to 8192 pixels, with or without mip levels.
+  **Not yet:** `.png` and `.tga` (save them as `.dds`). **Never:** `.asi`/`.dll` plugins, scripts, Texmod `.tpf`
+  packs, and mods that replace whole game files (`.BIN`, `.BUN`).
+
+The Setup makes a list of your game's texture names (numbers and sizes only) so the report can check names and
+shapes. If that list is missing, every file still loads and the report says *name not checked*.
+
+### PC mods' data files (needs a rebuild)
+
+Three popular PC mods' **files** work through native loaders. On your Mac:
 
 1. Download the mod in your browser and double-click the download in Finder to unzip it. (For a `.rar` or `.7z`
    file, use a free unarchiver such as *The Unarchiver* from the App Store.)
