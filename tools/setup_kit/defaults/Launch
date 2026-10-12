@@ -1,15 +1,47 @@
 #!/bin/sh
 # Launcher of the native app: sets up the player's profile folder on first run and starts the game.
+# 2.0.4: the log starts first (with the app, macOS and Mac it ran on), so even a start that never reaches the game
+# leaves one; a stop before the game, or a game that quits within its first 20 seconds without a clean exit, shows a
+# dialog with the reason and the log's place. RECOMP_LAUNCH_DIALOG=0 writes the dialog's text to the log instead.
 set -eu
+app_log=/dev/null   # until the log exists (a stop before it still gets the dialog)
+say_problem() {   # say_problem <title> <message>: the dialog (or, for tests, a log line)
+    echo "[launch] problem: $1: $2" >>"$app_log" 2>/dev/null || true
+    if [ "${RECOMP_LAUNCH_DIALOG:-1}" = 0 ]; then echo "[launch] problem: $1: $2" >&2; return 0; fi
+    where=$app_log; [ "$where" = /dev/null ] && where="(none: the profile folder could not be made)"
+    msg=$(printf '%s\n\nThe log: %s' "$2" "$where" | tr -d '"\\')
+    answer=$(/usr/bin/osascript -e "display alert \"$1\" message \"$msg\" as critical buttons {\"Show Log\", \"OK\"} default button \"OK\"" 2>/dev/null || true)
+    case $answer in *"Show Log"*) /usr/bin/open -R "$app_log" ;; esac
+}
+stopped() {
+    status=$?
+    [ "$status" = 0 ] && return 0
+    say_problem "NFS Most Wanted Native could not start" "It stopped while $step (status $status). Building the app again with the Setup app usually fixes this; if not, please send the log."
+}
+step="finding the app's folders"
+trap stopped EXIT
 app_bin=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 app_resources="$app_bin/../Resources"
 app_profile="${RECOMP_PROFILE_DIR:-$HOME/Library/Application Support/NFS Most Wanted Native}"
+step="making the profile folder ($app_profile)"
 mkdir -p "$app_profile/Logs"
+# Keep the ten newest logs (the new one makes eleven).
+ls -1t "$app_profile/Logs"/*.log 2>/dev/null | tail -n +11 | while IFS= read -r old; do rm -f "$old"; done
+app_stamp=$(date +%Y%m%d-%H%M%S)-$$
+app_log="$app_profile/Logs/$app_stamp.log"
+{
+    echo "[launch] $(date '+%Y-%m-%d %H:%M:%S') NFS Most Wanted Native $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_bin/../Info.plist" 2>/dev/null || echo '?')"
+    echo "[launch] macOS $(sw_vers -productVersion 2>/dev/null || echo '?') on $(uname -m); app $app_bin/.."
+} >>"$app_log" 2>/dev/null || app_log=/dev/null
+
+
+step="copying the default settings"
 for setting in registry.json mod-settings.json NativeOptions.ini; do
     if [ ! -e "$app_profile/$setting" ]; then
         cp "$app_resources/Defaults/$setting" "$app_profile/$setting"
     fi
 done
+step="setting up the game"
 # Test-only variables are never inherited by normal play.
 unset RECOMP_CORE_MODS_DIR RECOMP_MODS_DIR RECOMP_TEST_SCRIPTS RECOMP_HOST_DUMP_DIR RECOMP_SMOKE_SECONDS
 export RECOMP_PROFILE_DIR="$app_profile"
@@ -35,11 +67,25 @@ fi
 # The game's own movies (its MOVIES folder, .vp6) play for any title without an Xbox 360 movie: the PC intro and
 # story scenes, or the converted Xbox 360 ones if the player's folder has them.
 export RECOMP_NFSMW_PC_MOVIES=1
-app_stamp=$(date +%Y%m%d-%H%M%S)-$$
 if [ "${RECOMP_DIAGNOSTICS:-0}" = 1 ]; then
     export RECOMP_FRAME_TIMINGS="$app_profile/Logs/$app_stamp-frames.csv"
 fi
-# Keep the ten newest logs.
-ls -1t "$app_profile/Logs"/*.log 2>/dev/null | tail -n +11 | while IFS= read -r old; do rm -f "$old"; done
+step="opening the game's files ($app_resources/Game)"
 cd "$app_resources/Game"
-exec "$app_bin/SpeedRecomp" "$@" >"$app_profile/Logs/$app_stamp.log" 2>&1
+step="starting the game"
+[ -x "$app_bin/SpeedRecomp" ] || exit 127
+# The game replaces this script (same process, so it stays the app). A watcher outside it notices a quit in the first
+# 20 seconds without the clean exit line and says so; after that it goes away.
+game_pid=$$
+(
+    trap - EXIT
+    i=0
+    while [ $i -lt 20 ] && kill -0 "$game_pid" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+    if [ $i -lt 20 ] && ! grep -aq 'guest exit code: *0$' "$app_log" 2>/dev/null; then
+        last=$(grep -av '^\[launch\]' "$app_log" 2>/dev/null | tail -n 6 | cut -c1-160)
+        say_problem "NFS Most Wanted Native quit right after starting" "The game stopped ${i} s after it started. Its last lines:
+${last:-(none)}"
+    fi
+) </dev/null >/dev/null 2>&1 &
+echo "[launch] starting the game" >>"$app_log" 2>/dev/null || true
+exec "$app_bin/SpeedRecomp" "$@" >>"$app_log" 2>&1
