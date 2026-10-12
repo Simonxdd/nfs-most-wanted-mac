@@ -16,7 +16,7 @@ def test_drive_settings_are_real_settings():
     keys = {l.split(' =')[0] for l in (ROOT / 'mods/core/nfsmw/mod.toml').read_text().splitlines() if ' = {' in l}
     for name, track, settings, extra in m.DRIVES:
         assert set(settings) <= keys, name
-        assert 0 <= track < 30
+        assert track is None or 0 <= track < 30
         assert not (settings.get('antialiasing') == 2 and extra.get('RECOMP_TEST_HDR_FLOAT')), 'HDR never with 4x'
     assert len({n for n, *_ in m.DRIVES}) == len(m.DRIVES)
 
@@ -26,6 +26,22 @@ def test_script_grammar():
     for line in s.splitlines():
         assert re.fullmatch(r'wait \d+|key (RETURN|RIGHT) (down|up)|quit', line), line
     assert s.count('key RIGHT down') == 3 + 3 and s.rstrip().endswith('quit')
+
+
+def test_stuff_pack_front_end():
+    """2.0.4 (run 28): the race drives' menu path is the PC front end's, so they run with x360_frontend 0 (with the
+    Stuff Pack front end on, the same keys stayed in its main menu: no race shaders were recorded); one menus-only
+    drive records the Xbox 360 front end; a drive's log must show the world for it to count as a race."""
+    assert sum(1 for _, t, st, _ in m.DRIVES if t is None and st.get('x360_frontend') == 1) == 1
+    assert all(st.get('x360_frontend', 0) == 0 for _, t, st, _ in m.DRIVES if t is not None)
+    menus = m.script(None, 1000)
+    assert 'RIGHT' not in menus and menus.rstrip().endswith('quit')
+    for line in menus.splitlines():
+        assert re.fullmatch(r'wait \d+|key RETURN (down|up)|quit', line), line
+    assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox scenery lights: 1 draw items so far (near 0/0), 0 v')
+    assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Weather: clear (cycle 0.12)')
+    assert not m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox scenery lights: 4185 verified instances, 2 USA contexts')
+    assert not m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox 360 front end on (Stuff Pack: FrontB, GlobalB, garages)')
 
 
 def test_merge(tmp_path):

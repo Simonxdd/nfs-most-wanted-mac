@@ -37,7 +37,12 @@ DRIVES = [
     ("adv-a", 2, {"lit_smoke": 1, "atmosphere": 1, "vehicle_lights": 1, "mirror_shadows": 1, "mirror_pools": 1,
                   "mirror_msaa": 1, "mirror_glass": 50, "antialiasing": 1, "natural_water": 1}, {}),
     ("rain", 21, {"weather": 1}, {"NFSMW_TEST_WEATHER_START": "0.65"}),
+    # 2.0.4: the Xbox 360 Stuff Pack front end has its own menus (and shaders): one short drive boots to its main
+    # menu and stays there. Track None = menus only (the race drives above use the PC menus, whose path PREFIX is).
+    ("x360-menus", None, {"x360_frontend": 1}, {}),
 ]
+# Lines only the world draws (the first scenery item, the weather cycle): a drive that logged one reached the race.
+WORLD = re.compile(r"core\.nfsmw: (Xbox scenery lights: \d+ draw items so far|Weather: |Xbox light pools: \d+ terrain)")
 # From boot to the Quick Race circuit list on a fresh profile: skip the intro movies and the title, answer the
 # profile question, Quick Race, Circuit (the HD texture tour's path).
 PREFIX = [(20000, None), (0, "RETURN"), (12000, None), (0, "RETURN"), (8000, None), (0, "RIGHT"), (1600, None),
@@ -52,6 +57,8 @@ def say(msg):
 
 def script(track, race_ms):
     lines = []
+    if track is None:                      # menus only: boot, skip the intro and title, answer the profile question
+        return "wait 20000\n" + "".join(f"key RETURN down\nwait 160\nkey RETURN up\nwait {w}\n" for w in (12000, 30000)) + "quit\n"
 
     def press(k, after):
         lines.extend([f"key {k} down", "wait 160", f"key {k} up", f"wait {after}"])
@@ -105,7 +112,8 @@ def drive(exe, core, run, track, settings, extra, race_s):
     shutil.copyfile(d / "registry.json", prof / "registry.json")
     ms = json.loads((d / "mod-settings.json").read_text())
     ms.update({"core.nfsmw/unlock_all": 1, "core.nfsmw/surround_audio": 0, "core.nfsmw/width": 1280,
-               "core.nfsmw/height": 720, "core.nfsmw/weather": 0})
+               "core.nfsmw/height": 720, "core.nfsmw/weather": 0,
+               "core.nfsmw/x360_frontend": 0})     # the race drives' menu path (PREFIX) is the PC front end's
     ms.update({"core.nfsmw/" + k: v for k, v in settings.items()})
     (prof / "mod-settings.json").write_text(json.dumps(ms, indent=1, sort_keys=True) + "\n")
     (run / "drive.script").write_text(script(track, race_s * 1000))
@@ -123,7 +131,9 @@ def drive(exe, core, run, track, settings, extra, race_s):
             os.killpg(p.pid, 15)
             p.wait(timeout=30)
     order = run / "ShaderWarm/order.txt"
-    return sum(1 for k in order.read_text().split() if KEY.match(k)) if order.is_file() else 0
+    n = sum(1 for k in order.read_text().split() if KEY.match(k)) if order.is_file() else 0
+    world = bool(WORLD.search((run / "run.log").read_text(errors="replace")))
+    return n, world
 
 
 def merge(folders, out):
@@ -182,24 +192,33 @@ def main():
     fp = fingerprint()
     exe = smoke()
     core = core_dir(cache)
-    done = []
+    done, raced, unconfirmed = [], 0, []
     for i, (name, track, settings, extra) in enumerate(rows):
         run = work / name
         mark = run / "done"
         if mark.is_file() and mark.read_text().split()[:1] == [fp]:
             done.append(run / "ShaderWarm")
+            raced += track is not None and mark.read_text().split()[2:3] == ["race"]
             continue
         say(f"drive {i + 1} of {len(rows)} ({name})")
-        n = drive(exe, core, run, track, settings, extra, a.race_seconds)
+        n, world = drive(exe, core, run, track, settings, extra, a.race_seconds)
         if n == 0:
             say(f"drive {name} recorded nothing (see {run / 'run.log'}); left out")
             continue
-        mark.write_text(f"{fp} {n}\n")
+        if track is not None:
+            if world:
+                raced += 1
+            else:
+                unconfirmed.append(name)
+                say(f"drive {name}: the race was not seen in its log (menus only?); kept")
+        mark.write_text(f"{fp} {n} {'race' if world else 'menus'}\n")
         done.append(run / "ShaderWarm")
     if not done:
         raise SystemExit("shader warm-up: no drive recorded anything; skipped (the first drive will stutter once)")
     libs, pipes = merge(done, out)
-    say(f"seed ready ({libs} libraries, {pipes} pipelines from {len(done)} of {len(rows)} drives)")
+    races = sum(1 for r in rows if r[1] is not None)
+    say(f"seed ready ({libs} libraries, {pipes} pipelines from {len(done)} of {len(rows)} drives; races reached "
+        f"{raced} of {races})")
 
 
 if __name__ == "__main__":
