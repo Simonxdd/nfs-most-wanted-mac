@@ -70,3 +70,9 @@ def test_saves_backed_up_once_per_build(tmp_path):
 def test_no_saves_no_backup(tmp_path):
     r, log = run(tmp_path, 'echo "guest exit code:    0"\nexit 0\n', wait=0.5)
     assert not (tmp_path / 'prof/Save Backups').exists() and r.returncode == 0
+
+
+def test_a_run_past_20_seconds_is_quiet(tmp_path):
+    """The watcher reads the clock (run 28: counting its own one-second sleeps undercounted when macOS slowed it)."""
+    r, log = run(tmp_path, 'sleep 24\necho "[recomp] ended without the clean exit line"\nexit 1\n', wait=2.5)
+    assert 'problem:' not in log

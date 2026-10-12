@@ -503,7 +503,7 @@ struct ContentView: View {
 
             GroupBox(label: Text("3. Options").bold()) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Toggle("Prepare the shaders now (about 25 minutes more; without it the first drive stutters once)",
+                    Toggle("Prepare the shaders now (about 35 minutes more; without it the first drive stutters once)",
                            isOn: $s.shaderSeed).disabled(s.busy)
                     HStack {
                         Text("Put the game in:")

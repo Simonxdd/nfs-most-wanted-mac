@@ -8,7 +8,7 @@
   leaves out. Your game folder is never changed.
 - **F10 → Xbox 360 → Xbox 360 front end** turns it off (the PC menus come back at the next start); the *PC* look
   starts with the PC front end too.
-- **Shader warm-up in the setup**: the setup now prepares the game's shaders on your Mac (about 25 minutes, offscreen
+- **Shader warm-up in the setup**: the setup now prepares the game's shaders on your Mac (about 35 minutes, offscreen
   Quick Races, no window), so the first drive no longer stutters while they are made. Optional (`--no-shader-seed`, or
   the checkbox in the Setup app).
 - **Mods folder for texture mods**: drop a texture mod's folder (`.dds` files: HUD art, fonts, logos, road and

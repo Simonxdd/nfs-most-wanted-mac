@@ -339,7 +339,7 @@ def main():
                     "folder) for the Xbox 360 front end (default: an X360-Stuff or Easy Installation folder in your game "
                     "folder, if it's there)")
     ap.add_argument("--no-pools", action="store_true", help="do not build the light pools")
-    ap.add_argument("--no-shader-seed", action="store_true", help="skip the shader warm-up (about 25 minutes; without it "
+    ap.add_argument("--no-shader-seed", action="store_true", help="skip the shader warm-up (about 35 minutes; without it "
                     "the first drive stutters once while the game prepares its shaders)")
     ap.add_argument("--out", type=Path, default=ROOT / "dist", help="where to write the app (default dist/)")
     ap.add_argument("--check-only", action="store_true", help="only check the game folder and speed.exe")
@@ -478,7 +478,7 @@ def main():
     if args.no_shader_seed:
         say("  shader warm-up: skipped (--no-shader-seed); the first drive will stutter once")
     else:
-        say("  shader warm-up: preparing the game's shaders (about 25 minutes; offscreen, no window)")
+        say("  shader warm-up: preparing the game's shaders (about 35 minutes; offscreen, no window)")
         with LOG.open("a") as log:
             p = subprocess.Popen([PY, "tools/warm_seed/warmseed.py", "--cache", ROOT / "build/warm", "--out", seed],
                                  cwd=ROOT, env=ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
