@@ -49,8 +49,23 @@ def min_macos(p):
     return None
 
 
+def unlock(path):
+    """2.0.4: clear the Finder "Locked" flag (uchg) on the app's own copies. Some game folders have locked files (one
+    tester's: server.dll and three GLOBAL files, locked since 2005); a copy keeps the flag, and then neither a rebuild
+    (removing the old app) nor the Trash can delete it. Only ever called on the app's files, never on the game folder."""
+    if Path(path).exists():
+        subprocess.run(["/usr/bin/chflags", "-R", "nouchg", str(path)], check=False, capture_output=True)
+
+
+def remove_app(path):
+    """Delete an app this tool made earlier, locked game copies included."""
+    unlock(path)
+    shutil.rmtree(path)
+
+
 def clone_tree(src, dst, exclude):
-    """Copy the game folder: APFS clones (cp -c) when possible, so it costs almost no disk space on the same volume."""
+    """Copy the game folder: APFS clones (cp -c) when possible, so it costs almost no disk space on the same volume.
+    The copies are unlocked (see unlock); the game folder itself is never changed."""
     dst.mkdir(parents=True)
     for p in sorted(src.iterdir()):
         if p.name.lower() in exclude or p.name.lower() == "speed.exe" or p.name.startswith("."):
@@ -58,6 +73,7 @@ def clone_tree(src, dst, exclude):
         r = subprocess.run(["/bin/cp", "-cR", str(p), str(dst / p.name)], capture_output=True)
         if r.returncode:
             subprocess.run(["/bin/cp", "-R", str(p), str(dst / p.name)], check=True)
+    unlock(dst)
 
 
 def main():
@@ -81,7 +97,8 @@ def main():
     a.out.mkdir(parents=True, exist_ok=True)
     app = a.out / f"{NAME}.app"
     tmp = a.out / f".{NAME}.app.new"
-    shutil.rmtree(tmp, ignore_errors=True)
+    if tmp.exists():
+        remove_app(tmp)
     shutil.copytree(built, tmp, symlinks=True)
     shutil.rmtree(tmp / "Contents/_CodeSignature", ignore_errors=True)
     res = tmp / "Contents/Resources"
@@ -133,7 +150,7 @@ def main():
     subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(tmp)], check=True)
     signed = [str(q.relative_to(tmp)) for q in nested]
     if app.exists():
-        shutil.rmtree(app)
+        remove_app(app)
     tmp.rename(app)
     core = app / "Contents/Resources/mods/core/nfsmw"
     manifest = {
