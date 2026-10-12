@@ -76,3 +76,12 @@ def test_a_run_past_20_seconds_is_quiet(tmp_path):
     """The watcher reads the clock (run 28: counting its own one-second sleeps undercounted when macOS slowed it)."""
     r, log = run(tmp_path, 'sleep 24\necho "[recomp] ended without the clean exit line"\nexit 1\n', wait=2.5)
     assert 'problem:' not in log
+
+
+def test_the_players_own_quit_is_quiet(tmp_path):
+    """Cmd-Q or the close button: the host logs it, and the watcher says nothing (run 28)."""
+    for line in ('[host] quit requested: asking the game to close', '[host] window close requested: asking the game to close'):
+        sub = tmp_path / line[7:11]
+        sub.mkdir()
+        r, log = run(sub, f'echo "{line}"\necho "[host] guest did not act on WM_CLOSE within 15s; unwound by the host"\nexit 0\n')
+        assert 'problem:' not in log, line

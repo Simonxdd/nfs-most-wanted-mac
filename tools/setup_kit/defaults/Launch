@@ -104,7 +104,8 @@ game_pid=$$
     while [ $i -lt 20 ] && kill -0 "$game_pid" 2>/dev/null; do sleep 1; i=$(( $(date +%s) - t0 )); done
     sleep 1   # a failed exec reports through the EXIT trap: one message, not two
     if [ $i -lt 20 ] && ! grep -aq 'guest exit code: *0$' "$app_log" 2>/dev/null \
-       && ! grep -aq '^\[launch\] problem:' "$app_log" 2>/dev/null; then
+       && ! grep -aq '^\[launch\] problem:' "$app_log" 2>/dev/null \
+       && ! grep -aq '^\[host\] \(quit\|window close\) requested' "$app_log" 2>/dev/null; then   # the player quit
         last=$(grep -av '^\[launch\]' "$app_log" 2>/dev/null | tail -n 6 | cut -c1-160)
         say_problem "NFS Most Wanted Native quit right after starting" "The game stopped ${i} s after it started (if you quit it yourself, you can ignore this). Its last lines:
 ${last:-(none)}"
