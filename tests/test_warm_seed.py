@@ -24,8 +24,13 @@ def test_drive_settings_are_real_settings():
 def test_script_grammar():
     s = m.script(3, 1000)
     for line in s.splitlines():
-        assert re.fullmatch(r'wait \d+|key (RETURN|RIGHT) (down|up)|quit', line), line
+        assert re.fullmatch(r'wait \d+|key (RETURN|RIGHT|UP) (down|up)|quit', line), line
     assert s.count('key RIGHT down') == 3 + 3 and s.rstrip().endswith('quit')
+    # run 28 (frames seen): 3 Enter (intro, title, alias answer), Right Right Enter (Quick Race), Right Enter (past
+    # Quick Play), Enter (Circuit); then Right x track, 4 Enter into the race, the accelerator held
+    keys = [l.split()[1] for l in s.splitlines() if l.endswith(' down')]
+    assert keys[:9] == ['RETURN', 'RETURN', 'RETURN', 'RIGHT', 'RIGHT', 'RETURN', 'RIGHT', 'RETURN', 'RETURN']
+    assert keys[9:12] == ['RIGHT'] * 3 and keys[12:16] == ['RETURN'] * 4 and keys[16:] == ['UP']
 
 
 def test_stuff_pack_front_end():
@@ -42,6 +47,8 @@ def test_stuff_pack_front_end():
     assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Weather: clear (cycle 0.12)')
     assert not m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox scenery lights: 4185 verified instances, 2 USA contexts')
     assert not m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox 360 front end on (Stuff Pack: FrontB, GlobalB, garages)')
+    assert not m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox light pools: 0 terrain-piece items, 0 lit items')   # printed in menus too
+    assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox light pools: 412 terrain-piece items, 3 lit items')
 
 
 def test_merge(tmp_path):

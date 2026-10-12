@@ -41,13 +41,17 @@ DRIVES = [
     # menu and stays there. Track None = menus only (the race drives above use the PC menus, whose path PREFIX is).
     ("x360-menus", None, {"x360_frontend": 1}, {}),
 ]
-# Lines only the world draws (the first scenery item, the weather cycle): a drive that logged one reached the race.
-WORLD = re.compile(r"core\.nfsmw: (Xbox scenery lights: \d+ draw items so far|Weather: |Xbox light pools: \d+ terrain)")
-# From boot to the Quick Race circuit list on a fresh profile: skip the intro movies and the title, answer the
-# profile question, Quick Race, Circuit (the HD texture tour's path).
-PREFIX = [(20000, None), (0, "RETURN"), (12000, None), (0, "RETURN"), (8000, None), (0, "RIGHT"), (1600, None),
-          (0, "RIGHT"), (2500, None), (0, "RETURN"), (5000, None), (0, "RIGHT"), (2000, None), (0, "RETURN"),
-          (5000, None), (0, "RETURN"), (5000, None)]
+# Lines only the world draws (the first scenery item, the weather cycle, light pools with items; that line also
+# prints "0 terrain-piece items" in the menus): a drive that logged one reached the race.
+WORLD = re.compile(r"core\.nfsmw: (Xbox scenery lights: \d+ draw items so far|Weather: |Xbox light pools: [1-9]\d* terrain)")
+# From boot to the Quick Race circuit list on a fresh profile, every step seen in frames (run 28,
+# harness/r28/pathcheck.py): skip the intro movies, dismiss the title, answer "Create a new alias?" (No is highlighted),
+# Right Right = Quick Race, Enter; the Quick Race menu opens on Quick Play (a random race, drag included): Right to the
+# next entry, Enter, Enter on Circuit (the first mode) = the circuit list. (The earlier path skipped the alias answer
+# and entered Challenge Series.)
+PREFIX = [(20000, None), (0, "RETURN"), (12000, None), (0, "RETURN"), (8000, None), (0, "RETURN"), (8000, None),
+          (0, "RIGHT"), (2000, None), (0, "RIGHT"), (2000, None), (0, "RETURN"), (5000, None), (0, "RIGHT"),
+          (2000, None), (0, "RETURN"), (5000, None), (0, "RETURN"), (5000, None)]
 KEY = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -73,7 +77,9 @@ def script(track, race_ms):
     press("RETURN", 5000)    # the car list
     press("RETURN", 2500)    # this car: the transmission question
     press("RETURN", 20000)   # Auto: the race loads and starts
-    lines += [f"wait {race_ms}", "quit"]
+    # hold the accelerator (automatic gearbox): the car moves along the track, so more of it is drawn (run 28: with
+    # no driver the car sat on the start line for the whole race)
+    lines += ["key UP down", f"wait {race_ms}", "key UP up", "quit"]
     return "\n".join(lines) + "\n"
 
 
@@ -196,7 +202,11 @@ def main():
     for i, (name, track, settings, extra) in enumerate(rows):
         run = work / name
         mark = run / "done"
-        if mark.is_file() and mark.read_text().split()[:1] == [fp]:
+        # run 28 review F2: a drive is reused only if the shaders' sources AND its own script and settings are the
+        # same (a corrected menu path must drive again; the earlier marks keyed only the shader sources)
+        mid = hashlib.sha256(f"{fp}|{script(track, a.race_seconds * 1000)}|{sorted(settings.items())}|"
+                             f"{sorted(extra.items())}".encode()).hexdigest()
+        if mark.is_file() and mark.read_text().split()[:1] == [mid]:
             done.append(run / "ShaderWarm")
             raced += track is not None and mark.read_text().split()[2:3] == ["race"]
             continue
@@ -211,7 +221,12 @@ def main():
             else:
                 unconfirmed.append(name)
                 say(f"drive {name}: the race was not seen in its log (menus only?); kept")
-        mark.write_text(f"{fp} {n} {'race' if world else 'menus'}\n")
+                if raced == 0:
+                    # run 28: the first race drive never reached the world: the menu path does not work on this copy
+                    # of the game, so the other drives would only repeat the menus. Stop (Setup goes on without it).
+                    raise SystemExit("shader warm-up: the first drive did not reach a race (see "
+                                     f"{run / 'run.log'}); skipped, the first drive will stutter once")
+        mark.write_text(f"{mid} {n} {'race' if world else 'menus'}\n")
         done.append(run / "ShaderWarm")
     if not done:
         raise SystemExit("shader warm-up: no drive recorded anything; skipped (the first drive will stutter once)")
