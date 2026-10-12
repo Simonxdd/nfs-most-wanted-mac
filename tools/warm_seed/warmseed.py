@@ -41,9 +41,11 @@ DRIVES = [
     # menu and stays there. Track None = menus only (the race drives above use the PC menus, whose path PREFIX is).
     ("x360-menus", None, {"x360_frontend": 1}, {}),
 ]
-# Lines only the world draws (the first scenery item, the weather cycle, light pools with items; that line also
-# prints "0 terrain-piece items" in the menus): a drive that logged one reached the race.
-WORLD = re.compile(r"core\.nfsmw: (Xbox scenery lights: \d+ draw items so far|Weather: |Xbox light pools: [1-9]\d* terrain)")
+# Lines only the world prints (the first scenery item, the weather cycle, light pools with items: that line also prints
+# "0 terrain-piece items" in the menus; the day cycle, the one marker the PC look keeps, run 28): a drive that logged
+# one reached the race.
+WORLD = re.compile(r"core\.nfsmw: (Xbox scenery lights: \d+ draw items so far|Weather: |Xbox light pools: [1-9]\d* terrain"
+                   r"|Time of day: day cycle from|Time of day: \d)")
 # From boot to the Quick Race circuit list on a fresh profile, every step seen in frames (run 28,
 # harness/r28/pathcheck.py): skip the intro movies, dismiss the title, answer "Create a new alias?" (No is highlighted),
 # Right Right = Quick Race, Enter; the Quick Race menu opens on Quick Play (a random race, drag included): Right to the

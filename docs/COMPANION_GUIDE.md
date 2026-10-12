@@ -243,6 +243,9 @@ saved before ("… appears to be damaged and cannot be used"; the files themselv
 seen the world's lighting look wrong. Windows parts (`scripts/*.asi`, `.dll` files, `FX/COMPILED` shaders) do nothing
 on a Mac. The setup tells you when it finds a game folder changed like this.
 
+**Never change files inside the app** (`NFS Most Wanted Native.app`): macOS checks its seal and won't open it
+afterwards. Everything you add goes in your game folder (then build again) or in your profile folder (Mods, saves).
+
 **Undo it:** put the original folders back (from your backup, or reinstall the PC game and copy its folder again),
 build again with the Setup app, then bring your career back from `Save Backups/` if needed. Careers you started
 *with* the pack installed may be refused once it is removed (the same rule the other way round), so keep a copy of

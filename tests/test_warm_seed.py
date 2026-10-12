@@ -49,6 +49,8 @@ def test_stuff_pack_front_end():
     assert not m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox 360 front end on (Stuff Pack: FrontB, GlobalB, garages)')
     assert not m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox light pools: 0 terrain-piece items, 0 lit items')   # printed in menus too
     assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox light pools: 412 terrain-piece items, 3 lit items')
+    assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Time of day: day cycle from 0.382 (a day lasts 60 min)')   # PC look
+    assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Time of day: 0.393')
 
 
 def test_merge(tmp_path):
