@@ -9,14 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def fake_app(tmp_path, game):
     app = tmp_path / 'T.app/Contents'
-    (app / 'MacOS').mkdir(parents=True)
-    (app / 'Resources/Defaults').mkdir(parents=True)
-    (app / 'Resources/Game').mkdir(parents=True)
+    (app / 'MacOS').mkdir(parents=True, exist_ok=True)
+    (app / 'Resources/Defaults').mkdir(parents=True, exist_ok=True)
+    (app / 'Resources/Game').mkdir(parents=True, exist_ok=True)
     shutil.copyfile(ROOT / 'tools/setup_kit/defaults/Launch', app / 'MacOS/Launch')
     (app / 'MacOS/Launch').chmod(0o755)
     for f in ('registry.json', 'mod-settings.json', 'NativeOptions.ini'):
         (app / 'Resources/Defaults' / f).write_text('{}')
-    (app / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleShortVersionString': '2.0.4'}))
+    if not (app / 'Info.plist').exists():   # the same build when run again (the backup keys on it)
+        (app / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleShortVersionString': '2.0.4'}))
     if game is not None:
         (app / 'MacOS/SpeedRecomp').write_text('#!/bin/sh\n' + game)
         (app / 'MacOS/SpeedRecomp').chmod(0o755)
@@ -48,3 +49,24 @@ def test_missing_game_is_reported(tmp_path):
     r, log = run(tmp_path, None, wait=0.5)
     assert r.returncode == 127
     assert 'could not start' in log and 'while starting the game' in log and 'could not start' in r.stderr
+    time.sleep(2)                          # the watcher must not add a second report (review S1)
+    assert log.count('problem:') == 1 == sorted((tmp_path / 'prof/Logs').glob('*.log'))[-1].read_text().count('problem:')
+
+
+def test_saves_backed_up_once_per_build(tmp_path):
+    prof = tmp_path / 'prof'
+    save = prof / 'Documents/NFS Most Wanted/NAME/NAME'
+    save.parent.mkdir(parents=True)
+    save.write_bytes(b'career')
+    game = 'echo "guest exit code:    0"\nexit 0\n'
+    run(tmp_path, game, wait=0.5)
+    backups = [d for d in (prof / 'Save Backups').iterdir() if d.is_dir()]
+    assert len(backups) == 1 and backups[0].name.endswith('before 2.0.4')
+    assert (backups[0] / 'Documents/NFS Most Wanted/NAME/NAME').read_bytes() == b'career'
+    r, log = run(tmp_path, game, wait=0.5)      # same build again: no second copy
+    assert len([d for d in (prof / 'Save Backups').iterdir() if d.is_dir()]) == 1
+
+
+def test_no_saves_no_backup(tmp_path):
+    r, log = run(tmp_path, 'echo "guest exit code:    0"\nexit 0\n', wait=0.5)
+    assert not (tmp_path / 'prof/Save Backups').exists() and r.returncode == 0
