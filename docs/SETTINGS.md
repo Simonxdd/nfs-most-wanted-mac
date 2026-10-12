@@ -148,7 +148,7 @@ Open the settings menu with **F10** (Fn+F10 on a laptop), the controller's touch
 |---|---|---|---|---|
 | Front-end car shadow off | `fe_shadows` | off | after a restart | In the garage and menus the car has no dark ground shadow under it, as on the Xbox 360. Restart to apply. |
 | Xbox 360 textures | `x360_textures` | on | after a restart | Uses the sharper Xbox 360 textures for roads, buildings and cars (needs the texture pack). Restart to apply. |
-| Xbox 360 front end | `x360_frontend` | on | after a restart | The Xbox 360 menus, title and loading art and garages from the Xbox 360 Stuff Pack (when Setup added it). Off: the PC front end. Restart to apply. |
+| Xbox 360 front end | `x360_frontend` | on | after a restart | The Xbox 360 menus, title and loading art and garages from the Xbox 360 Stuff Pack (when Setup added it). Off: the PC front end (and your own game folder's FrontB/GlobalB files, if a mod changed them). Restart to apply. |
 | Xbox 360 sky | `x360_sky` | Xbox 360 | after a restart | Xbox 360: the console sky and clouds, our own version of the console sky shader. Original: the PC sky. Restart to apply. |
 | Xbox 360 start screen | `splash_xbox` | on | after a restart | Shows the Xbox 360 start screen with the EA and HD logos (when the USA videos are installed). Restart to apply. |
 
