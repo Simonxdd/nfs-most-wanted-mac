@@ -1,6 +1,6 @@
 """tools/setup_kit/mod_names.py + tpk.py (2.0.4): the Mods folder's game texture list, made by Setup from the player's
 own game files: hashes and sizes only, truncated 23-character names mapped, linked folders followed, unreadable files
-skipped. Needs no game files: small synthetic texture packs are used. Also the plumbing: the setup step never fails
+skipped, the HUD styles' HUFF-packed compressed TPKs read. Needs no game files: small synthetic texture packs are used. Also the plumbing: the setup step never fails
 the setup, package.py copies the list to Resources/ModNames/known.tsv, the core mod finds it there."""
 import importlib.util, re, struct, subprocess, sys
 from pathlib import Path
@@ -16,6 +16,7 @@ def load(name, rel):
 
 
 mn = load('mod_names', 'tools/setup_kit/mod_names.py')
+tpk = load('tpk_reader', 'tools/setup_kit/tpk.py')
 setup = load('setup_kit_setup', 'tools/setup_kit/setup.py')
 
 
@@ -47,6 +48,94 @@ def jdlz_literal(data):
             body.append(0)
     total = 16 + len(body)
     return b'JDLZ\x02\x10\x00\x00' + struct.pack('<II', len(data), total) + bytes(body)
+
+
+class BitWriter:
+    def __init__(self):
+        self.bits = []
+
+    def put(self, value, width):
+        self.bits += [(value >> (width - 1 - i)) & 1 for i in range(width)]
+
+    def number(self, n):   # the reader's variable-length number: (w - 2) zeros, a one, then w bits
+        w = 2
+        while n >= (1 << (w + 1)) - 4:
+            w += 1
+        self.put(0, w - 2)
+        self.put(1, 1)
+        self.put(n - ((1 << w) - 4), w)
+
+    def bytes(self):
+        b = self.bits + [0] * (-len(self.bits) % 8 + 32)
+        return bytes(int(''.join(map(str, b[i:i + 8])), 2) for i in range(0, len(b), 8))
+
+
+def huff_pack(data, clue=0xFF):
+    """HUFF with an 8-bit code for every byte (code = byte), the clue escaping literal clue bytes, one run, and the end
+    marker: enough to exercise the reader's table, permutation, run and terminator paths."""
+    w = BitWriter()
+    w.put(0x30FB, 16)
+    w.put(len(data), 24)
+    w.put(clue, 8)
+    for _ in range(7):
+        w.number(0)        # widths 1..7: no codes
+    w.number(256)          # width 8: all 256 symbols
+    for _ in range(256):
+        w.number(0)        # symbols in order 0..255
+    i = 0
+    while i < len(data):
+        b = data[i]
+        run = 0
+        while i > 0 and i + run < len(data) and data[i + run] == data[i - 1] and run < 40:
+            run += 1
+        if run >= 4:
+            w.put(clue, 8)
+            w.number(run)
+            i += run
+            continue
+        if b == clue:
+            w.put(clue, 8)
+            w.number(0)
+            w.put(0, 1)
+            w.put(b, 8)
+        else:
+            w.put(b, 8)
+        i += 1
+    w.put(clue, 8)
+    w.number(0)
+    w.put(1, 1)
+    body = w.bytes()
+    return b'HUFF\x01\x10\x00\x00' + struct.pack('<II', len(data), len(body)) + body
+
+
+def compressed_tpk_file(name, h, w, ht):
+    """A compressed TPK (as the HUD styles): one 33310003 row pointing at a HUFF block of [image | TextureInfo |
+    format record]."""
+    image = bytes([7] * 40) + bytes([0xFF, 1, 2, 3]) * 4
+    blk = huff_pack(image + info_record(name, h, w, ht) + bytes(0x20))
+    row_len = 8 + 24
+    info = chunk(0x33310001, bytes(0x7C)) + bytes(row_len)
+    off = 8 + (8 + len(info)) + 8 + 8   # from the TPK chunk header to the block
+    row = chunk(0x33310003, struct.pack('<6I', h, off, len(blk) - 16, len(blk), 0, 0))
+    info = chunk(0x33310001, bytes(0x7C)) + row
+    return chunk(0xB3300000, chunk(0xB3310000, info) + chunk(0xB3320000, chunk(0x33320002, blk)))
+
+
+def test_huff_round_trip():
+    data = bytes(range(256)) + bytes([9] * 30) + b'\xff\xff abc'
+    assert tpk.huff(huff_pack(data)) == data
+
+
+def test_hud_style_compressed_tpk_is_listed(tmp_path):
+    game = tmp_path / 'game/GLOBAL'
+    game.mkdir(parents=True)
+    (game / 'HUDS_Custom_00.bin').write_bytes(compressed_tpk_file('HUD_STYLE_ICON', mn.bstringhash('HUD_STYLE_ICON'),
+                                                                  32, 16))
+    assert [(t['hash'], t['w'], t['h']) for t in tpk.textures(game / 'HUDS_Custom_00.bin')] == \
+        [(f"{mn.bstringhash('HUD_STYLE_ICON'):08x}", 32, 16)]
+    out = tmp_path / 'known.tsv'
+    assert mn.main([str(out), str(tmp_path / 'game')]) == 0
+    assert f"k\t{mn.bstringhash('HUD_STYLE_ICON'):08x}\t32\t16" in out.read_text()
 
 
 def test_hash_is_the_games_bstringhash():
