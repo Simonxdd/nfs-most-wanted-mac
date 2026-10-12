@@ -184,6 +184,18 @@ def find_ci(base, *parts):
     return p if p.is_file() else None
 
 
+# Where Setup looks for the player's own Xbox 360 movies inside the game folder (any case).
+MOVIE_FOLDERS = ("X360-Movies", "USA-Movies")
+
+
+def find_dir_ci(base, name):
+    """base/name, a folder, matching the name without regard to case."""
+    base = Path(base)
+    if not base.is_dir():
+        return None
+    return next((q for q in base.iterdir() if q.is_dir() and q.name.lower() == name.lower()), None)
+
+
 def analysis_done():
     inputs = ROOT / "analysis/decompiled/inputs.json"
     try:
@@ -214,6 +226,8 @@ def main():
     ap.add_argument("game", type=Path, help="your installed game folder (holds speed.exe, GLOBAL, TRACKS, ...)")
     ap.add_argument("--xenon-effects", type=Path, help="XenonEffects.tpk from your copy of the XenonEffects mod "
                     "(found automatically in the game folder's scripts folder)")
+    ap.add_argument("--x360-movies", type=Path, help="a folder with your own copy of the US Xbox 360 disc's movies "
+                    "(*_english_ntsc.wmv; default: an X360-Movies folder in your game folder, if it's there)")
     ap.add_argument("--no-pools", action="store_true", help="do not build the light pools")
     ap.add_argument("--out", type=Path, default=ROOT / "dist", help="where to write the app (default dist/)")
     ap.add_argument("--check-only", action="store_true", help="only check the game folder and speed.exe")
@@ -292,9 +306,35 @@ def main():
         say("  sparks and light trails: not added (put XenonEffects.tpk in your game folder's scripts folder, "
             "or pass --xenon-effects FILE)")
 
+    movies_src, where = None, ""
+    if args.x360_movies:
+        movies_src = args.x360_movies.expanduser()
+        if not movies_src.is_dir():
+            fail(f"{movies_src} is not a folder")
+    else:
+        for name in MOVIE_FOLDERS:
+            movies_src = find_dir_ci(game, name)
+            if movies_src:
+                where = f" (found in your game folder's {movies_src.name} folder)"
+                break
+    movies = ROOT / "build/x360-movies"
+    shutil.rmtree(movies, ignore_errors=True)
+    if movies_src:
+        r = subprocess.run([PY, "tools/setup_kit/x360_movies.py", movies_src, movies], cwd=ROOT, capture_output=True,
+                           text=True, env=ENV)
+        say("  " + (r.stdout.strip() or r.stderr.strip()) + (where if r.returncode == 0 else ""))
+        if r.returncode not in (0, 2):
+            fail("the Xbox 360 movies could not be checked")
+    else:
+        say("  Xbox 360 movies: not added (put your own copy of the US Xbox 360 disc's movies in a folder named "
+            "X360-Movies in your game folder, or pass --x360-movies FOLDER); the game's own PC movies play")
+
     say("7/7 Packaging")
-    run([PY, "tools/setup_kit/package.py", "--game", game, "--image", ROOT / "original/retail/speed.exe",
-         "--generated", gen, "--out", args.out.expanduser().resolve()])
+    pack = [PY, "tools/setup_kit/package.py", "--game", game, "--image", ROOT / "original/retail/speed.exe",
+            "--generated", gen, "--out", args.out.expanduser().resolve()]
+    if movies.is_dir():
+        pack += ["--movies", movies]
+    run(pack)
     app = args.out.expanduser().resolve() / "NFS Most Wanted Native.app"
     say(f"\nDone: {app}\nOpen it, or move it to Applications first. Your saves and settings will be in "
         "~/Library/Application Support/NFS Most Wanted Native/.")

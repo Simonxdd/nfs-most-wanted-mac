@@ -66,10 +66,12 @@ def main():
     ap.add_argument("--image", type=Path, required=True)
     ap.add_argument("--generated", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--movies", type=Path, help="the verified Xbox 360 movies (setup.py step 6) for Resources/USA-Movies")
     a = ap.parse_args()
     built = ROOT / "build/SpeedRecomp.app"
     cfg = tomllib.loads((ROOT / "game.toml").read_text())
     exclude = {x.lower() for x in cfg.get("bundle", {}).get("exclude", [])}
+    exclude |= {"x360-movies", "usa-movies"}   # the player's movie folder goes to Resources/USA-Movies, verified, below
     if subprocess.run(["/usr/bin/pgrep", "-f", f"{NAME}.app/Contents/MacOS/SpeedRecomp"], capture_output=True).returncode == 0:
         sys.exit("the app is running; quit it first")
     a.out.mkdir(parents=True, exist_ok=True)
@@ -97,13 +99,16 @@ def main():
             t = core / p.relative_to(a.generated)
             t.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(p, t)
+    if a.movies and a.movies.is_dir():
+        # The game's own list (native/usa_movie_manifest.h) is checked again before each file plays.
+        clone_tree(a.movies, res / "USA-Movies", set())
     game = res / "Game"
     clone_tree(a.game, game, exclude)
     shutil.copyfile(a.image, game / "speed.exe")
     info = tmp / "Contents/Info.plist"
     p = plistlib.loads(info.read_bytes())
     p.update(CFBundleDisplayName=NAME, CFBundleName="NFSMW Native", CFBundleExecutable="Launch",
-             CFBundleIdentifier="io.github.nfsmw-native-mac", CFBundleShortVersionString="2.0.1", CFBundleVersion="6",
+             CFBundleIdentifier="io.github.nfsmw-native-mac", CFBundleShortVersionString="2.0.2", CFBundleVersion="7",
              LSMinimumSystemVersion=min_macos(tmp / "Contents/MacOS/SpeedRecomp") or "13.0", NSHighResolutionCapable=True, LSApplicationCategoryType="public.app-category.racing-games")
     p.pop("CFBundleIconFile", None)
     info.write_bytes(plistlib.dumps(p))

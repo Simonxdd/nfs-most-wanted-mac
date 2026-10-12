@@ -18,6 +18,14 @@ export RECOMP_EXE="$app_resources/Game/speed.exe"
 export RECOMP_D3D9_SHADER_WARM_DIR="$app_profile/ShaderWarm"
 export RECOMP_HOST_PRESENT_PACING=duration
 export RECOMP_D3D9_SCALE=1
+# The Xbox 360 movies, when Setup added the player's own copy: the intro, the EA HD bumper, the title screen and the
+# story scenes play from them (each file is checked against the game's list before it plays).
+if ls "$app_resources/USA-Movies"/*.wmv >/dev/null 2>&1; then
+    export RECOMP_NFSMW_USA_MOVIES=audio-qa
+    export NFSMW_USA_WMV_DIR="$app_resources/USA-Movies"
+else
+    unset RECOMP_NFSMW_USA_MOVIES NFSMW_USA_WMV_DIR
+fi
 app_stamp=$(date +%Y%m%d-%H%M%S)-$$
 if [ "${RECOMP_DIAGNOSTICS:-0}" = 1 ]; then
     export RECOMP_FRAME_TIMINGS="$app_profile/Logs/$app_stamp-frames.csv"

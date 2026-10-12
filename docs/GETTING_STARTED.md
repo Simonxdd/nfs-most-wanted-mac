@@ -28,7 +28,8 @@ This project does not provide, link to, or explain how to obtain any game file. 
    **Done**, then go to **System Settings → Privacy & Security** and click **Open Anyway** next to its name.
 3. **Choose your game folder.** The app checks your `speed.exe` straight away and changes nothing if it can't be used.
 4. If asked, **install Apple's Command Line Tools**; the app waits for them.
-5. Optional: add your copy of `XenonEffects.tpk`, or choose where the game goes (Applications by default).
+5. Optional: add your copy of `XenonEffects.tpk` or of the Xbox 360 movies, or choose where the game goes
+   (Applications by default).
 6. Click **Build**. You see each step, the progress and the time; the Mac stays awake while it runs. When it finishes,
    click **Open the game**.
 
@@ -52,7 +53,8 @@ The setup prints each step and what it found:
 5. **Effects and extras from your game:** the rebuilt effects are assembled from this repository's own shader
    programs (`effects/`), and the light pools from your game's own lamp data and effects.
 6. **Optional packs:** the Xbox 360 Stuff Pack's textures in your game folder (`TRACKS/TexWizardX360`) and
-   `XenonEffects.tpk` (in its `scripts` folder) are found and added. How to add them on your Mac: the
+   `XenonEffects.tpk` (in its `scripts` folder) and your own Xbox 360 movies (an `X360-Movies` folder) are found and
+   added. How to add them on your Mac: the
    [companion guide](COMPANION_GUIDE.md#optional-mods).
 7. **Package:** `dist/NFS Most Wanted Native.app` is written, with your game data inside it.
 
@@ -65,6 +67,7 @@ that they are kept in your profile folder.
 | Option | |
 |---|---|
 | `--xenon-effects FILE` | Use this `XenonEffects.tpk` for the sparks and light trails (otherwise the game folder's `scripts/XenonEffects.tpk` is used if it's there). |
+| `--x360-movies DIR` | Use your own copy of the US Xbox 360 disc's movies from this folder (otherwise an `X360-Movies` folder in the game folder is used if it's there). Only the exact original files are added. |
 | `--no-pools` | Skip building the light pools. |
 | `--out DIR` | Write the app somewhere other than `dist/`. |
 | `--check-only` | Only check the game folder and its `speed.exe`, then stop. |

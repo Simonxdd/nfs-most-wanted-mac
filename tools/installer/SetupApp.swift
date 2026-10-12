@@ -99,11 +99,12 @@ func prepareSource() throws {
     try version.write(to: marker, atomically: true, encoding: .utf8)
 }
 
-func setupArguments(game: URL, dest: URL, xenon: URL?, checkOnly: Bool) -> [String] {
+func setupArguments(game: URL, dest: URL, xenon: URL?, movies: URL? = nil, checkOnly: Bool) -> [String] {
     var a = [workDir.appendingPathComponent("setup.sh").path, game.path]
     if checkOnly { return a + ["--check-only"] }
     a += ["--out", dest.path]
     if let x = xenon { a += ["--xenon-effects", x.path] }
+    if let m = movies { a += ["--x360-movies", m.path] }
     return a
 }
 
@@ -165,6 +166,7 @@ final class Setup: ObservableObject {
     @Published var gameStatus = ""
     @Published var gameOK = false
     @Published var xenon: URL?
+    @Published var movies: URL?
     @Published var dest: URL
     @Published var tools = hasCommandLineTools()
     @Published var installingTools = false
@@ -214,6 +216,16 @@ final class Setup: ObservableObject {
         panel.canChooseDirectories = false
         panel.message = "Choose XenonEffects.tpk from your copy of the XenonEffects mod."
         if panel.runModal() == .OK { xenon = panel.url }
+    }
+
+    func chooseMovies() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the folder with your own copy of the US Xbox 360 disc's movies (files ending _english_ntsc.wmv)."
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK { movies = panel.url }
     }
 
     func chooseDest() {
@@ -296,7 +308,7 @@ final class Setup: ObservableObject {
                                                          reason: "Building \(gameAppName)")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = setupArguments(game: game, dest: dest, xenon: xenon, checkOnly: false)
+        p.arguments = setupArguments(game: game, dest: dest, xenon: xenon, movies: movies, checkOnly: false)
         p.currentDirectoryURL = workDir
         p.environment = setupEnvironment()
         let pipe = Pipe()
@@ -480,7 +492,14 @@ struct ContentView: View {
                         if s.xenon != nil { Button("Remove") { s.xenon = nil }.disabled(s.busy) }
                         Button("Choose…") { s.chooseXenon() }.disabled(s.busy)
                     }
-                    Text("Found automatically in your game folder: a TexWizard texture pack (TRACKS/TexWizardX360) and XenonEffects.tpk (scripts). See the guide for adding them.")
+                    HStack {
+                        Text("Xbox 360 intro and title movies (optional):")
+                        Text(s.movies?.lastPathComponent ?? "from your game folder, if it's there").foregroundStyle(.secondary)
+                        Spacer()
+                        if s.movies != nil { Button("Remove") { s.movies = nil }.disabled(s.busy) }
+                        Button("Choose…") { s.chooseMovies() }.disabled(s.busy)
+                    }
+                    Text("Found automatically in your game folder: a TexWizard texture pack (TRACKS/TexWizardX360), XenonEffects.tpk (scripts) and your Xbox 360 movies (an X360-Movies folder). See the guide for adding them.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(4)
             }
