@@ -30,3 +30,20 @@ def test_every_pc_movie_title_is_on_the_adapters_list():
     assert len(PC_TITLES) == 32
     assert set(PC_TITLES) <= names
     assert names - set(PC_TITLES) == {"eahd_bumper"}
+
+
+def test_setup_names_the_game_movies(tmp_path):
+    import importlib.util, sys
+    sys.path.insert(0, str(ROOT / "tools/setup_kit"))
+    spec = importlib.util.spec_from_file_location("setup_kit_setup", ROOT / "tools/setup_kit/setup.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    assert "none" in m.game_movies_line(tmp_path)
+    movies = tmp_path / "Movies"                       # any case, as Windows folders come
+    movies.mkdir()
+    (movies / "PSA_english_pal.vp6").write_bytes(b"x")
+    assert m.game_movies_line(tmp_path).startswith("game movies: 1 PC (European) in MOVIES")
+    (movies / "psa_english_ntsc.vp6").write_bytes(b"x")
+    assert "1 PC (US)" in m.game_movies_line(tmp_path)
+    (movies / "eahd_bumper_english_ntsc.vp6").write_bytes(b"x")
+    assert "1 PC (European), 2 converted Xbox 360" in m.game_movies_line(tmp_path)

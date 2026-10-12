@@ -188,6 +188,24 @@ def find_ci(base, *parts):
 MOVIE_FOLDERS = ("X360-Movies", "USA-Movies")
 
 
+def game_movies_line(game):
+    """2.0.3: what the game's own MOVIES folder holds (the app plays both kinds natively): the PC movies (*_pal or
+    *_ntsc from a retail copy) and the converted Xbox 360 ones (the Converted Movies pack: 1280x720 *_ntsc.vp6 with
+    the EA HD bumper). Counts by name only; nothing is read or changed."""
+    folder = find_dir_ci(game, "MOVIES")
+    names = [q.name.lower() for q in folder.iterdir() if q.is_file()] if folder else []
+    pal = sum(n.endswith("_english_pal.vp6") for n in names)
+    ntsc = sum(n.endswith("_english_ntsc.vp6") for n in names)
+    if not pal and not ntsc:
+        return "game movies: none in your game folder's MOVIES folder (the game starts at the title screen)"
+    kinds = []
+    if pal:
+        kinds.append(f"{pal} PC (European)")
+    if ntsc:
+        kinds.append(f"{ntsc} {'converted Xbox 360' if 'eahd_bumper_english_ntsc.vp6' in names else 'PC (US)'}")
+    return "game movies: " + ", ".join(kinds) + " in MOVIES; they play in the game"
+
+
 def find_dir_ci(base, name):
     """base/name, a folder, matching the name without regard to case."""
     base = Path(base)
@@ -305,6 +323,11 @@ def main():
     else:
         say("  sparks and light trails: not added (put XenonEffects.tpk in your game folder's scripts folder, "
             "or pass --xenon-effects FILE)")
+
+    buttons = find_ci(game, "GLOBAL", "XtendedInputButtons.tpk")
+    say("  button icons: XtendedInputButtons.tpk found in GLOBAL" if buttons else
+        "  button icons: not added (optional: XtendedInputButtons.tpk in your game folder's GLOBAL folder)")
+    say("  " + game_movies_line(game))
 
     movies_src, where = None, ""
     if args.x360_movies:

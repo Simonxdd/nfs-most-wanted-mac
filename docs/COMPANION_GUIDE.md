@@ -259,8 +259,15 @@ pack's other changed game files were made for its Windows code and are untested 
 ### Recommended community packs
 
 The packs below are the PC community's own. They are never part of this download: get them from the pages linked
-here (not from mirror sites), and copy only the files named. "Built in" means the port already does what the mod
-does; don't install those.
+here (not from mirror sites), and copy only the files named.
+
+- **Already have them?** If your game folder came from a PC where these packs were installed, there is nothing to do:
+  the Setup copies your game folder into the app, so the files below are found and used when you build.
+- **Adding one:** download it from its page, unzip it in Finder, copy the file or folder named in the table into your
+  game folder, then open the **Setup app** again and click **Build** (the steps in [Optional mods](#optional-mods)).
+  The Setup's last lines say what it found.
+
+"Built in" means the port already does what the mod does; don't install those.
 
 **Work with this port**
 
@@ -269,7 +276,7 @@ does; don't install those.
 | Xbox 360 Stuff Pack 4.2 (textures) | [nfsmods.xyz/mod/1200](https://nfsmods.xyz/mod/1200) | Xbox 360 world and garage textures | `TexWizardX360` → `TRACKS` (see [Optional mods](#optional-mods)) |
 | XenonEffects | [github.com/xan1242/NFSMW_XenonEffects](https://github.com/xan1242/NFSMW_XenonEffects) | Xbox 360 sparks and light trails | `XenonEffects.tpk` → `scripts` |
 | NFS XtendedInput (button icons) | [github.com/xan1242/NFS-XtendedInput](https://github.com/xan1242/NFS-XtendedInput) | PlayStation / Xbox button icons | `NFSMW/GLOBAL/XtendedInputButtons.tpk` → `GLOBAL` |
-| Xbox 360 Converted Movies | [nfsmods.xyz/mod/3006](https://nfsmods.xyz/mod/3006) | the Xbox 360 intro (with the EA HD bumper) and story scenes at 1280x720, as `.vp6` files | its `*_english_ntsc.vp6` files → `MOVIES` (beside the game's own; nothing is overwritten) |
+| Xbox 360 Converted Movies | [nfsmods.xyz/mod/3006](https://nfsmods.xyz/mod/3006) (its download link opens a Google Drive folder, about 2 GB) | the Xbox 360 intro (with the EA HD bumper) and story scenes at 1280x720, as `.vp6` files | the 33 `*_english_ntsc.vp6` files from the download's `Mod/MOVIES` folder → `MOVIES` (beside the game's own; nothing is overwritten) |
 
 Your own US Xbox 360 disc's movies work too (see [Xbox 360 movies](#xbox-360-movies-optional)); they come first
 where both are there.
