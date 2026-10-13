@@ -12,8 +12,8 @@
  *    grade keeps our exposure at the pivot (TEST bright=<b> fixed; 1 = the raw formula). saturation = 1 - Desaturation.
  *  pc (TEST NFSMW_TEST_GRADE_MODE=pc): the PC-data G2 below (LUT route; alt=GradeInput).
  *
- * G2: when golden_on() (setting golden_filter after the Look: Auto = on in Xbox 360, off in Definitive; the PC look
- * never runs the clean chain, it uses the game's own treatment), in game (0x00925e90 == 6), with the object present
+ * G2: when golden_on() (setting golden_grade Off/On, run 30 D-170; the retired PC look
+ * never ran the clean chain), in game (0x00925e90 == 6), with the object present
  * and the PC treatment flags clear: the effective grade E (object +0x10..+0xaf, the game's own blend, so Speedbreaker
  * and the cop camera follow) or, if E is invalid, the Midday layout [+0x18c], becomes a 256x1 LUT (rebuilt only when
  * an input changes; tools/effects/grade_lut.py is its Python twin). clean_exposure_bloom then writes its alt= target
@@ -301,7 +301,7 @@ static void cc_grade_inputs(const PopModApi *api, uint32_t dev, unsigned out_w, 
     if (!g_cc_grade_ready) return;
     if (g_cc_grade_env < 0) cc_grade_env(api);
     static uint32_t calls;
-    if ((calls++ & 7u) == 0) g_cc_grade_want = golden_on();          /* live; the Look applies (nfsmw.c) */
+    if ((calls++ & 7u) == 0) g_cc_grade_want = golden_on();          /* live (nfsmw.c golden_on) */
     const int want = g_cc_grade_env == 1 ? 1 : g_cc_grade_env == 2 ? 0 : g_cc_grade_want;
     if (!want) {   /* off: the grade route's targets go (nothing to release when never made: no device call) */
         for (unsigned i = 0; i < g_cc_nt; ++i)

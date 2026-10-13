@@ -2,7 +2,7 @@
 (path, size, SHA-256), whole or not at all, found in an X360-Stuff / Easy Installation folder before a game folder's own
 FRONTEND; everything else in the download is named as not used. Needs no pack files: small stand-ins are used. Also
 the game side: the setting, the overlay push and Look = PC."""
-import hashlib, importlib.util, re, subprocess, sys
+import hashlib, importlib.util, subprocess, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,9 +84,9 @@ def test_nothing_found_exits_2(tmp_path):
 def test_game_side_switch():
     toml = (ROOT / 'mods/core/nfsmw/mod.toml').read_text()
     line = next(l for l in toml.splitlines() if l.startswith('x360_frontend ='))
-    assert 'default = true' in line and 'apply = "restart"' in line and 'group = "xbox360"' in line
+    assert 'default = true' in line and 'apply = "restart"' in line and 'group = "ui.menus"' in line   # 3.0: Interface page
     c = (ROOT / 'mods/core/nfsmw/nfsmw.c').read_text()
-    assert re.search(r'look_pc_boot_off[\s\S]{0,400}"x360_frontend"', c)
+    assert 'look_pc_boot_off' not in c   # 3.0: the PC look is retired (its boot-off list went with it)
     assert 'x360fe_init(api);' in c
     h = (ROOT / 'mods/core/nfsmw/x360_frontend.h').read_text()
     assert 'setting("x360_frontend", 1)' in h and 'overlay_push' in h and '/x360fe' in h

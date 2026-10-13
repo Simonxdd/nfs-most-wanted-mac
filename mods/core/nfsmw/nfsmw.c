@@ -151,97 +151,24 @@ static uint32_t get_u32(uint32_t addr) {
     g_api->guest_read_u32(g_api, addr, &v);
     return v;
 }
-/* Looks (the Xbox-derived x360_look.h retired with the USA post chain, R2 N3, 7 Oct 2026). LOOK_XBOX is no longer
- * reached: the golden colour filter is dropped (owner 7 Oct); its keys left mod.toml. */
-enum { LOOK_HYBRID = 0, LOOK_XBOX = 1, LOOK_PC = 2 };
-/* Appearance (Test77; reshaped 2 Oct 2026, owner): 0 Definitive (default; the former Hybrid), 2 PC - Original,
- * 3 Definitive - Custom. The Xbox 360 colour filter is its own switch (`xbox_colour_filter`): Definitive with it on
- * draws the Xbox 360 treatment (LOOK_XBOX here). Slots 1 and 4 (the former Xbox 360 looks) read as Definitive with
- * the filter on; appearance_recipe.h moves such a profile to that. The look the game was started with decides the
- * Xbox 360 resources loaded at boot (textures, sky, scenery light data and its passes); the colour treatment,
- * bloom owner and the light passes follow the current value every frame (look_poll). */
-static int g_look = LOOK_HYBRID, g_look_boot = -1;
-/* Test96: values 3 and 4 are Hybrid / Xbox 360 with individually changed appearance values (Custom); they render
- * as their base look (appearance_recipe.h keeps the label truthful). */
-static int look_read(void) {
-    int64_t v = 0, app = LOOK_HYBRID;
-    g_api->settings_get(g_api, "look", &v);   /* run 13: the master switch; its PC choice is the PC look */
-    g_api->settings_get(g_api, "appearance", &app);   /* hidden from the menu (run 13) */
-    if (app == LOOK_PC && v == 0) {   /* a profile saved on PC - Original moves to Look PC once, so the menu shows it */
-        g_api->settings_set(g_api, "look", 2);
-        g_api->settings_set(g_api, "appearance", LOOK_HYBRID);
-        g_api->log(g_api, "core.nfsmw: appearance PC - Original moved to Look: PC (run 13: one master switch)");
-        return LOOK_PC;
-    }
-    if (v == 2) return LOOK_PC;
-    v = app;
-    if (v == LOOK_PC) return LOOK_PC;
-    return LOOK_HYBRID;   /* owner 7 Oct: the golden colour filter is dropped; slots 1 and 4 read as Definitive */
-}
-/* Xbox 360 resources a PC-look launch leaves out (they replace PC data at load time). */
-static int look_pc_boot_off(const char *key) {
-    static const char *const keys[] = {"x360_textures", "x360_sky", "x360_scenery_lights", "x360_scenery_light_pass",
-                                       "x360_light_pools", "clean_pools", "x360_frontend"};
-    for (unsigned i = 0; i < sizeof keys / sizeof keys[0]; ++i)
-        if (!strcmp(key, keys[i])) return 1;
-    return 0;
-}
-/* Run 13 (owner 8 Oct): the master switch `look` - 0 Definitive (every finished Remaster feature as the player set
- * it), 1 Xbox 360 (the console look Development 61 rebuilt), 2 PC (the PC look above). With Xbox 360 or PC these
- * Remaster features read their Original value. Read-time only: the saved values are never written, so Advanced keeps
- * the player's choices and Definitive brings them back. Definitive reads exactly what it read before run 13.
- * Time of day and weather are the player's choice in every look (one sky for a look comparison); the light pools
- * follow the PC look only (look_pc_boot_off), as the console has them. */
-/* Run 13 (owner 8 Oct, "our own version of the 360 shaders"): each Look-following feature has a value per Look. Xbox 360
- * reads `xbox` (0 = the original; a feature with our own 360 version reads its 360 mode, e.g. 2), PC reads `pc` (0).
- * Definitive reads the saved value. */
-static const struct { const char *key; int64_t xbox, pc; } k_look_follow[] = {
-    {"remaster_textures", 0, 0}, {"remaster_a2c", 0, 0},    {"soft_particles", 0, 0}, {"wet_roads", 2, 0},
-    {"pbr_facades", 0, 0},       {"soft_shadows", 0, 0},    {"sun_rays", 0, 0},       {"lamp_glow", 0, 0},
-    {"road_sheen", 0, 0},        {"car_reflections", 2, 0}, {"mirror_msaa", 0, 0},
-    {"vehicle_lights", 0, 0},    {"ssao", 0, 0},            {"mirror_pools", 0, 0},
-    {"mirror_grade", 0, 0},      {"mirror_glass", 0, 0},    {"natural_glass", 2, 0},
-    {"wall_parallax", 0, 0},
-    {"fe_floor_shadows", 0, 0},
-    {"natural_water", 2, 0},
-    {"atmosphere", 0, 0},      /* run 14 B1 height fog: Definitive only */
-    {"lit_smoke", 0, 0},       /* run 14 lit smoke: Definitive only */
-};
-/* Retired settings (owner 10 Oct, D-117, under the defaults rule D-115): hidden from the menu and fixed at the value that
- * works, whatever a profile saved or a Look says. grass: the owner "can't really tell a difference" (HDRG: no measurable
- * gain, a shader hold at the golf course); dof_scene_depth and x360_exposure: "leave on" switches (off breaks the rain
- * blur / the HDR mark); upscale_temporal: not built (review/r2close/defaults-review.md). */
-static const struct { const char *key; int64_t value; } k_retired[] = {
-    {"grass", 0}, {"dof_scene_depth", 1}, {"x360_exposure", 1}, {"upscale_temporal", 0},
-};
-static int retired_value(const char *key, int64_t *v) {
-    for (unsigned i = 0; i < sizeof k_retired / sizeof k_retired[0]; ++i)
-        if (!strcmp(key, k_retired[i].key)) { *v = k_retired[i].value; return 1; }
-    return 0;
-}
-static int look_follow(const char *key, int64_t *v) {
-    for (unsigned i = 0; i < sizeof k_look_follow / sizeof k_look_follow[0]; ++i) {
-        if (strcmp(key, k_look_follow[i].key)) continue;
-        int64_t look = 0;
-        g_api->settings_get(g_api, "look", &look);
-        if (look != 1 && look != 2) return 0;
-        *v = look == 1 ? k_look_follow[i].xbox : k_look_follow[i].pc;
-        return 1;
-    }
-    return 0;
-}
+/* Appearance (Test77; reshaped 2 Oct 2026, owner): 0 Definitive (default; the former Hybrid), 3 Definitive - Custom.
+ * Slots 1 and 4 (the former Xbox 360 looks) and 2 (the former PC - Original) are retired: appearance_recipe.h moves
+ * such a profile to Definitive once and logs it. The Xbox 360 colour filter is its own switch (`xbox_colour_filter`). */
+enum { LOOK_HYBRID = 0 };
+/* Run 13 (owner 8 Oct) to run 29: the master switch `look` (0 Definitive, 1 Xbox 360, 2 PC) made the Remaster features
+ * read their console values through a follow table. Run 29 retired the PC look (D-163); run 30 retired the Xbox 360
+ * look (owner 12 Oct, D-170): Definitive is the only look, the key is hidden, and settings_migrate() moves a profile on
+ * Xbox 360 to Definitive once (logged). The features with their own Xbox 360 modes (wet roads, car reflections, glass,
+ * water, rain drops) keep them as their own choices; the golden colour filter is its own Off/On switch (golden_grade). */
+/* Retired settings (owner 10 Oct, D-117, under the defaults rule D-115): grass, dof_scene_depth, x360_exposure,
+ * upscale_temporal and spray_fill are hidden and their code runs at the value that works (grass and spray off, the
+ * scene-depth DoF and the exposure stage on, no temporal upscaling); run 29 (D-167) removed the reads, so a saved value
+ * changes nothing (review/r2close/defaults-review.md). */
 static int64_t setting(const char *key, int64_t fallback);
-/* Run 13 (owner 8 Oct: "all modes should have a toggle ... leave it up to the user"): the golden colour filter.
- * `golden_filter` 0 Auto = the Look's own default (Xbox 360 and PC on, Definitive off), 1 On, 2 Off in every Look. In PC
- * it is the game's own colour treatment (as the PC had); in Definitive and Xbox 360 the clean-room grade (G2). */
-static int golden_on(void) {
-    int64_t look = 0, v = 0;
-    g_api->settings_get(g_api, "look", &look);
-    g_api->settings_get(g_api, "golden_filter", &v);
-    if (v == 1) return 1;
-    if (v == 2) return 0;
-    return look == 1 || look == 2 || look_read() == LOOK_PC;
-}
+/* Run 13 (owner 8 Oct: "all modes should have a toggle ... leave it up to the user"): the golden colour filter, drawn
+ * by the clean-room grade (G2). Run 30 (D-170): a plain Off/On switch, `golden_grade` (default Off); the old
+ * `golden_filter` (Auto/On/Off, Auto = on in the Xbox 360 look) is hidden and read once by settings_migrate(). */
+static int golden_on(void) { return setting("golden_grade", 0) != 0; }
 /* R2 close perf pass (review/r2close/perf-design.md 3.2), TEST ONLY: NFSMW_TEST_SETTING_AB=<key>=<off>[,<key>=<off>...]:<s>.
  * In odd periods of CLOCK_UPTIME_RAW (the frames.csv sealed_s clock, as harness/tools/ab_stats.py assigns frames) the
  * listed keys answer their off value; in even periods the saved value. Parsed once; one log line per phase change.
@@ -291,16 +218,15 @@ static void sab_apply(const char *key, int64_t *v) {
     for (int i = 0; i < atomic_load(&g_sab_n); ++i)
         if (!strcmp(g_sab[i].key, key)) { *v = g_sab[i].off; return; }
 }
+static int tier_follow(const char *key, int64_t *v);   /* mac_tier.h */
 static int64_t setting(const char *key, int64_t fallback) {
     int64_t v = fallback;
-    if (retired_value(key, &v)) return v;
     g_api->settings_get(g_api, key, &v);
-    if (g_look_boot < 0) g_look = g_look_boot = look_read();
-    if (g_look_boot == LOOK_PC && look_pc_boot_off(key)) return 0;
-    look_follow(key, &v);
+    tier_follow(key, &v);   /* run 29 weaker-Mac presets: read-time caps */
     sab_apply(key, &v);
     return v;
 }
+#include "mac_tier.h"   /* run 29 weaker-Mac presets (needs setting() above) */
 
 #include "x360_sky.h"
 #include "impact_feedback.h"
@@ -310,7 +236,6 @@ static int64_t setting(const char *key, int64_t fallback) {
 #include "native_options.h"
 #include "native_audio.h"
 #include "heli_bounty.h"
-#include "wheel_probe.h"
 
 /* ---- original PC input, with the requested PlayStation layout ----------- */
 
@@ -332,16 +257,12 @@ static void pad_binding(unsigned row, unsigned slot, uint32_t kind, uint32_t con
 #include "pad_mapping.h"    /* controller mapping: the Controls screen, analog triggers, names */
 static void msaa_apply(const PopModApi *api, int reset);
 static void quality_apply(const PopModApi *api, int reset);
-static void look_poll(const PopModApi *api);
 static void appearance_recipe(const PopModApi *api);
 static void cop_numbers_poll(const PopModApi *api); /* cop_numbers.h */
 
 #include "position_log.h"   /* Test136; needs setting/get_u32/get_float above */
 #include "preculler_switch.h" /* Test149: optional preculler off (experimental) */
 #include "memory_log.h"       /* Test151: game footprint + Mac swap once a minute (crash evidence) */
-#include "remaster_probe.h"   /* TEST ONLY (NFSMW_PROFILE_PROBE=1): Transmission setting finder (owner, 6 Oct) */
-static void fe_shadow_probe_tick(const PopModApi *api);   /* fe_shadow_probe.h, TEST ONLY */
-static void pool_prof_tick(const PopModApi *api);        /* pool_prof.h, TEST ONLY (Remaster P1) */
 static void lamp_daylight_tick(const PopModApi *api);
 static void vehicle_lights_tick(const PopModApi *api);  /* vehicle_lights.h */    /* lamp_daylight.h */
 /* Owner 7 Oct: the keyboard T (the game's row 14, FE_ACTION_B2) did not skip the music track in free roam; the pad
@@ -356,12 +277,31 @@ static int32_t tskip_key(const PopModApi *api, int32_t dik, int32_t vk, int32_t 
     g_tskip_down = down != 0;
     return 0;
 }
+/* Run 27 (owner: L3 does not skip; review/run27/l3-cursor-findings.md): the pad's L3 is bound to the same row 14,
+ * which only the front-end action loop reads, so in the world it never skipped either. The pad device's row values
+ * ([device+32], as input_trace reads them) give the press; a rising edge flags the same skip. 0x517070 checks the game
+ * flow itself (the Extra Options hooks fake it in the front-end path): the skip is called with the flow read as 3 for
+ * the call and restored, so it does not depend on those hooks firing inside a guest_call. */
 static void tskip_poll(const PopModApi *api) {
     if (!g_tskip_pending) return;
     g_tskip_pending = 0;
-    if (get_u32(0x00925e90u) != 6u) return;
+    const uint32_t flow = get_u32(0x00925e90u);
+    if (flow != 6u) return;
     const uint32_t music = get_u32(0x0091cae0u);
-    if (music) api->guest_call(api, 0x00517070u, music, NULL, 0, NULL);
+    if (!music) return;
+    api->guest_write_u32(api, 0x00925e90u, 3u);
+    api->guest_call(api, 0x00517070u, music, NULL, 0, NULL);
+    api->guest_write_u32(api, 0x00925e90u, flow);
+    static unsigned n;
+    if (++n <= 8) api->log(api, "core.nfsmw: music track skipped in game (T or L3)");
+}
+static void l3_skip_poll(uint32_t device) {   /* after the device update: the pad's row 14 (L3 by default) */
+    static int down;
+    const uint32_t values = get_u32(device + 32);
+    if (!values || !setting("l3_skip_track", 1)) return;
+    const int now = get_float(values + 14 * 4) > 0.5f;
+    if (now && !down) g_tskip_pending = 1;
+    down = now;
 }
 static void game_device_update(const PopModApi *api, pop_cpu_v1 *cpu,
                                PopHookInvocation *inv, void *user) {
@@ -369,18 +309,11 @@ static void game_device_update(const PopModApi *api, pop_cpu_v1 *cpu,
     (void)user;
     uint32_t device = cpu->ecx;
     native_audio_present(api); /* Audio Mode presentation; host call only on change */
-    profile_probe(api);        /* TEST ONLY; nothing unless NFSMW_PROFILE_PROBE=1 */
-    sun_probe(api);            /* TEST ONLY; nothing unless NFSMW_SUN_PROBE=1 */
     tskip_poll(api);           /* keyboard T skips the music track in free roam (owner 7 Oct) */
-    grade_probe(api);          /* TEST ONLY; nothing unless NFSMW_GRADE_PROBE=1 */
-    fe_shadow_probe_tick(api); /* TEST ONLY; nothing unless NFSMW_FE_SHADOW_PROBE=1 */
-    pool_prof_tick(api);       /* TEST ONLY; nothing unless NFSMW_TEST_POOL_PROF / _PROPS_PERIOD are set */
     lamp_daylight_tick(api);
     vehicle_lights_tick(api);  /* car lights in the clean pools (setting vehicle_lights; off: nothing) */   /* outdoor lamps by daylight (setting lamp_daylight; off: activation 1) */
     quality_apply(api, 1); /* a chosen Quality preset, then the label from the actual values (Test84) */
     msaa_apply(api, 1); /* a settings-menu change of anti-aliasing; nothing when unchanged */
-    appearance_recipe(api); /* a chosen appearance recipe, then the Original/Custom label (Test96) */
-    look_poll(api);     /* an applied appearance change (Test77) */
     heat_levels_apply(api); /* Heat Level Override slot (Test88); logs only on a change */
     cop_numbers_poll(api);  /* TEST ONLY police-car count (NFSMW_TEST_COP_LOG) */
     position_log(api);  /* diagnostics: time + world position every 2 s while driving (Test136) */
@@ -396,6 +329,7 @@ static void game_device_update(const PopModApi *api, pop_cpu_v1 *cpu,
         pad_mapping_test(api); /* TEST ONLY: NFSMW_TEST_PADMAP */
     }
     if (get_u32(device + 36) == 0) frontend_pad_activity(api);
+    if (get_u32(device + 36) == 0) l3_skip_poll(device);   /* run 27: L3 skips the track in the world too */
     impact_feedback_tick(api);
     if (setting("input_trace", 0) && get_u32(device + 36) == 0) {
         static float previous[42];
@@ -474,12 +408,10 @@ static void timer_frame_time(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvoc
 
 #include "view_hud.h"
 
-#include "vehicle_admission.h"
 #include "x360_scenery_lights.h"
 #include "x360_light_pools.h"
 #include "clean_pools.h"      /* Test113 module F: clean-room light pools (owner setting clean_pools) */
 #include "lamp_daylight.h"     /* R2 run 9: outdoor lamps fade out in daylight (setting lamp_daylight, off) */
-#include "frame_arena.h"
 
 #include "world_light_pass.h"
 
@@ -518,19 +450,18 @@ static PopModStatus install_at(uint32_t addr, uint32_t ret, PopHookFn fn, int32_
         return POP_E_RANGE;
     return g_api->hook_install_at_callsite(g_api, addr, ret, fn, mode, 0, &g_hooks[slot]);
 }
-#include "stream_timing.h"   /* TEST ONLY (Test115); needs hook_slot_free/g_hooks above */
-#include "audio_env_probe.h" /* TEST ONLY (Test118); likewise */
 #include "scenery_lod_probe.h" /* TEST ONLY (Test127); likewise */
-#include "mirror_flare_probe.h" /* TEST ONLY (Test131); likewise */
+#include "scenery_fade.h"     /* run 27 scenery fade-in (setting scenery_fade, D-153); needs pfx_call and g_hooks above */
 #include "xenon_fx.h"        /* Xbox 360 particles (task 145); needs install/install_at above */
-#include "x360_frontend.h"   /* 2.0.4: the Stuff Pack front end (overlay) */
 #include "smoke.h"           /* denser tyre smoke (run 14); likewise */
 #include "smoke_light.h"     /* lit smoke (run 14 stage 1); needs install and post_fx.h's pfx_call above */
 #include "mirror_car_shadows.h" /* car shadows in the mirror (Test134) */
-#include "fe_shadow_probe.h"   /* TEST ONLY (R2 item 6 probe); needs install/install_at above */
 #include "fe_shadows.h"        /* front-end shadows (R2 item 6); likewise */
 #include "cop_numbers.h"       /* police numbers per heat level (Test161) */
 #include "remaster_tex.h"      /* Remaster A1 step 1: texture keys (TEST, NFSMW_REMASTER_TEXTAG=1) */
+#include "x360_frontend.h"   /* 2.0.4: the Stuff Pack front end (overlay); ported run 29 */
+#include "datamods.h"        /* run 29 modding stage 1: the DataMods folder (overlay) */
+#include "snd_stall.h"       /* run 32 issue 8: no DirectSound restart when the output starts slowly */
 #include "eo_extra.h"          /* Remaster EO batch 1: unlock all, barriers, LOD (owner, 5 Oct) */
 #include "mirror_props.h"       /* knocked-over props in the mirror (Test137) */
 
@@ -558,8 +489,6 @@ static void extra_options_hooks(const PopModApi *api) {
         g_exo_replay_blacklist = 0;
         exo_replay_slots(api, 0);
     }
-    if (getenv("NFSMW_TEST_WHEEL_PROBE") && install(0x007422d0u, wheel_probe, POP_HOOK_REPLACE, 75) == POP_OK)
-        g_wheel_probe = 1;   /* TEST ONLY */
     g_heli_enabled = setting("helicopter_bounty", 1) != 0;
     if (g_heli_enabled &&
         (install(0x00418f30u, heli_bounty_enter, POP_HOOK_BEFORE, 76) != POP_OK ||
@@ -581,7 +510,7 @@ static void extra_options_hooks(const PopModApi *api) {
 
 /* Run 15 (owner's run-14 play test: a saved x360_sky 1 kept the community sky after the default moved to 2): one-time
  * moves of saved values that only meant "the default when it was saved". `settings_version` (hidden) records the last
- * migration done. 1: x360_sky 1 (the old default) -> 2 (ours).
+ * migration done. 1: x360_sky 1 (the old default) -> 2 (ours). 2: run 30, the Xbox 360 look retired (below).
  * Run 16 (review: "sparse saving should preserve intent"): the kit keeps the player's explicit choices even when they
  * equal a default, and a key the player never set follows the default, so a default change needs no migration.
  * A migration writes through settings_set, which is a derived write (kit/mods/settings.cpp): writing the declared
@@ -590,22 +519,37 @@ static void extra_options_hooks(const PopModApi *api) {
 static void settings_migrate(const PopModApi *api) {
     int64_t version = 0, sky = 2;
     api->settings_get(api, "settings_version", &version);
-    if (version >= 1)
-        return;
-    api->settings_get(api, "x360_sky", &sky);
-    if (sky == 1) {
-        api->settings_set(api, "x360_sky", 2);
-        api->log(api, "core.nfsmw: settings: Xbox 360 sky moved from the community shader to ours (run-14 default)");
+    if (version < 1) {
+        api->settings_get(api, "x360_sky", &sky);
+        if (sky == 1) {
+            api->settings_set(api, "x360_sky", 2);
+            api->log(api, "core.nfsmw: settings: Xbox 360 sky moved from the community shader to ours (run-14 default)");
+        }
     }
-    api->settings_set(api, "settings_version", 1);
+    /* 2: run 30 (owner 12 Oct, D-170): the Xbox 360 look is retired. The golden filter becomes golden_grade Off/On:
+     * on when the old golden_filter said On (1), or Auto (0) in the Xbox 360 look, which showed it; a profile on Look
+     * Xbox 360 moves to Definitive (its features' own Xbox 360 modes are kept as saved). */
+    if (version < 2) {
+        int64_t look = 0, golden = 0;
+        api->settings_get(api, "look", &look);
+        api->settings_get(api, "golden_filter", &golden);
+        if (golden == 1 || (golden == 0 && look == 1)) api->settings_set(api, "golden_grade", 1);
+        if (look == 1) {
+            api->settings_set(api, "look", 0);
+            api->log(api, golden == 2 ? "core.nfsmw: settings: Look Xbox 360 moved to Definitive (run 30, D-170: one look)"
+                                      : "core.nfsmw: settings: Look Xbox 360 moved to Definitive (run 30, D-170: one look); "
+                                        "the golden colour filter stays on");
+        }
+        api->settings_set(api, "settings_version", 2);
+    }
 }
 
 PopModStatus pop_mod_init(const PopModApi *api) {
     PopModStatus s;
     g_api = api;
     settings_migrate(api);
-    if ((s = va_install(api)) != POP_OK) return s;
-    if ((s = fa_install(api)) != POP_OK) return s;
+    appearance_recipe(api);   /* run 29: once at start (the key is hidden: nothing changes it while the game runs) */
+    mac_tier_init(api);       /* run 29 weaker-Mac presets: before any init reads a key a tier caps */
     native_options_load(api);
     extra_options_apply(api);
     extra_options_hooks(api);
@@ -796,19 +740,6 @@ PopModStatus pop_mod_init(const PopModApi *api) {
     /* Xbox 360 exposure and bloom (Test68): before the frame's HUD/front-end call 006c3870 at 006e75a1,
      * which follows the main view's render 006de300. */
     {
-        static const char *const names[] = {"Definitive", "Definitive with the Xbox 360 colour filter", "PC - Original"};
-        if (g_look_boot < 0) g_look = g_look_boot = look_read();
-        char line[120];
-        snprintf(line, sizeof line, "core.nfsmw: appearance at launch: %s", names[g_look_boot]);
-        api->log(api, line);
-        {   /* run 13: the master switch at launch, for test evidence */
-            static const char *const looks[] = {"Definitive", "Xbox 360", "PC"};
-            int64_t look = 0;
-            api->settings_get(api, "look", &look);
-            snprintf(line, sizeof line, "core.nfsmw: look at launch: %s%s", looks[look >= 0 && look <= 2 ? look : 0],
-                     look == 1 || look == 2 ? " (Remaster features read their Original values)" : "");
-            api->log(api, line);
-        }
         {   /* Playbook v1.0 (§2.2J, §7A.4): settings that change diagnostics or timing away from their defaults are
              * named once at launch, so a profile copied with them on is visible in its first lines. */
             const int64_t trace = setting("input_trace", 0), rate = setting("sim_rate", 60);
@@ -829,24 +760,22 @@ PopModStatus pop_mod_init(const PopModApi *api) {
                 api->log(api, note);
             }
         }
-        if (getenv("NFSMW_TEST_LOOK_KEY") && api->on_key) api->on_key(api, look_test_key, NULL, &g_look_key_hook);
     }
-    stream_timing_init(api);   /* TEST ONLY (Test115): absent unless NFSMW_TEST_STREAM_TIMING is set */
-    audio_env_probe_init(api); /* TEST ONLY (Test118): absent unless NFSMW_TEST_AUDIO_ENV is set */
     scenery_lod_probe_init(api); /* Test127 probe: NFSMW_TEST_SCENERY_LOD, or the owner switch scenery_trace (Test139) */
-    mirror_flare_probe_init(api);
+    scenery_fade_init(api);   /* run 27: setting scenery_fade or TEST NFSMW_TEST_FADEIN=1; slots 145-147 */
     vehicle_lights_install(api);  /* run 13: flare capture hook, slot 155 */ /* TEST ONLY (Test131): absent unless NFSMW_TEST_MIRROR_FLARES=1 */
-    fe_shadow_probe_init(api);  /* TEST ONLY (R2 item 6): absent unless NFSMW_FE_SHADOW_PROBE=1 */
     fe_shadows_init(api);       /* setting fe_shadows: no car ground shadow in the front end (as on the 360) */
     if (api->on_key) api->on_key(api, tskip_key, NULL, &g_tskip_hook);   /* keyboard T skips the track (owner 7 Oct) */
     xfx_init(api);             /* Xbox 360 particles (task 145) */
-    x360fe_init(api);          /* 2.0.4: the Stuff Pack front end */
+    x360fe_init(api);          /* 2.0.4: the Stuff Pack front end (ported run 29) */
+    datamods_init(api);        /* run 29 modding stage 1: DataMods layers, after the front end so a data mod wins */
+    snd_stall_init(api);       /* run 32 issue 8: the sound thread's restart guard */
     smoke_init(api);           /* denser tyre smoke (run 14): slot 152, same function as the spark hook */
     smoke_light_init(api);     /* lit smoke (run 14 stage 1): slot 153, the per-emitter particle draw */
     /* x360_exposure (label "Glow and auto brightness"; the key name is historical) gates the rebuilt effects. */
     atmosphere_init(api);   /* run 14 B1: before upscale_init (its scene-end packet goes before the 252 marker) */
     upscale_init(api);   /* run 13: before pfx_init (same-address hooks run in install order) */
-    if (setting("x360_exposure", 1) && pfx_init(api) &&
+    if (pfx_init(api) &&
         install_at(0x006c3870u, 0x006e75a6u, pfx_frame, POP_HOOK_BEFORE, 71) != POP_OK) {
         api->log(api, "core.nfsmw: effects unavailable (hook)");
         g_pfx_enabled = 0;
@@ -890,10 +819,8 @@ PopModStatus pop_mod_init(const PopModApi *api) {
 }
 
 PopModStatus pop_mod_exit(void) {
-    stream_timing_exit(g_api);
-    audio_env_probe_exit(g_api);
     scenery_lod_probe_exit(g_api);
-    mirror_flare_probe_exit(g_api);
+    scenery_fade_exit(g_api);
     mirror_car_shadows_exit(g_api);
     mirror_props_exit(g_api);
     xfx_exit(g_api);
@@ -950,9 +877,6 @@ PopModStatus pop_mod_exit(void) {
     lamp_daylight_exit(g_api);
     if (g_tskip_hook) { g_api->hook_remove(g_api, g_tskip_hook); g_tskip_hook = 0; }
     if (g_x3sl_key_hook) { g_api->hook_remove(g_api, g_x3sl_key_hook); g_x3sl_key_hook = 0; }
-    if (g_look_key_hook) { g_api->hook_remove(g_api, g_look_key_hook); g_look_key_hook = 0; }
-    fa_stop(g_api);
-    va_stop(g_api);
     impact_feedback_stop(g_api);
     x360_reset_state();
     g_x360_hooked = 0;

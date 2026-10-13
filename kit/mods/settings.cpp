@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <filesystem>
 #include "../platform/os.h"
@@ -90,10 +91,31 @@ std::vector<Entry> g_txn_entries;
 std::map<std::string, int64_t> g_txn_stored;
 std::set<std::string> g_txn_legacy_done;
 
+// Remaster run 29 (D-167, review/run29/cleanup-mod.md 2): mods read settings many times a frame, and a linear scan of
+// ~160 entries comparing strings made every read cost O(keys). A self-checking index: (owner, key) hash -> the entry's
+// position, verified on every hit; a miss or a stale position (entries are pushed, sorted, erased and restored by
+// transactions) falls back to the scan and repairs the slot. Answers are the scan's, always.
+std::unordered_map<uint64_t, size_t> &index_map() {
+    static std::unordered_map<uint64_t, size_t> m;
+    return m;
+}
+uint64_t key_hash(uint32_t owner, const char *key) {
+    uint64_t h = 1469598103934665603ull ^ owner;
+    for (const char *c = key; *c; ++c)
+        h = (h ^ (unsigned char)*c) * 1099511628211ull;
+    return h;
+}
 Entry *find(uint32_t owner, const char *key) {
-    for (Entry &e : entries())
-        if (e.owner == owner && e.key == key)
-            return &e;
+    std::vector<Entry> &v = entries();
+    const uint64_t h = key_hash(owner, key);
+    auto it = index_map().find(h);
+    if (it != index_map().end() && it->second < v.size() && v[it->second].owner == owner && v[it->second].key == key)
+        return &v[it->second];
+    for (size_t i = 0; i < v.size(); ++i)
+        if (v[i].owner == owner && v[i].key == key) {
+            index_map()[h] = i;
+            return &v[i];
+        }
     return nullptr;
 }
 
@@ -118,6 +140,21 @@ void mods_settings_reset() {
     g_in_txn = false;
     g_legacy = false;
     g_legacy_done.clear();
+}
+
+// A saved value outside the entry's range is unusable: the entry keeps its value (the default at declare) and the
+// override is dropped (run 15: at the next save). Remaster run 29 (NFSMW D-163, the retired PC look): said once, so a profile's move is in its log.
+static void take_stored(Entry &e) {
+    auto it = stored().find(skey(e));
+    if (it == stored().end())
+        return;
+    if (it->second >= e.min && it->second <= e.max) {
+        e.value = it->second;
+        return;
+    }
+    printf("mods: settings: %s saved value %lld is no longer offered (%lld..%lld): %lld is used\n",
+           skey(e).c_str(), (long long)it->second, (long long)e.min, (long long)e.max, (long long)e.value);
+    stored().erase(it);
 }
 
 bool mods_settings_load(const char *path) {
@@ -153,9 +190,7 @@ bool mods_settings_load(const char *path) {
                "defaults now follow the defaults, the others stay as chosen (once)\n", path);
     for (Entry &e : entries()) {
         legacy_inherit(e);
-        auto it = stored().find(skey(e));
-        if (it != stored().end())
-            e.value = it->second;
+        take_stored(e);
     }
     return true;
 }
@@ -210,13 +245,7 @@ void mods_settings_declare(uint32_t owner, const char *mod_id, const char *key, 
     Entry e{owner, mod_id ? mod_id : "", key, label && *label ? label : key, kind, def, min, max};
     e.def = def;
     legacy_inherit(e);
-    auto it = stored().find(skey(e));
-    if (it != stored().end()) {
-        if (it->second >= min && it->second <= max)
-            e.value = it->second;
-        else
-            stored().erase(it); // unusable here: the default applies (run 15 dropped it at the next save)
-    }
+    take_stored(e);
     entries().push_back(e);
     sort_entries();
 }

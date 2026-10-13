@@ -578,12 +578,43 @@ void peek(uint32_t addr, uint32_t len) {
 }
 
 bool entity_body_ready(int32_t id);
+
+// keyuntil's progress (one keyuntil step runs at a time).
+struct KeyUntilState {
+    bool started = false, down = false;
+    uint32_t since = 0, pressed_at = 0, presses = 0, pressed_reads = 0;
+} g_keyuntil;
+// Run 33: when the last scripted key went down (script time and the game's input reads), and since when a release has
+// waited for the game to read it (host_script_key_release_ready).
+uint32_t g_key_down_ms = 0, g_key_down_reads = 0, g_key_release_waiting_since = 0;
+
+#ifdef RECOMP_GLOBAL_FE_ROOT_ADDR
+// Each change of that screen, once, in the run log: the path a script took, read next to its dumps.
+void log_fe_screen_change() {
+    static char last[64] = "";
+    static uint32_t polled_at = 0;
+    const uint32_t now = boot_guest_millis();
+    if (now - polled_at < 100)
+        return;
+    polled_at = now;
+    char screen[64];
+    host_script_fe_screen(guest_u32, screen, sizeof screen);
+    if (strcmp(screen, last)) {
+        snprintf(last, sizeof last, "%s", screen);
+        printf("[smoke] fe screen: %s (at %.1fs)\n", screen[0] ? screen : "(none)", now / 1000.0);
+        fflush(stdout);
+    }
+}
+#endif
 HostDumpAt g_dumpat;
 
 // The metrics a script may make a claim about.
 double metric(const char *name, int32_t entity_id = -1) {
     if (!strcmp(name, "entity_body"))
         return entity_body_ready(entity_id) ? 1.0 : 0.0;
+    // Run 33: the front-end screen that has the input (a script waits for it before it presses a key there).
+    if (!strncmp(name, "fe:", 3))
+        return host_script_fe_metric(name, guest_u32);
     if (!strcmp(name, "dumpat_fired"))
         return g_dumpat.fired;
     if (!strcmp(name, "hd_draws"))
@@ -1781,6 +1812,9 @@ void tick() {
     // run thread inside the guest's own clock read, which is where the guest
     // is not running, so the record is not being written while it is read.
     sample_watched(false);
+#ifdef RECOMP_GLOBAL_FE_ROOT_ADDR
+    log_fe_screen_change();
+#endif
 
     // The recorded path runs first and to the end. While it is running the
     // main script is held where it is, and the main clock is moved on by
@@ -1925,7 +1959,8 @@ void tick() {
             if (!passed)
                 ++g_await_timeouts;
             if (!passed &&
-                (!strcmp(step.name, "entity_body") || !strcmp(step.name, "dumpat_fired"))) {
+                (!strcmp(step.name, "entity_body") || !strcmp(step.name, "dumpat_fired") ||
+                 !strncmp(step.name, "fe:", 3))) {
                 g_await_started = false;
                 g_quit_requested = true;
                 boot_request_close("script readiness assertion timed out");
@@ -1943,10 +1978,82 @@ void tick() {
             ++g_next_step;
             continue;
         }
+        if (step.op == HOST_SCRIPT_KEYUNTIL) {
+            // Run 33: press, check, press again; one key edge per host turn, like any key step.
+            const uint32_t at = boot_guest_millis();
+            if (!g_keyuntil.started) {
+                g_keyuntil = {};
+                g_keyuntil.started = true;
+                g_keyuntil.since = at;
+                g_keyuntil.pressed_at = at - step.press_ms;
+            }
+            HostScriptStep key = step;
+            key.op = HOST_SCRIPT_KEY;
+            if (g_keyuntil.down) {
+                if (!host_script_key_release_ready(g_keyuntil.pressed_at, g_keyuntil.pressed_reads, at,
+                                                   host_input_read_count()))
+                    break;
+                key.down = 0;
+                run_step(key);
+                g_keyuntil.down = false;
+                return;
+            }
+            const double now = metric(step.name);
+            const bool passed = step.at_least ? now >= step.threshold : now > step.threshold;
+            const uint32_t waited = at - g_keyuntil.since;
+            if (!passed && waited < step.timeout_ms) {
+                if (at - g_keyuntil.pressed_at < step.press_ms)
+                    break;
+                key.down = 1;
+                run_step(key);
+                g_keyuntil.down = true;
+                g_keyuntil.pressed_at = at;
+                g_keyuntil.pressed_reads = host_input_read_count();
+                ++g_keyuntil.presses;
+                return;
+            }
+            printf("[smoke] keyuntil %s: %s %s%g after %u press%s and %.1fs\n", step.name,
+                   passed ? "reached" : "did NOT reach", step.at_least ? ">=" : ">", step.threshold,
+                   g_keyuntil.presses, g_keyuntil.presses == 1 ? "" : "es", waited / 1000.0);
+            fflush(stdout);
+            g_keyuntil.started = false;
+            if (!passed) {
+                ++g_await_timeouts;
+                g_quit_requested = true;
+                boot_request_close("script readiness assertion timed out");
+                break; // the keys after it were meant for a screen that never came
+            }
+            g_script_start_ms += waited;
+            elapsed = boot_guest_millis() - g_script_start_ms;
+            ++g_next_step;
+            continue;
+        }
+        if (step.op == HOST_SCRIPT_KEY && !step.down) {
+            // Run 33: a release waits until the game has read the press; the script clock waits with it.
+            const uint32_t at = boot_guest_millis();
+            if (!host_script_key_release_ready(g_key_down_ms, g_key_down_reads, at, host_input_read_count())) {
+                if (!g_key_release_waiting_since)
+                    g_key_release_waiting_since = at;
+                break;
+            }
+            if (g_key_release_waiting_since) {
+                if (at - g_key_down_ms >= 250) {   // only when the game was slower than the usual press
+                    printf("[smoke] key %s held %u ms until the game read it\n", step.name, at - g_key_down_ms);
+                    fflush(stdout);
+                }
+                g_script_start_ms += at - g_key_release_waiting_since;
+                elapsed = at - g_script_start_ms;
+                g_key_release_waiting_since = 0;
+            }
+        }
         bool timed_out = false;
         if (!semantic_step_ready(step, g_script_start_ms, timed_out))
             break;
         elapsed = boot_guest_millis() - g_script_start_ms;
+        if (step.op == HOST_SCRIPT_KEY && step.down) {
+            g_key_down_ms = boot_guest_millis();
+            g_key_down_reads = host_input_read_count();
+        }
         if (!timed_out)
             run_step(step);
         ++g_next_step;

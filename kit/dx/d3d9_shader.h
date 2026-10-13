@@ -143,6 +143,11 @@ struct Program {
     // stages declared as cube maps.
     mutable int64_t sampler_mask = -1;
     mutable uint32_t cube_samplers = 0;
+    // Remaster run 29 (D-167): the declared kinds as bit masks, filled once on the first draw (the renderer looked
+    // the std::map up for all 16 stages on every draw): stages declared as anything but 2D, and as volumes.
+    mutable bool kinds_ready = false;
+    mutable uint32_t non2d_samplers = 0, volume_samplers = 0;
+    mutable int8_t cls_wetroad = -1, cls_roadsheen = -1, cls_pbrworld = -1;   // run 29: renderer program classes
 };
 
 // A decoded program, cached by its bytes.

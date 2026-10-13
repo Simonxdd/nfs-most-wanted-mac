@@ -59,8 +59,21 @@ A line starting `mods: rejected` means a settings file was edited by hand and is
 file, and the defaults return.
 
 **Stutter on the first drive** — Metal prepares shaders the first time it sees each one. The setup's shader warm-up
-(step 6, on unless you skipped it) prepares them ahead; if the setup log says "shader warm-up: skipped", run the setup
-again to make it. Without it the stutter settles after a few minutes and does not come back on later launches.
+(step 6, off unless you tick *Prepare the shaders now* or pass `--shader-seed`) prepares them ahead; if the setup log
+says "shader warm-up: skipped", run the setup again with it ticked. Without it the stutter settles after a few minutes and does not come back on later launches.
+
+**The HD textures step takes hours** — that is expected: Make HD textures upscales a few thousand textures on the
+GPU (about 1¼ hours on an M5 Pro, much longer on a base M1). You can stop it (Stop in the Setup app) and run the
+setup again later with the option on: it carries on where it stopped. If the setup log says "HD textures: skipped",
+the lines before it say why (no internet for the one-time downloads, not enough free disk space: it needs about
+10 GB); the app is made without the pack and the game shows its own textures. To add the pack later, run Setup again
+with *Make HD textures now* ticked (or `--hd-textures`).
+
+**The colours changed after 3.0 (the Look setting is gone)** — 3.0 has one look, Definitive. A profile saved on the
+*Xbox 360* or *PC* look opened in Definitive once; the game log says `Look Xbox 360 moved to Definitive` (or `look
+saved value 2 is no longer offered` for the PC look). For the console's warm colour turn on F10 → Graphics → *Golden
+colour filter*; wet roads, car reflections, glass, water and rain drops each offer their Xbox 360 version under
+Advanced.
 
 **Low frame rate at 4K** — lower *Smooth edges* to *Off*, or set the game's resolution to 2560x1440 in its Video
 menu. On a TV, the TV's own refresh setting matters: 60 Hz is right for this game.
@@ -80,13 +93,13 @@ Digital (for TVs and receivers)* in F10 → Audio. Some TV/soundbar HDMI chains 
 
 **Xbox 360 textures not used** — the setup log says what it found (`Xbox 360 textures:`), and the game log says
 `Xbox texture map absent` when the setup found none. The folder must be `TRACKS/TexWizardX360/` in the game folder
-the setup was run on, and the setup must be run again after adding it. F10 → Xbox 360 → *Xbox 360 textures* must be
-on, and the *PC* look shows the original textures.
+the setup was run on, and the setup must be run again after adding it. F10 → Graphics → Advanced → *Xbox 360 textures* must be
+on.
 
 **A short hitch the first time you see something new** — each new shader is prepared the first time it is needed and
-then kept in your profile folder (`ShaderWarm/`), so it happens once per build. Since 2.0.4 the setup prepares them
-ahead (step 6, the shader warm-up); if the setup log says "shader warm-up: skipped", it could not, and the first
-drive hitches once as before.
+then kept in your profile folder (`ShaderWarm/`), so it happens once per build. The setup can prepare them
+ahead (step 6, the shader warm-up; off by default since 3.0); if the setup log says "shader warm-up: skipped", it did
+not, and the first drive hitches once as before.
 
 **An old app can't be moved to the Trash ("locked")** — an app built before 2.0.4 can hold copies of game files
 that have the Finder *Locked* flag (building again with 2.0.4 or later unlocks and replaces it by itself). In Terminal: `chflags -R nouchg "/Applications/NFS Most Wanted
@@ -95,10 +108,11 @@ Native.app"` (or wherever the app is), then delete it or build again. Apps built
 **Sparks and light trails missing** — the log line starting `core.nfsmw: sparks and light trails` says why; usually
 `XenonEffects.tpk` wasn't in the game folder's `scripts` folder when the setup ran (add it and build again).
 
-**Light pools missing** — F10 → Xbox 360 → *Light pools from lamps* must be on;
+**Light pools missing** — F10 → Graphics → Advanced → *Light pools from lamps* must be on;
 the log line starting `core.nfsmw: light pools` says whether the setup built them.
 
 ## Reporting a bug
 
-Open an issue with: your Mac model and macOS version, what you did, what you expected, and the log from `Logs/`.
+Open an issue with: your Mac model and macOS version, what you did, what you expected, and the log from `Logs/`
+(or ask in #help on the [Discord](https://discord.gg/d6HfMwdM9v)).
 Please do **not** attach game files or saves that contain game data.

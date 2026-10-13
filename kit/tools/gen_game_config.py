@@ -65,6 +65,7 @@ def render_header(cfg):
     lines.append("#define RECOMP_GUEST_SIZE %s" % c_hex(game["guest_size"]))
     lines.append("#define RECOMP_RESUMABLE_STACKS %d" %
                  int(cfg["translate"].get("resumable_stacks", False)))
+    lines.append("#define RECOMP_GAME_STORE_HOOKS %d" % int(cfg["translate"].get("store_hooks", True)))
     lines.append("#define RECOMP_CD_AUDIO_TRACKS %s" % c_string_list(cfg.get("media", {}).get("cd_tracks", [])))
     # Auxiliary modules the loader maps beside the image: {name, developer path, sha256, base, size}.
     lines.append("#define RECOMP_AUX_MODULE_COUNT %d" % len(cfg["aux_modules"]))
@@ -127,6 +128,7 @@ def render_cmake(cfg):
     lines.append('set(RECOMP_OVERRIDE_HEADER "%s")'
                  % (cfg["overrides_header"].as_posix() if cfg.get("overrides_header") else ""))
     lines.append("set(RECOMP_AUX_MODULES %s)" % ";".join(m["key"] for m in cfg["aux_modules"]))
+    lines.append("set(RECOMP_STORE_HOOKS %s)" % ("ON" if cfg["translate"].get("store_hooks", True) else "OFF"))
     lines.append('set(RECOMP_DEVELOPER_GAME_DIR "%s")' % cfg["developer_exe_path"].parent.as_posix())
     lines.append('set(RECOMP_DEVELOPER_EXE "%s")' % cfg["developer_exe_path"].as_posix())
     # [translate] native: C replacements for hot functions, compiled with the

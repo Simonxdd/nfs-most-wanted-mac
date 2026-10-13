@@ -1,5 +1,5 @@
 /* Lit smoke, stage 1 (run 14; design review/run14/smoke-realism-design.md 4 stage 1 and 7). Setting 'lit_smoke' (bool,
- * live; default off until the owner's eye check; Look Xbox 360 and PC: off through k_look_follow).
+ * live; default off until the owner's eye check).
  *
  * How the kind reaches the draw. Every EmitterSystem particle (tyre smoke, flare smoke, stacks, fog, steam) is drawn by
  * the one IDI_PARTICLES_FX pixel shader with the shared FX_SMK sprites, so the kind must come from the emitter. The
@@ -15,7 +15,7 @@
  *   242..244 = the emitter's world position, flares only (sml_source: the matrix translation +0x50, or the lowest
  *              particle when that translation is local - attached emitters, COMB14B).
  * 248 goes back to 0 right after the draw, so nothing reaches the rain or any other draw. The kit (host/gpu/metal/
- * smoke_light.h) turns the kind into the lit-smoke shader variant. Off (setting, Look, or an unknown emitter): the hook
+ * smoke_light.h) turns the kind into the lit-smoke shader variant. Off (setting, or an unknown emitter): the hook
  * only calls on and sets nothing (byte-identical draws).
  *
  * TEST ONLY: NFSMW_TEST_LITSMOKE_LOG=1 logs the first 20 marked draws and each key's first 3 (key, kind, emitter
@@ -39,19 +39,19 @@ static uint64_t g_sml_marked, g_sml_calls, g_sml_by_kind[SMK_KIND_MAX + 1], g_sm
 
 /* Run 15 tunnel2: with lit smoke off but soft particles on, fog (5) and vent steam (6) still tell the kit their kind
  * through private render state 241 (0 after the draw), so the plain soft fade gets the lit path's near-camera fade and
- * fog's wide fade (no hard sprite edges on the road in tunnels). Soft particles off (setting or Look): nothing set. */
+ * fog's wide fade (no hard sprite edges on the road in tunnels). Soft particles off (setting): nothing set. */
 static int g_sml_soft = -1;
 static uint32_t g_sml_soft_refresh;
 static int sml_soft_enabled(void) {
     if (g_sml_soft >= 0 && g_sml_soft_refresh-- > 0) return g_sml_soft;
     g_sml_soft_refresh = 256;
-    g_sml_soft = setting("soft_particles", 1) != 0;   /* Look Xbox 360 / PC read 0 (k_look_follow) */
+    g_sml_soft = setting("soft_particles", 1) != 0;
     return g_sml_soft;
 }
 static int sml_enabled(void) {
     if (g_sml_on >= 0 && g_sml_calls_to_refresh-- > 0) return g_sml_on;
     g_sml_calls_to_refresh = 256;
-    g_sml_on = setting("lit_smoke", 0) != 0;   /* Look Xbox 360 / PC read 0 (k_look_follow) */
+    g_sml_on = setting("lit_smoke", 0) != 0;
     return g_sml_on;
 }
 static void sml_rs(uint32_t state, uint32_t value) {
@@ -178,7 +178,7 @@ static void sml_end(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *in
     sml_end_inner(api, cpu, inv, user);
     if (k16) sml_rs(SMOKE_RS_ALPHAK, 0);
 }
-/* Installed in every Look: off is a pass-through (the setting is live). */
+/* Always installed: off is a pass-through (the setting is live). */
 static void smoke_light_init(const PopModApi *api) {
     const char *e = getenv("NFSMW_TEST_LITSMOKE_LOG");
     g_sml_log = e && !strcmp(e, "1");

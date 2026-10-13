@@ -1,5 +1,6 @@
 // mods_tests_main.cpp - runs every registered suite. Headless: no window, no
-// audio device, no application object. Run from the repository root.
+// audio device, no application object. Fixture paths resolve from the kit's
+// source folder (mods_test_source_path), so any working folder works.
 #include "mods_tests.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,11 +8,91 @@
 #include <map>
 #include <string>
 #include "../../platform/os.h"
+#include "../../runtime/x86.h"
+#ifndef _WIN32
+#include <pthread.h>
+#include <setjmp.h>
+#include <signal.h>
+#endif
 
 namespace {
 ModTestSuite *g_head = nullptr;
 int g_checks = 0, g_failures = 0;
+int g_skipped = 0;
+const char *g_skip_reason = nullptr;
+
+#ifndef _WIN32
+// A suite that crashes fails; it does not take the run down with it.
+//
+// Run 31 found the binary dying with SIGBUS inside the Lua suites (a Populous
+// address looked up on another game's image, then an unchecked -1 index into
+// the hook table), and every suite after that one - hooks, events, loader - had
+// silently never run while the totals still looked like a result. A fault on
+// the main thread while a suite runs now jumps back to the runner, which
+// records the suite as FAILED with the signal's name and goes on. A fault on
+// any other thread, or outside a suite, still ends the process as before.
+//
+// After a crash the process state is whatever the suite left (a held lock, a
+// half-reset registry), so a crash is always a failure to fix, never a pass;
+// later suites run so the rest of the picture is not lost.
+sigjmp_buf g_suite_jmp;
+volatile sig_atomic_t g_in_suite = 0;
+volatile sig_atomic_t g_crash_signal = 0;
+pthread_t g_main_thread;
+const int kCrashSignals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGABRT};
+
+void on_crash(int sig, siginfo_t *, void *) {
+    if (g_in_suite && pthread_equal(pthread_self(), g_main_thread)) {
+        g_in_suite = 0;
+        g_crash_signal = sig;
+        siglongjmp(g_suite_jmp, 1);
+    }
+    // Not a suite on the main thread: die of this signal, as before.
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+void install_crash_handlers() {
+    g_main_thread = pthread_self();
+    // Its own stack, so a suite that overflows the main stack is caught too.
+    static char alt[256 * 1024];
+    stack_t ss;
+    memset(&ss, 0, sizeof ss);
+    ss.ss_sp = alt;
+    ss.ss_size = sizeof alt;
+    sigaltstack(&ss, nullptr);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = on_crash;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    for (int sig : kCrashSignals)
+        sigaction(sig, &sa, nullptr);
+}
+
+const char *signal_name(int sig) {
+    switch (sig) {
+    case SIGSEGV: return "SIGSEGV";
+    case SIGBUS: return "SIGBUS";
+    case SIGILL: return "SIGILL";
+    case SIGFPE: return "SIGFPE";
+    case SIGTRAP: return "SIGTRAP";
+    case SIGABRT: return "SIGABRT";
+    default: return "a signal";
+    }
+}
+#endif
 } // namespace
+
+bool mod_test_have_populous_image() {
+    // Both of Populous's fixed routines are functions of this image.
+    return recomp_index_of(0x004ec6f0u) >= 0 && recomp_index_of(0x0040c690u) >= 0;
+}
+
+void mod_test_skip(const char *reason) {
+    if (!g_skip_reason)
+        g_skip_reason = reason;
+}
 
 void mod_test_register(ModTestSuite *s) {
     s->next = g_head;
@@ -88,14 +169,49 @@ int main() {
         }
         return false;
     };
+#ifndef _WIN32
+    install_crash_handlers();
+#endif
+    int ok = 0, failed = 0, crashed = 0;
     for (ModTestSuite *s = mod_test_suites(); s; s = s->next) {
         if (!selected(s->name))
             continue;
         int before = g_failures;
+        g_skip_reason = nullptr;
+        const char *crash = nullptr;
+#ifndef _WIN32
+        g_crash_signal = 0;
+        if (sigsetjmp(g_suite_jmp, 1) == 0) {
+            g_in_suite = 1;
+            s->fn();
+            g_in_suite = 0;
+        } else {
+            ++g_checks;
+            ++g_failures;
+            ++crashed;
+            crash = signal_name(g_crash_signal);
+            fprintf(stderr, "FAIL %s: crashed (%s)\n", s->name, crash);
+        }
+#else
         s->fn();
-        printf("%-34s %s\n", s->name, g_failures == before ? "ok" : "FAILED");
+#endif
+        if (crash) {
+            ++failed;
+            printf("%-34s FAILED (crashed: %s)\n", s->name, crash);
+        } else if (g_failures != before) {
+            ++failed;
+            printf("%-34s FAILED\n", s->name);
+        } else if (g_skip_reason) {
+            ++g_skipped;
+            printf("%-34s skipped (%s)\n", s->name, g_skip_reason);
+        } else {
+            ++ok;
+            printf("%-34s ok\n", s->name);
+        }
     }
-    printf("\n%d checks, %d failures\n", g_checks, g_failures);
+    printf("\n%d suites: %d ok, %d failed (%d crashed), %d skipped\n", ok + failed + g_skipped, ok,
+           failed, crashed, g_skipped);
+    printf("%d checks, %d failures\n", g_checks, g_failures);
     if (!g_failures)
         printf("all mod tests passed\n");
     return g_failures ? 1 : 0;

@@ -54,6 +54,12 @@ if(POP_HAVE_GEN)
     message(STATUS "Native overrides: ${RECOMP_OVERRIDE_HEADER}")
   endif()
   pop_optimize(recomp_gen 2)
+  # NFSMW run 31 (D-177): game.toml [translate] store_hooks = false -> the translated stores without the watch /
+  # dirty-range check (runtime/x86.h RECOMP_STORE_HOOKS); the kit's own code keeps it.
+  if(DEFINED RECOMP_STORE_HOOKS AND NOT RECOMP_STORE_HOOKS)
+    target_compile_definitions(recomp_gen PRIVATE RECOMP_STORE_HOOKS=0)
+    message(STATUS "Translated stores: no watch / dirty-range check (store_hooks = false)")
+  endif()
   # Auxiliary modules (game.toml [modules.aux.<key>]) are translated into
   # gen/aux-<key>/ with their own funcs.h and prefixed tables, so each is its
   # own library; their table.c registers with the runtime's module registry.
@@ -79,6 +85,9 @@ if(POP_HAVE_GEN)
     endif()
     target_compile_options(${aux_target} PRIVATE ${POP_WARN_GEN})
     pop_optimize(${aux_target} 2)
+    if(DEFINED RECOMP_STORE_HOOKS AND NOT RECOMP_STORE_HOOKS)
+      target_compile_definitions(${aux_target} PRIVATE RECOMP_STORE_HOOKS=0)
+    endif()
     list(APPEND POP_GEN_AUX_TARGETS ${aux_target})
     message(STATUS "Auxiliary module translation: ${dir}")
   endforeach()

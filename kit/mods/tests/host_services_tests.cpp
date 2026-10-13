@@ -400,7 +400,7 @@ MOD_TEST_SUITE(display_settings_apply_at_next_frame_without_epoch_change) {
 }
 MOD_TEST_SUITE(enhanced_preserves_selected_resolution) {
     setup();
-    MOD_CHECK(mods_display_load_modes("tools/recomp/baseline/classic-modes.json"));
+    MOD_CHECK(mods_display_load_modes(mods_test_source_path("tools/recomp/baseline/classic-modes.json").c_str()));
     mode_offers = 0;
     mods_display_init();
     MOD_CHECK_EQ(mode_offers, 0); // startup keeps the saved game mode

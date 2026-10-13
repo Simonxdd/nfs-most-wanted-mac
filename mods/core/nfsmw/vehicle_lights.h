@@ -365,11 +365,6 @@ static uint32_t vl_touching(const float *lo, const float *hi, uint32_t *out, uin
 
 static PopModStatus install_at(uint32_t addr, uint32_t ret, PopHookFn fn, int32_t mode, int slot);   /* nfsmw.c */
 static __attribute__((unused)) void vehicle_lights_install(const PopModApi *api) {
-    const char *e = getenv("NFSMW_TEST_MIRROR_FLARES");
-    if ((e && !strcmp(e, "1")) || g_hooks[99]) {   /* the TEST mirror flare probe wraps 00505380 (slot 99) */
-        api->log(api, "core.nfsmw: vehicle lights: not installed (the TEST mirror flare probe holds 00505380)");
-        return;
-    }
     const PopModStatus s = install_at(0x00505380u, 0x0074323au, vl_flare_hook, POP_HOOK_BEFORE, VL_SLOT);
     g_vl_hooked = s == POP_OK;
     char line[120];

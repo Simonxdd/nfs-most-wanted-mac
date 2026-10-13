@@ -59,16 +59,11 @@ struct D9Pipeline {
     // Changes whenever sampler_state, rs or rs_set may have: a draw passes it
     // on so the host can skip copying state it already holds. 0: unknown.
     uint64_t state_version = 0;
-    // Remaster A4-lite step 1 (host/gpu/state_delta.h): which entries changed since the last queued draw, so the
-    // queue can send a delta. Every writer of sampler_state, rs or rs_set calls one of the two below (there is no
-    // plain "changed" any more, so the compiler finds every site).
-    uint64_t state_dirty[8] = {};
-    void rs_changed(uint32_t i) {
-        state_dirty[(224 + i) >> 6] |= 1ull << ((224 + i) & 63);
+    // Every writer of sampler_state, rs or rs_set calls one of the two below.
+    void rs_changed(uint32_t) {
         bump_state_version();
     }
-    void ss_changed(uint32_t stage, uint32_t type) {
-        state_dirty[(stage * 14 + type) >> 6] |= 1ull << ((stage * 14 + type) & 63);
+    void ss_changed(uint32_t, uint32_t) {
         bump_state_version();
     }
     void bump_state_version() {

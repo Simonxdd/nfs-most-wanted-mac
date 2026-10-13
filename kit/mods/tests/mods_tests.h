@@ -24,18 +24,72 @@ int mod_test_failures();
     } name_##_reg_instance;                                                                        \
     static void name_##_run()
 
-// The build root this suite's artifacts live under: the game's build/ when
-// the tests run for a game outside the kit (RECOMP_BUILD_ROOT from CTest), else
-// the kit's own build/ relative to the working directory.
+// Where the suites find their files, from any working folder.
+//
+// Build artefacts (plugin fixtures, scratch trees, symbols): RECOMP_BUILD_ROOT
+// when set (CTest sets it), else the build root this binary sits in - it is
+// built as <build root>/recomp/mods_tests - else "build" under the working
+// folder, as before. Source fixtures (Lua scripts, baseline JSON): the kit's
+// source folder, RECOMP_KIT_DIR from the generated game_config.h. Before run 31's
+// fix the first was cwd-relative unless CTest ran it and the second always
+// was, so no single working folder satisfied both.
 #include <stdlib.h>
 #include <string>
+#include "game_config.h"
 inline std::string mods_test_build_root() {
     const char *root = recomp_env("BUILD_ROOT");
-    return root && *root ? root : "build";
+    if (root && *root)
+        return root;
+    static std::string from_exe = [] {
+        char exe[4096];
+        if (os_exe_path(exe, sizeof exe) != 0)
+            return std::string();
+        std::string dir = exe;
+        size_t slash = dir.find_last_of("/\\");
+        if (slash == std::string::npos)
+            return std::string();
+        dir.resize(slash); // <build root>/recomp
+        slash = dir.find_last_of("/\\");
+        if (slash == std::string::npos || dir.compare(slash + 1, std::string::npos, "recomp") != 0)
+            return std::string();
+        dir.resize(slash);
+        return dir;
+    }();
+    return from_exe.empty() ? "build" : from_exe;
 }
 inline std::string mods_test_build_path(const char *rel) {
     return mods_test_build_root() + "/" + rel;
 }
+inline std::string mods_test_source_path(const char *rel) {
+    return std::string(RECOMP_KIT_DIR) + "/" + rel;
+}
+
+// Marks the running suite as skipped, with the reason the runner prints, and
+// lets the suite return early. A suite that has already failed a check stays
+// FAILED. Use it for what this binary cannot have, never for a wrong answer.
+void mod_test_skip(const char *reason);
+
+// Some suites were written against Populous: The Beginning's image, the kit's
+// first game, and use its fixed addresses: main_loop_inner 0x004ec6f0 (the
+// turn routine, on_turn), load_objs 0x0040c690 (on_level_load), its menu,
+// settings and animation routines and its levels\\levl2001.dat. (The kit's
+// games/stub has no image at all.) On any other game's image those addresses
+// are not functions; looking one up gives -1, which run 31 of the NFSMW port
+// found indexed straight into the hook table (a SIGBUS that ended the run).
+// Such a suite calls MOD_TEST_NEEDS_POPULOUS_IMAGE() first and is reported
+// "skipped (needs the Populous image ...)" elsewhere. Game-independent suites
+// pick their targets at run time instead (hook_snapshot_tests.cpp,
+// overlay_tests.cpp's game_file()).
+#define MOD_TEST_POPULOUS_IMAGE_REASON                                                             \
+    "needs the Populous image: fixed addresses main_loop_inner 0x004ec6f0, load_objs 0x0040c690"
+bool mod_test_have_populous_image();
+#define MOD_TEST_NEEDS_POPULOUS_IMAGE()                                                            \
+    do {                                                                                           \
+        if (!mod_test_have_populous_image()) {                                                     \
+            mod_test_skip(MOD_TEST_POPULOUS_IMAGE_REASON);                                         \
+            return;                                                                                \
+        }                                                                                          \
+    } while (0)
 
 #define MOD_CHECK(x)                                                                               \
     do {                                                                                           \

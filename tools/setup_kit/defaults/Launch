@@ -25,6 +25,7 @@ app_resources="$app_bin/../Resources"
 app_profile="${RECOMP_PROFILE_DIR:-$HOME/Library/Application Support/NFS Most Wanted Native}"
 step="making the profile folder ($app_profile)"
 mkdir -p "$app_profile/Logs"
+mkdir -p "$app_profile/DataMods" 2>/dev/null || true   # 3.0: the data mods folder (the game also makes it)
 # Keep the ten newest logs (the new one makes eleven).
 ls -1t "$app_profile/Logs"/*.log 2>/dev/null | tail -n +11 | while IFS= read -r old; do rm -f "$old"; done
 app_stamp=$(date +%Y%m%d-%H%M%S)-$$
@@ -45,6 +46,12 @@ done
 # e.g. with other game files), before the game reads them; the ten newest copies are kept. A failed copy never stops
 # the game: it is said in the log.
 step="backing up your saves"
+# 3.0: the DataMods folder's fingerprint (path, size and time of every file; not the report the game writes there).
+datamods_print() {
+    (cd "$app_profile/DataMods" 2>/dev/null && find . -type f ! -name datamods-report.txt ! -name .DS_Store \
+        -exec stat -f '%N %z %m' {} + 2>/dev/null | LC_ALL=C sort | shasum -a 256 | cut -d' ' -f1)
+}
+saves_copied=0
 if [ -d "$app_profile/Documents" ]; then
     app_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_bin/../Info.plist" 2>/dev/null || echo '?')
     build_id="$app_version $(stat -f %m "$app_bin/../Info.plist" 2>/dev/null || echo 0)"
@@ -53,10 +60,29 @@ if [ -d "$app_profile/Documents" ]; then
         dest="$backups/$(date +%Y-%m-%d-%H%M%S) before $app_version"
         if mkdir -p "$dest" && cp -R "$app_profile/Documents" "$dest/" 2>>"$app_log"; then
             echo "$build_id" >"$backups/last-build" 2>/dev/null || true
+            saves_copied=1
             echo "[launch] saves copied to $dest (first start of this build)" >>"$app_log" 2>/dev/null || true
             ls -1d "$backups"/*/ 2>/dev/null | sort -r | tail -n +11 | while IFS= read -r old; do rm -rf "$old"; done
         else
             echo "[launch] the save backup failed (the game starts anyway)" >>"$app_log" 2>/dev/null || true
+        fi
+    fi
+    # 3.0: and a copy when the DataMods folder changed since the last start (a data mod can make careers saved
+    # without it unreadable, GLOBAL/attributes.bin above all), unless this start has copied them already.
+    dm_print=$(datamods_print || true)
+    dm_empty=$(printf '' | shasum -a 256 | cut -d' ' -f1)
+    if [ -n "$dm_print" ] && [ "$(cat "$backups/last-datamods" 2>/dev/null || echo "$dm_empty")" != "$dm_print" ]; then
+        if [ "$saves_copied" = 1 ]; then
+            echo "$dm_print" >"$backups/last-datamods" 2>/dev/null || true
+        else
+            dest="$backups/$(date +%Y-%m-%d-%H%M%S) before DataMods change"
+            if mkdir -p "$dest" && cp -R "$app_profile/Documents" "$dest/" 2>>"$app_log"; then
+                echo "$dm_print" >"$backups/last-datamods" 2>/dev/null || true
+                echo "[launch] saves copied to $dest (the DataMods folder changed)" >>"$app_log" 2>/dev/null || true
+                ls -1d "$backups"/*/ 2>/dev/null | sort -r | tail -n +11 | while IFS= read -r old; do rm -rf "$old"; done
+            else
+                echo "[launch] the save backup failed (the game starts anyway)" >>"$app_log" 2>/dev/null || true
+            fi
         fi
     fi
 fi

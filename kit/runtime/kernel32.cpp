@@ -3079,7 +3079,7 @@ void sched_checkpoint() {
     static std::atomic<uint32_t> calls{0};
     const uint32_t n = calls.load(std::memory_order_relaxed) + 1;
     calls.store(n, std::memory_order_relaxed);
-    if ((n & (recomp_ab::old(recomp_ab::STRIDE) ? 0u : stride_mask)) != 0)
+    if ((n & stride_mask) != 0)
         return;
     if (threads().size() < 2 || t_atomic)
         return;

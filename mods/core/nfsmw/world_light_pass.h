@@ -11,7 +11,6 @@ static uint64_t g_x3sl_type_draws[16]; /* tagged draws per PC effect index (0 WO
 /* Test76: light pools - the WORLD effect's auxiliary-light pass for receivers (PC terrain pieces covering
  * USA AUX chops) and for Test67's verified instances drawn with WORLD. */
 static X3lr g_x3lr;
-#include "pool_prof.h"   /* TEST ONLY (Remaster P1): pool-pass counts/times, props toggle */
 static int g_x3lr_pass_ready;
 static uint32_t g_x3lr_values;
 static uint64_t g_x3lr_recv_items, g_x3lr_matrix_items, g_x3lr_recv_draws, g_x3lr_set_draws, g_x3lr_single_pass, g_x3lr_other_view;
@@ -88,8 +87,16 @@ static int x3sl_init(const PopModApi *api) {
 static void x3sl_render_item(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
     (void)inv; (void)user;
     uint32_t set = UINT32_MAX;
-    const uint32_t instance = get_u32(cpu->edi + 8);
-    const uint32_t matrix = get_u32(cpu->edi + 4); /* 0: the model is in world space */
+    /* the draw item {model, matrix, instance}: one guest_ptr for both words (run 31), the two reads as the fallback */
+    uint32_t instance, matrix;   /* matrix 0: the model is in world space */
+    void *item = NULL;
+    if (api->guest_ptr(api, cpu->edi + 4, 8, &item) == POP_OK && item) {
+        memcpy(&matrix, item, 4);
+        memcpy(&instance, (const uint8_t *)item + 4, 4);
+    } else {
+        instance = get_u32(cpu->edi + 8);
+        matrix = get_u32(cpu->edi + 4);
+    }
     void *p = NULL;
     uint8_t key[X3SL_KEY_BYTES];
     ++g_x3sl_items;
@@ -116,7 +123,17 @@ static void x3sl_render_item(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvoc
     if (after < before || after > X3SL_MAX_ENTRIES) after = before;
     uint32_t parts[64];
     if (after - before > 64) after = before + 64; /* one model: a handful of parts */
-    for (uint32_t i = before; i < after; ++i) parts[i - before] = get_u32(0x0093e878u + i * 0x44u);
+    /* R3 run 31 O2 (opt-design.md; kill RECOMP_OPT_HOOKFAST=0): the new entries in one guest_ptr over their span, not a
+     * guarded API call per word; the per-word reads stay as the fallback. */
+    static int x3sl_block = -1;
+    if (x3sl_block < 0) { const char *e = getenv("RECOMP_OPT_HOOKFAST"); x3sl_block = !(e && e[0] == '0'); }
+    void *span = NULL;
+    if (after > before && x3sl_block &&
+        api->guest_ptr(api, 0x0093e878u + before * 0x44u, (after - before - 1) * 0x44u + 4u, &span) == POP_OK && span) {
+        for (uint32_t i = before; i < after; ++i) memcpy(&parts[i - before], (const uint8_t *)span + (i - before) * 0x44u, 4);
+    } else {
+        for (uint32_t i = before; i < after; ++i) parts[i - before] = get_u32(0x0093e878u + i * 0x44u);
+    }
     sign_trace_item(api, instance, before, after);   /* Test145 */
     if (set != UINT32_MAX || g_x3lr_pass_ready) {
         float inv[12];
@@ -132,32 +149,42 @@ static void x3sl_render_item(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvoc
         /* Test113 module F: lights whose sphere meets the instance's world box (instance +0x00 min, +0x0c max),
          * nearest to the camera first, moved into each entry's space. */
         uint32_t m = 0, idx[CPL_MAX], nd = 0, didx[VL_ITEM_MAX];
-        float eye_world[3] = {0, 0, 0};
-        int have_eye_world = 0;
         ++g_cpl_items;
         if (p && before < X3SL_MAX_ENTRIES && g_entry_space[before] != 2) {
             const float *inst = (const float *)p;
             float eye[3] = {0, 0, 0}, viewm[16], vinv[12];
             const uint32_t cam = get_u32(0x009195e0u + 0x70u + 0x40u);
             int have_eye = 0;
-            if (cam) {
+            /* R3 run 31 (owner: "optimize x3sl_render_item now"; profile review/run31/profile): the view matrix is the
+             * same for every item of a frame, so it is read in one guest_ptr (was 16 guarded API calls per item) and
+             * its inverse and eye are reused while the 64 bytes are unchanged (compared byte for byte: exact). The
+             * per-float reads stay as the fallback; RECOMP_OPT_X3SL=0 keeps them always. */
+            static int x3sl_cam_fast = -1;
+            if (x3sl_cam_fast < 0) { const char *e = getenv("RECOMP_OPT_X3SL"); x3sl_cam_fast = !(e && e[0] == '0'); }
+            static float c_m[16], c_eye[3];
+            static uint32_t c_cam;
+            static int c_valid, c_have;
+            void *mp = NULL;
+            if (cam && x3sl_cam_fast && api->guest_ptr(api, cam, 64, &mp) == POP_OK && mp) {
+                if (!(c_valid && c_cam == cam && !memcmp(mp, c_m, sizeof c_m))) {
+                    memcpy(c_m, mp, sizeof c_m);
+                    c_cam = cam;
+                    c_valid = 1;
+                    c_have = 0;
+                    c_eye[0] = c_eye[1] = c_eye[2] = 0.0f;
+                    memcpy(viewm, c_m, sizeof viewm);
+                    if (x3lr_inverse_affine(viewm, vinv)) { x3lr_to_local(vinv, c_eye); c_have = 1; }
+                }
+                have_eye = c_have;
+                memcpy(eye, c_eye, sizeof eye);
+            } else if (cam) {
                 for (unsigned k = 0; k < 16; ++k) viewm[k] = get_float(cam + 4u * k);
                 if (x3lr_inverse_affine(viewm, vinv)) { x3lr_to_local(vinv, eye); have_eye = 1; }
             }
             nd = vl_touching(inst, inst + 3, didx, VL_ITEM_MAX);   /* vehicle_lights.h: 0 when off -> cap CPL_MAX */
             m = cpl_select_cap(&g_cpl, inst, inst + 3, have_eye ? eye : NULL, idx, g_ld_active ? g_ld_kind : NULL, CPL_MAX - nd);
-            if (have_eye) { memcpy(eye_world, eye, sizeof eye); have_eye_world = 1; }
         }
         const uint32_t mt = m + nd;   /* lamps, then car lights */
-        if (mt && g_pp_csv) {   /* TEST ONLY (P1): measure-only zero-contribution class of these entries */
-            uint8_t zc = 2;
-            if (p && before < X3SL_MAX_ENTRIES && g_entry_space[before] == 0 && have_eye_world) {
-                const float *inst = (const float *)p;
-                const float fe = g_cpl.params[1] + 1.0f;
-                zc = cpl_box_d2(eye_world, inst, inst + 3) >= fe * fe ? 1 : 0;
-            }
-            for (uint32_t i = before; i < after && i < X3SL_MAX_ENTRIES; ++i) g_pp_zclass[i] = zc;
-        }
         if (mt) {
             if (m) { ++g_cpl_lit_items; g_cpl_lights_sum += m; }
             float block[2 * CPL_MAX][4];
@@ -235,7 +262,6 @@ static uint32_t g_x3sl_values, g_x3sl_scratch, g_x3sl_prev_effect, g_x3sl_prev_a
 static uint32_t x3sl_fx(uint32_t id3dx, uint32_t slot) { return get_u32(get_u32(id3dx) + slot); }
 static void x3sl_restore_pass0(const PopModApi *api, uint32_t id3dx, int begun) {
     uint32_t r = 0;
-    if (begun) ++g_pp.restores_in_list; else ++g_pp.restores_list_end;   /* TEST ONLY (P1) */
     if (begun) {
         const uint32_t a1[] = {id3dx};
         api->guest_call(api, x3sl_fx(id3dx, 0x108), 0, a1, 1, &r);            /* EndPass */
@@ -433,7 +459,7 @@ static int cpl_fusion_on(void) {   /* 0 two-pass, 1 props only, 2 props and WORL
  * variant) stays two-pass. */
 static int cpl_fuse_for(unsigned k) {
     const int f = cpl_fusion_on();
-    return !g_pp_fusion_old && ((k == 2u && f >= 1) || (k == 0u && f >= 2));
+    return (k == 2u && f >= 1) || (k == 0u && f >= 2);
 }
 static void cpl_fuse_clear(const PopModApi *api, unsigned k, uint32_t id3dx) {
     void *dst = NULL;
@@ -463,7 +489,6 @@ static void cpl_world_entry(const PopModApi *api, X3lrPass *ps, uint32_t eeffect
         api->log(api, line);
     }
     if (!g_cpl_handles[k][0] || !g_cpl_handles[k][1] || !g_cpl_handles[k][2] || index >= X3SL_MAX_ENTRIES) return;
-    const uint64_t pp_t0 = g_pp_csv ? pp_now() : 0;   /* TEST ONLY (P1) */
     void *dst = NULL;
     if (api->guest_ptr(api, g_cpl_values, 18 * 16, &dst) != POP_OK || !dst) return;
     float *v = (float *)dst;
@@ -481,16 +506,7 @@ static void cpl_world_entry(const PopModApi *api, X3lrPass *ps, uint32_t eeffect
     for (unsigned h = 0; h < 3; ++h) {
         uint32_t r = 0;
         const uint32_t args[] = {id3dx, g_cpl_handles[k][h], g_cpl_values + voff[h], vsize[h]};
-        if (pp_t0) {   /* TEST ONLY (P1): repeated bytes for this pass, and each call's time */
-            static uint8_t last[3][3][256];
-            if (!memcmp(last[k][h], (const uint8_t *)dst + voff[h], vsize[h])) ++g_pp.sv_repeat[h];
-            memcpy(last[k][h], (const uint8_t *)dst + voff[h], vsize[h]);
-            const uint64_t t = pp_now();
-            api->guest_call(api, x3sl_fx(id3dx, 0x50), 0, args, 4, &r);      /* SetValue */
-            g_pp.sv_ns[h] += pp_now() - t;
-            ++g_pp.sv_calls;
-        } else
-            api->guest_call(api, x3sl_fx(id3dx, 0x50), 0, args, 4, &r);      /* SetValue */
+        api->guest_call(api, x3sl_fx(id3dx, 0x50), 0, args, 4, &r);      /* SetValue */
     }
     if (fuse) {   /* Remaster run 10: one pass; the kit fuses (or adds the pool pass natively) */
         g_cpl_fuse_pending[k] = 1;
@@ -506,30 +522,12 @@ static void cpl_world_entry(const PopModApi *api, X3lrPass *ps, uint32_t eeffect
         g_x3sl_prev_aux = 1;
     }
     ++g_cpl_draws;
-    if (pp_t0) {   /* TEST ONLY (P1) */
-        const uint32_t list = get_u32(0x00982a20u);
-        const int other = list && get_u32(list) != 0;
-        ++g_pp.sched[k < 3 ? k : 2][other];
-        const uint32_t nl = g_cpl_count[index];
-        ++g_pp.lamps[nl <= 8 ? nl : 8];
-        int black = 1;
-        for (uint32_t j = 0; j < nl && j < CPL_MAX; ++j)
-            black &= g_cpl_regs[index][2 * j + 1][0] <= 0.0f && g_cpl_regs[index][2 * j + 1][1] <= 0.0f &&
-                     g_cpl_regs[index][2 * j + 1][2] <= 0.0f;
-        if (v[70] <= 0.0f) ++g_pp.zero_strength;
-        else if (black) ++g_pp.zero_colour;
-        else if (other || g_pp_zclass[index] == 2) ++g_pp.zero_unknown;
-        else if (g_pp_zclass[index] == 1) ++g_pp.zero_fade;
-        else ++g_pp.maybe_lit;
-        g_pp.entry_ns += pp_now() - pp_t0;
-    }
 }
 static uint64_t g_mirror_pool_entries;   /* run 13: WORLD pool entries drawn in the mirror (mirror_pools) */
 static void x3lr_world_entry(const PopModApi *api, X3lrPass *ps, uint32_t entry, uint32_t eeffect, uint32_t index) {
     const uint32_t tag = x3lr_entry_recv(&g_x3lr, index, get_u32(entry));
     const uint32_t id3dx = get_u32(eeffect + 0x48);
-    if (tag == UINT32_MAX || !g_x3sl_pass_live || g_look == LOOK_PC || !id3dx) return;
-    if (g_pp_props_old && ps->type == 3u) { ++g_pp.props_skipped; return; }   /* TEST ONLY (P1) props toggle */
+    if (tag == UINT32_MAX || !g_x3sl_pass_live || !id3dx) return;
     /* Prop pools (WORLDNORMALMAP) in the main view only, as the WORLD pools below (P1, 7 Oct: 78 % of the prop pool
      * passes were in other views - mirror, reflections - most of them in the rare heavy frames that caused the
      * Rosewood frame drops). NFSMW_TEST_PROPS_ALLVIEWS=1 (TEST ONLY) keeps the earlier all-views behaviour. */
@@ -615,14 +613,12 @@ fused:
 }
 
 /* Call site 006e03e1 (006e0200's per-entry call of 006c6d10; esi = render entry). */
-static void fsp_entry(uint32_t eeffect);   /* fe_shadow_probe.h, TEST ONLY */
 static void x3sl_draw_entry(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
     (void)inv; (void)user;
     const uint32_t entry = cpu->esi;
     x3lr_restore_flag();
     if (entry < 0x0093e878u || (entry - 0x0093e878u) % 0x44u) return;
     const uint32_t eeffect = get_u32(entry + 0x10);
-    fsp_entry(eeffect);
     if (g_x3sl_pass_ready || g_x3lr_pass_ready) {
         if (g_x3sl_prev_aux && eeffect == g_x3sl_prev_effect && get_u32(eeffect + 0x48))
             x3sl_restore_pass0(api, get_u32(eeffect + 0x48), 1);
@@ -657,7 +653,7 @@ static void x3sl_draw_entry(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvoca
         const uint32_t type = eeffect ? get_u32(eeffect + 4) : 0xffu;
         ++g_x3sl_type_draws[type < 15u ? type : 15u];
     }
-    if (g_x3sl_pass_ready && g_x3sl_pass_live && g_look != LOOK_PC && normalmap && get_u32(eeffect + 0x48)) {
+    if (g_x3sl_pass_ready && g_x3sl_pass_live && normalmap && get_u32(eeffect + 0x48)) {
         const uint32_t id3dx = get_u32(eeffect + 0x48);
         static uint32_t cached_fx, handle;
         if (cached_fx != id3dx) {

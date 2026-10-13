@@ -18,7 +18,6 @@
 #include "../../platform/os.h"
 #include "../../platform/ab_phase.h"
 #include "../../platform/rprof.h"
-#include "state_delta.h"
 #include "../d3d_render.h"
 
 #include <atomic>
@@ -158,8 +157,6 @@ struct Command {
     uint32_t a = 0, b = 0, c = 0, d = 0;
     size_t at = 0;       // payload offset in the batch's bytes
     size_t state_at = 0; // a draw's sampler and render states, in the bytes
-    uint8_t state_kind = 0; // Remaster A4-lite: sdelta::Kind (LEGACY = today: state_at is a full table)
-    size_t verify_at = 0;   // RECOMP_REMASTER_SDELTA_VERIFY=1: a full copy to compare with (0: none)
     HostD9Draw draw{};
     HostD9TextureDesc desc{};
     HostD9Target target{};
@@ -173,26 +170,19 @@ struct Command {
 // how many batches it hands over, how many of those had to be made new and how often a batch's
 // byte buffer had to grow (a reallocation and copy on the game thread).
 static struct {
-    uint64_t draws, bytes, const_bytes, state_puts, state_bytes, batches, fresh, grows, state_deltas;
+    uint64_t draws, bytes, const_bytes, state_puts, state_bytes, batches, fresh, grows;
 } g_queue_stats;
-// Remaster A4-lite step 1: state-table deltas. OFF by default: the stable-bar A/B (6 Oct) showed no clear saving
-// (+0.04 / -0.14 ms, s.e. 0.18 / 0.10), so the owner rule keeps today's path. RECOMP_REMASTER_SDELTA=1 turns it on
-// (A/B switch sdelta). Verify mode sends a full copy with every draw and compares on the render thread (test only).
-static bool sdelta_on() {
-    static const bool v = [] {
-        const char *e = getenv("RECOMP_REMASTER_SDELTA");
-        return e && *e == '1';
+// R3 run 31 O5 (review/run29/opt-design.md; A/B switch drawring, kill RECOMP_OPT_DRAWRING=0): a recycled batch is
+// given the largest size a handed-over batch has had, on the render thread as it is cleared, so the game thread's
+// puts stop growing it (a reallocation and copy of everything already put) after the first frames.
+static bool drawring_on() {
+    static const bool on = [] {
+        const char *e = getenv("RECOMP_OPT_DRAWRING");
+        return !(e && e[0] == '0');
     }();
-    return v;
+    return on && !recomp_ab::old(recomp_ab::DRAWRING);
 }
-static bool sdelta_verify() {
-    static const bool v = [] {
-        const char *e = getenv("RECOMP_REMASTER_SDELTA_VERIFY");
-        return e && *e == '1';
-    }();
-    return v;
-}
-static std::atomic<uint64_t> g_sdelta_checked{0}, g_sdelta_mismatch{0};
+static std::atomic<size_t> g_batch_peak_bytes{0}, g_batch_peak_commands{0};
 
 struct Batch {
     std::vector<Command> commands;
@@ -200,12 +190,18 @@ struct Batch {
     // The last draw's state tables in `bytes`, reused while the version holds.
     uint64_t state_version = 0;
     size_t state_at = 0;
-    sdelta::Encoder sd; // Remaster A4-lite: per batch, so every batch starts with a full put
     void clear() {
         commands.clear();
         bytes.clear();
         state_version = 0;
-        sd.reset();
+        if (drawring_on()) {
+            const size_t pb = g_batch_peak_bytes.load(std::memory_order_relaxed);
+            const size_t pc = g_batch_peak_commands.load(std::memory_order_relaxed);
+            if (bytes.capacity() < pb)
+                bytes.reserve(pb);
+            if (commands.capacity() < pc)
+                commands.reserve(pc);
+        }
     }
     size_t put(const void *p, size_t n) {
         size_t at = bytes.size();
@@ -243,15 +239,8 @@ class RenderThread {
             return;
         }
         // Hand work over often enough that the worker keeps pace with the game.
-        // Remaster A4-lite: the hand-over size. 48 commands / 1 MB is today's; RECOMP_REMASTER_BATCH=<commands> sets
-        // another (bytes scale with it), and the A/B switch batch runs 48 in OLD periods. Same commands, same order.
-        static const size_t lim = [] {
-            const char *e = getenv("RECOMP_REMASTER_BATCH");
-            long v = e ? strtol(e, nullptr, 10) : 0;
-            return v >= 8 && v <= 4096 ? (size_t)v : (size_t)48;
-        }();
-        const size_t n = recomp_ab::old(recomp_ab::BATCH) ? 48 : lim;
-        if (filling_->commands.size() >= n || filling_->bytes.size() >= (n << 20) / 48)
+        // 48 commands or 1 MB per hand-over (run 31, D-176: the A4-lite size experiment is gone).
+        if (filling_->commands.size() >= 48 || filling_->bytes.size() >= ((size_t)1 << 20))
             hand_over();
     }
     // Everything queued has been encoded; the caller may use the backend.
@@ -342,6 +331,10 @@ class RenderThread {
     void hand_over() {
         if (filling_->commands.empty())
             return;
+        if (filling_->bytes.size() > g_batch_peak_bytes.load(std::memory_order_relaxed))
+            g_batch_peak_bytes.store(filling_->bytes.size(), std::memory_order_relaxed);
+        if (filling_->commands.size() > g_batch_peak_commands.load(std::memory_order_relaxed))
+            g_batch_peak_commands.store(filling_->commands.size(), std::memory_order_relaxed);
         std::unique_ptr<Batch> next;
         {
             std::lock_guard<std::mutex> lock(m_);
@@ -401,7 +394,6 @@ class RenderThread {
 
   public:
     void execute(Batch &b) {
-        sdelta::Tables sd_scratch; // Remaster A4-lite: the decoded tables, in command order within this batch
         for (Command &cmd : b.commands) {
             const uint8_t *base = b.bytes.data();
             switch (cmd.op) {
@@ -425,19 +417,7 @@ class RenderThread {
                 d.pconst = (const float *)take(d.pconst_count * 16u);
                 d.inline_vertices = take(d.inline_bytes);
                 d.inline_indices = take(d.inline_index_bytes);
-                const uint8_t *tables = sdelta::decode(sd_scratch, (sdelta::Kind)cmd.state_kind, base, cmd.state_at);
-                if (cmd.verify_at) {
-                    const uint64_t n = ++g_sdelta_checked;
-                    if (memcmp(tables, base + cmd.verify_at, sdelta::kBytes) != 0) {
-                        const uint64_t m = ++g_sdelta_mismatch;
-                        if (m <= 8)
-                            fprintf(stderr, "[remaster] sdelta VERIFY MISMATCH: draw kind %u (check %llu)\n",
-                                    (unsigned)cmd.state_kind, (unsigned long long)n);
-                    }
-                    if (n % 2000000 == 0)
-                        fprintf(stderr, "[remaster] sdelta verify: %llu draws checked, %llu mismatches\n",
-                                (unsigned long long)n, (unsigned long long)g_sdelta_mismatch.load());
-                }
+                const uint8_t *tables = base + cmd.state_at;   // the draw's full tables (ss | rs | set)
                 d.sampler_state = (const uint32_t *)tables;
                 d.render_state = (const uint32_t *)(tables + 16 * 14 * 4);
                 d.render_state_set = tables + 16 * 14 * 4 + 256 * 4;
@@ -765,27 +745,21 @@ static void queue_draw(const HostD9Draw *draw, bool rejected) {
     if (rejected)
         c.draw.pool_probe = 0;   // Remaster run 11
     {
-        const bool use_delta = !rejected && sdelta_on() && !recomp_ab::old(recomp_ab::SDELTA);
+        // The three state tables in full, or the batch's last ones again while the pipeline's state version holds
+        // (run 31, D-176: the A4-lite delta encoder is gone; this is the path every build has used).
+        static const uint32_t zs[16 * 14] = {}, zr[256] = {};
+        static const uint8_t zf[256] = {};
         const size_t before = b.bytes.size();
-        auto put = [&b](const void *p, size_t n) { return b.put(p, n); };
-        size_t at = 0;
-        const sdelta::Kind k = sdelta::encode(b.sd, put, draw->sampler_state, draw->render_state,
-                                              draw->render_state_set, draw->state_version, draw->state_dirty,
-                                              draw->pipeline_id, use_delta, &at);
-        c.state_kind = (uint8_t)k;
-        c.draw.state_dirty = nullptr; // the game thread's masks; the render thread never reads them
-        c.state_at = at;
+        if (!draw->state_version || draw->state_version != b.state_version) {
+            b.state_at = b.put(draw->sampler_state ? draw->sampler_state : zs, 16 * 14 * 4);
+            b.put(draw->render_state ? draw->render_state : zr, 256 * 4);
+            b.put(draw->render_state_set ? draw->render_state_set : zf, 256);
+            b.state_version = draw->state_version;
+        }
+        c.state_at = b.state_at;
         if (b.bytes.size() != before) {
             ++g_queue_stats.state_puts;
             g_queue_stats.state_bytes += b.bytes.size() - before;
-            g_queue_stats.state_deltas += k == sdelta::DELTA;
-        }
-        if (sdelta_verify() && !rejected) {
-            static const uint32_t zs[16 * 14] = {}, zr[256] = {};
-            static const uint8_t zf[256] = {};
-            c.verify_at = b.put(draw->sampler_state ? draw->sampler_state : zs, 16 * 14 * 4);
-            b.put(draw->render_state ? draw->render_state : zr, 256 * 4);
-            b.put(draw->render_state_set ? draw->render_state_set : zf, 256);
         }
     }
     ++g_queue_stats.draws;
@@ -847,10 +821,10 @@ void host_d9_present(uint32_t backbuffer, uint32_t width, uint32_t height) {
             const double f = 600.0;
             fprintf(stderr,
                     "d3d9 host: per frame %.0f draws, %.0f KB copied into the batch (constants %.0f KB, state "
-                    "tables %.0f KB in %.0f puts, %.0f deltas); %.1f batches, %.2f new, %.2f buffer growths\n",
+                    "tables %.0f KB in %.0f puts); %.1f batches, %.2f new, %.2f buffer growths\n",
                     g_queue_stats.draws / f, g_queue_stats.bytes / f / 1024.0, g_queue_stats.const_bytes / f / 1024.0,
                     g_queue_stats.state_bytes / f / 1024.0, g_queue_stats.state_puts / f,
-                    g_queue_stats.state_deltas / f, g_queue_stats.batches / f,
+                    g_queue_stats.batches / f,
                     g_queue_stats.fresh / f, g_queue_stats.grows / f);
             g_queue_stats = {};
         }

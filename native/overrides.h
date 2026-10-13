@@ -23,6 +23,19 @@
 /* The scenery shadow-caster test and its two box routines (Test150, native/shadow_cast.cpp). */
 #define FN_006d7a40 native_006d7a40 /* does an instance outside the view cast a shadow into it */
 
+/* The C runtime's float-to-integer helper (R3 run 29 O3, native/ftol.cpp). */
+#define FN_007c4b80 native_007c4b80 /* _ftol: ST0 -> int64 in EDX:EAX, truncated */
+
+/* Run 31 (owner: "optimize the top game functions natively"; review/run31/profile, native-design.md). */
+#define FN_00444fe0 native_00444fe0 /* copy a 4x4 float matrix (native/matcopy.cpp) */
+#define FN_006ced90 native_006ced90 /* rotate 8-byte render-list pairs (native/rotate.cpp) */
+#define FN_006da000 native_006da000 /* copy 12-byte draw items (native/drawitems.cpp) */
+
+/* Run 32 (the rest of review/run31/native-design.md). */
+#define FN_00504f70 native_00504f70 /* eModel::ApplyReplacementTextureTable (native/texreplace.cpp) */
+#define FN_006e0ab0 native_006e0ab0 /* append one render entry and its sort pair (native/render_entry.cpp) */
+#define FN_006c76e0 native_006c76e0 /* the light material shader constants (native/light_material.cpp; opt-in: no measured gain) */
+
 /* Opt-in USA movie QA; originals remain the default path. */
 #define FN_00542a40 native_00542a40 /* MoviePlayer::Play */
 #define FN_00525f70 native_00525f70 /* MoviePlayer::UpdateFunction */

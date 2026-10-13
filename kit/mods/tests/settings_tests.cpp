@@ -635,3 +635,27 @@ MOD_TEST_SUITE(settings_load_before_missing_symbols) {
     mods_display_reset();
     mods_settings_reset();
 }
+
+// Remaster run 29 (NFSMW D-163, the PC look retired): a saved value the range no longer offers gives the default,
+// whether the file is read before the declare or after it (an existing entry keeps its value), and the next save
+// drops it.
+MOD_TEST_SUITE(settings_retired_value_takes_default) {
+    fresh();
+    mods_settings_declare(2, "a.mod", "look", "Look", POP_SETTING_INT, 0, 0, 2);
+    MOD_CHECK_EQ(mods_settings_set(2, "look", 2), POP_OK);
+    mods_settings_reset();
+    MOD_CHECK(mods_settings_load(mods_settings_path()));
+    mods_settings_declare(2, "a.mod", "look", "Look", POP_SETTING_INT, 0, 0, 1);
+    int64_t v = -1;
+    MOD_CHECK_EQ(mods_settings_get(2, "look", &v), POP_OK);
+    MOD_CHECK_EQ(v, 0);
+    MOD_CHECK(mods_settings_load(mods_settings_path())); // the file still says 2: read again over the entry
+    MOD_CHECK_EQ(mods_settings_get(2, "look", &v), POP_OK);
+    MOD_CHECK_EQ(v, 0);
+    MOD_CHECK(mods_settings_save());
+    mods_settings_reset();
+    MOD_CHECK(mods_settings_load(mods_settings_path()));
+    mods_settings_declare(2, "a.mod", "look", "Look", POP_SETTING_INT, 0, 0, 2); // the old range again
+    MOD_CHECK_EQ(mods_settings_get(2, "look", &v), POP_OK);
+    MOD_CHECK_EQ(v, 0); // the save dropped the 2
+}

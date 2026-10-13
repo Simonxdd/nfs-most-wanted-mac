@@ -90,12 +90,15 @@ void run_turn() {
     c->r[R_ESP] -= 4;
     wr32(c->r[R_ESP], 0x00401000u);
     int32_t i = recomp_index_of(0x004ec6f0u);
-    recomp_hook_ptrs[i](c, (uint32_t)i);
+    MOD_CHECK(i >= 0); // -1 indexed the hook table: run 31's SIGBUS
+    if (i >= 0)
+        recomp_hook_ptrs[i](c, (uint32_t)i);
 }
 
 } // namespace
 
 MOD_TEST_SUITE(lua_reads_entities_through_the_view) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
     // Put two allocated entities where the view will find them, so "it read
     // entities" is a fact about content and not about a zero that happens to
@@ -109,7 +112,7 @@ MOD_TEST_SUITE(lua_reads_entities_through_the_view) {
         wr8(p + 42, 1);                       // allocated: kind
         wr16(p + 36, (uint16_t)(100 + slot)); // its id
     }
-    MOD_CHECK(!mods_lua_run_script(OWNER, "mods/tests/fixtures/good.lua"));
+    MOD_CHECK(!mods_lua_run_script(OWNER, mods_test_source_path("mods/tests/fixtures/good.lua").c_str()));
     run_turn();
 
     int64_t seen = -1, ids = -1;
@@ -121,8 +124,9 @@ MOD_TEST_SUITE(lua_reads_entities_through_the_view) {
 }
 
 MOD_TEST_SUITE(lua_error_disables_one_callback_not_the_mod) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
-    MOD_CHECK(!mods_lua_run_script(OWNER, "mods/tests/fixtures/bad.lua"));
+    MOD_CHECK(!mods_lua_run_script(OWNER, mods_test_source_path("mods/tests/fixtures/bad.lua").c_str()));
     run_turn();
     run_turn();
     MOD_CHECK_EQ(mods_lua_errors(), 1u); // errored once, then disabled
@@ -133,7 +137,7 @@ MOD_TEST_SUITE(lua_error_disables_one_callback_not_the_mod) {
 
 MOD_TEST_SUITE(lua_bindings_are_curated) {
     setup();
-    MOD_CHECK(!mods_lua_run_script(OWNER, "mods/tests/fixtures/good.lua"));
+    MOD_CHECK(!mods_lua_run_script(OWNER, mods_test_source_path("mods/tests/fixtures/good.lua").c_str()));
     MOD_CHECK_STR(mods_lua_eval(OWNER, "return type(pop.guest_read_u32)"), "function");
     // No guest-memory write access at any name, no hooks, no allocation.
     MOD_CHECK_STR(mods_lua_eval(OWNER, "return type(pop.guest_write_u32)"), "nil");
@@ -147,8 +151,9 @@ MOD_TEST_SUITE(lua_bindings_are_curated) {
 }
 
 MOD_TEST_SUITE(lua_dropping_a_mod_unsubscribes_first) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
-    MOD_CHECK(!mods_lua_run_script(OWNER, "mods/tests/fixtures/good.lua"));
+    MOD_CHECK(!mods_lua_run_script(OWNER, mods_test_source_path("mods/tests/fixtures/good.lua").c_str()));
     run_turn();
     int64_t before = 0;
     MOD_CHECK(mods_lua_global_int(OWNER, "seen_entities", &before));
@@ -164,8 +169,9 @@ MOD_TEST_SUITE(lua_dropping_a_mod_unsubscribes_first) {
 // curated surface, which would otherwise ship untested: a binding that threw
 // or returned nil for everything would pass every test above.
 MOD_TEST_SUITE(lua_the_rest_of_the_surface_answers) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
-    MOD_CHECK(!mods_lua_run_script(OWNER, "mods/tests/fixtures/good.lua"));
+    MOD_CHECK(!mods_lua_run_script(OWNER, mods_test_source_path("mods/tests/fixtures/good.lua").c_str()));
 
     // Reads and symbols work outside a callback: they are not snapshots.
     uint32_t turn_addr = mods_symbol_global("simulation_turn");
@@ -223,8 +229,9 @@ MOD_TEST_SUITE(lua_the_rest_of_the_surface_answers) {
 // the thread the function was created on, so a collected coroutine would leave
 // the callback pointing at freed memory.
 MOD_TEST_SUITE(lua_a_registration_from_a_coroutine_survives_collection) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
-    MOD_CHECK(!mods_lua_run_script(OWNER, "mods/tests/fixtures/good.lua"));
+    MOD_CHECK(!mods_lua_run_script(OWNER, mods_test_source_path("mods/tests/fixtures/good.lua").c_str()));
     MOD_CHECK_STR(mods_lua_eval(OWNER,
                                 "co_seen = 0\n"
                                 "local f = coroutine.wrap(function()\n"
@@ -248,11 +255,12 @@ MOD_TEST_SUITE(lua_a_registration_from_a_coroutine_survives_collection) {
 // undo a teardown that had already finished, so both are refused while a mod
 // is closing.
 MOD_TEST_SUITE(lua_a_finalizer_cannot_change_anything_during_close) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
     mods_settings_declare(OWNER, "test.lua", "gc_probe", "Probe", POP_SETTING_INT, 7, 0, 100);
     // The script installs the finalizer and then fails, which is the loader's
     // rollback path: a mod whose script threw still has to be torn down.
-    const char *err = mods_lua_run_script(OWNER, "mods/tests/fixtures/finalizer.lua");
+    const char *err = mods_lua_run_script(OWNER, mods_test_source_path("mods/tests/fixtures/finalizer.lua").c_str());
     MOD_CHECK(err != nullptr);
     int64_t v = -1;
     MOD_CHECK_EQ(mods_settings_get(OWNER, "gc_probe", &v), POP_OK);
@@ -273,9 +281,10 @@ MOD_TEST_SUITE(lua_a_finalizer_cannot_change_anything_during_close) {
 
 // Every binding acts through the API instance its own mod was handed.
 MOD_TEST_SUITE(lua_acts_through_its_own_api) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
-    MOD_CHECK(!mods_lua_run_script(OWNER, "mods/tests/fixtures/good.lua"));
-    MOD_CHECK(!mods_lua_run_script(OWNER2, "mods/tests/fixtures/good.lua"));
+    MOD_CHECK(!mods_lua_run_script(OWNER, mods_test_source_path("mods/tests/fixtures/good.lua").c_str()));
+    MOD_CHECK(!mods_lua_run_script(OWNER2, mods_test_source_path("mods/tests/fixtures/good.lua").c_str()));
     // good.lua logs once as it loads, through whichever api it was given.
     MOD_CHECK_EQ(g_log_calls[OWNER], 1);
     MOD_CHECK_EQ(g_log_calls[OWNER2], 1);

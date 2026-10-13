@@ -8,10 +8,10 @@
 #include "../d3d9_msaa.h"
 #include "../../runtime/memory.h"
 #include "guest_abi.h"
-#include "../../host/gpu/metal/grass.h"   // run 14 grass blades (pure C++ parts)
 #include "../../host/gpu/metal/foundation.h"   // run 14 foundation F1/F3 (pure C++ parts)
 #include "../../host/gpu/metal/smoke_light.h"   // run 14 lit smoke (pure C++ parts)
 #include "../../host/gpu/metal/atmosphere.h"   // run 14 B1 height fog (pure C++ twin)
+#include "../../host/gpu/metal/surface.h"   // run 15 Wave B WB1b surface attachments (pure C++ parts)
 
 #include <array>
 #include <string>
@@ -895,294 +895,65 @@ static void test_water_shapes() {
     CHECK(!d9msl::water_find(bad, &at, &call));
 }
 
-// Remaster run 14 grass blades (kit/host/gpu/metal/grass.h, review/run14/grass-blades-design.md 5): root scatter density,
-// triangulation independence, shared-edge rule, slope cut, determinism, the vertex decoder, the cell cache and the two
-// shader patches (on a WORLD VS shaped like the census translation, work/census13/bay/090160e8e9a32890.vs.msl).
-// GRASS_MSL_OUT=<dir> GRASS_VS=<vs.msl> GRASS_PS=<ps.msl>: also writes the patched census pair for an offline
-// `xcrun metal -c` check.
-namespace gb {
-using remaster_grass::Layout;
-using remaster_grass::Mesh;
-struct Vtx {
-    float p[3], n[3];
-    uint8_t col[4];
-    float uv[2];
-};
-static_assert(sizeof(Vtx) == 36, "test vertex");
-static const uint8_t kDecl[] = {0, 0, 0, 0,  2, 0, 0, 0,    // POSITION0 FLOAT3 @0
-                                0, 0, 12, 0, 2, 0, 3, 0,    // NORMAL0 FLOAT3 @12
-                                0, 0, 24, 0, 4, 0, 10, 0,   // COLOR0 D3DCOLOR @24
-                                0, 0, 28, 0, 1, 0, 5, 0,    // TEXCOORD0 FLOAT2 @28
-                                0xff, 0, 0, 0, 17, 0, 0, 0};
-static d9sh::Program program() {
-    d9sh::Program p;
-    p.ok = true;
-    const uint32_t usage[4] = {0, 3, 10, 5};
-    for (uint32_t r = 0; r < 4; ++r) {
-        d9sh::DclIn d;
-        d.type = d9sh::R_INPUT;
-        d.index = r;
-        d.usage = usage[r];
-        p.inputs.push_back(d);
-    }
-    return p;
+// R3 run 17 Xbox 360 lens drops (ours): the six PC drop lines as the generator writes them (R1-dev warm seed
+// 792db7f5...msl), patched once; refused when a line is missing or the block appears twice.
+static const char *const kDropBody =
+    "    r[0] = (tx1.sample(sm1, ((t[0].xyzw)).xy));\n"
+    "    { float4 w_ = ((r[0].yyyy) * (c[0].zzzz) + (c[0].xxxx)); r[0].x = w_.x; }\n"
+    "    { float4 w_ = ((r[0].zzzz) * (c[0].wwww) + (c[0].yyyy)); r[0].y = w_.y; }\n"
+    "    { float4 w_ = ((r[0].wwww) * (c[1].xxxx)); r[0].w = w_.w; }\n"
+    "    r[1] = (tx0.sample(sm0, ((r[0].xyzw)).xy));\n"
+    "    { float4 w_ = ((r[1].xyzw) * (c[2].xxxx)); r[0].xyz = w_.xyz; }\n";
+static void test_raindrop_patch() {
+    const std::string head = "    float4 odepth = float4(vin.pos.z);\n", tail = "    oc[0] = ((r[0].xyzw));\n";
+    std::string p = head + kDropBody + tail;
+    CHECK(d9msl::raindrop_patch(&p));
+    CHECK(p.find("c[2].xxxx") == std::string::npos);                       // no x1.2 brightening
+    CHECK(p.find("r[0] = float4(r[1].xyz * rd_s, rd_o * c[1].x);") != std::string::npos);   // the game's fade kept
+    CHECK(p.find("rd_m.y * c[0].z + c[0].x, rd_m.z * c[0].w + c[0].y") != std::string::npos);   // and its refraction
+    CHECK(p.find(head) == 0 && p.find(tail) != std::string::npos);
+    CHECK(!d9msl::raindrop_patch(&p));                                      // once
+    std::string q = head + kDropBody + tail;
+    q.erase(q.find("    r[1] = (tx0"), strlen("    r[1] = (tx0.sample(sm0, ((r[0].xyzw)).xy));\n"));
+    CHECK(!d9msl::raindrop_patch(&q));                                      // a line missing
+    std::string twice = head + kDropBody + kDropBody + tail;
+    CHECK(!d9msl::raindrop_patch(&twice));                                  // ambiguous
 }
-// An n x n grid of quads over [0, size]^2 (z = slope x), two triangles each, as a list.
-struct Grid {
-    std::vector<Vtx> v;
-    std::vector<uint32_t> tri;
-    Mesh m;
-    Grid(int n, float size, float slope = 0.0f) {
-        const float nl = std::sqrt(1.0f + slope * slope);
-        for (int j = 0; j <= n; ++j)
-            for (int i = 0; i <= n; ++i) {
-                Vtx x = {};
-                x.p[0] = size * i / n; x.p[1] = size * j / n; x.p[2] = slope * x.p[0];
-                x.n[0] = -slope / nl; x.n[2] = 1.0f / nl;
-                x.col[0] = 10; x.col[1] = 200; x.col[2] = 30; x.col[3] = 255;
-                x.uv[0] = x.p[0] * 0.25f; x.uv[1] = x.p[1] * 0.25f;
-                v.push_back(x);
-            }
-        for (int j = 0; j < n; ++j)
-            for (int i = 0; i < n; ++i) {
-                const uint32_t a = j * (n + 1) + i, b = a + 1, c = a + n + 1, d = c + 1;
-                tri.insert(tri.end(), {a, b, d, a, d, c});
-            }
-        m.vb[0] = (const uint8_t *)v.data();
-        m.vb_bytes[0] = v.size() * sizeof(Vtx);
-        m.stride[0] = sizeof(Vtx);
-        m.ib = (const uint8_t *)tri.data();
-        m.ib_bytes = tri.size() * 4;
-        m.index_size = 4;
-        m.primitive = 4;
-        m.count = (uint32_t)tri.size() / 3;
-    }
-    std::vector<uint8_t> scatter(const Layout &L, float s, bool jitter = true) const {
-        std::vector<uint8_t> out;
-        for (int cy = -1; cy <= 2; ++cy)
-            for (int cx = -1; cx <= 2; ++cx)
-                remaster_grass::scatter_cell(m, L, tri.data(), tri.size() / 3, cx, cy, s, remaster_grass::kCell, 0.0f,
-                                             &out, jitter);
-        return out;
-    }
-};
-static std::vector<std::pair<float, float>> xy(const std::vector<uint8_t> &r, const Layout &L) {
-    std::vector<std::pair<float, float>> o;
-    for (size_t at = 0; at + L.stride <= r.size(); at += L.stride) {
-        float p[4];
-        memcpy(p, r.data() + at + L.in[L.pos].field, 16);
-        o.push_back({p[0], p[1]});
-    }
-    std::sort(o.begin(), o.end());
-    return o;
-}
-// The census WORLD VS shape (prelude cut): inputs, the vv loads, the body's first lines, the output block.
-static const char kVS[] =
-    "struct D9V2F { float4 pos [[position]]; float4 t7; };\n"
-    "struct D9VIn {\n"
-    "    float4 v0 [[attribute(0)]];\n"
-    "    float4 v1 [[attribute(1)]];\n"
-    "    float4 v2 [[attribute(2)]];\n"
-    "    float4 v3 [[attribute(3)]];\n"
-    "};\n"
-    "vertex D9V2F vs_main(D9VIn vin [[stage_in]], constant float4 *c [[buffer(16)]],\n"
-    "                     constant D9VSParams &P [[buffer(17)]]) {\n"
-    "    float4 ot[8] = {};\n"
-    "    float4 vv[16] = {};\n"
-    "    vv[0] = vin.v0 * P.ascale[0];\n"
-    "    vv[1] = vin.v1 * P.ascale[1];\n"
-    "    vv[2] = vin.v2 * P.ascale[2];\n"
-    "    vv[3] = vin.v3 * P.ascale[3];\n"
-    "    { float4 w_ = ((vv[3].xyzw) + (c[7].xyzw)); ot[0].xy = w_.xy; }\n"
-    "    { float4 w_ = ((-(vv[0].xyzw)) + (c[14].xyzw)); r[0].xyz = w_.xyz; }\n"
-    "    D9V2F o;\n"
-    "    o.pos = opos;\n"
-    "    return o;\n"
-    "}\n";
-static const char kPS[] =
-    "fragment D9PSOut ps_main(D9V2F vin [[stage_in]], constant float4 *c [[buffer(0)]]) {\n"
-    "    float4 odepth = float4(vin.pos.z);\n"
-    "    r[0] = (tx0.sample(sm0, ((t[0].xyzw)).xy));\n"
-    "    { float4 w_ = ((r[0].xyzw) * (iv[0].xyzw)); r[0].xyz = w_.xyz; }\n"
-    "    oc[0] = ((r[0].xyzw));\n"
-    "    float4 col = oc[0];\n"
-    "}\n";
-static std::string slurp(const char *path) {
-    std::string s;
-    if (FILE *f = path ? fopen(path, "rb") : nullptr) {
-        char b[4096];
-        for (size_t n; (n = fread(b, 1, sizeof b, f)) > 0;)
-            s.append(b, n);
-        fclose(f);
-    }
-    return s;
-}
-} // namespace gb
 
-static void test_grass_blades() {
-    using namespace gb;
-    const d9sh::Program vp = program();
-    Layout L;
-    CHECK(remaster_grass::make_layout(kDecl, sizeof kDecl, vp, &L));
-    CHECK(L.n == 4 && L.pos == 0 && L.nrm == 1 && L.tex == 3);
-    CHECK(L.in[0].wide && !L.in[1].wide && !L.in[2].wide && L.in[3].wide);
-    CHECK(L.stride == 16 + 8 + 8 + 16 + 8 && L.extra == 48);
-    {   // a type the decoder does not know: FORMAT
-        uint8_t bad[sizeof kDecl];
-        memcpy(bad, kDecl, sizeof bad);
-        bad[4] = 17;
-        Layout B;
-        CHECK(!remaster_grass::make_layout(bad, sizeof bad, vp, &B));
-    }
-    // (a) density on a flat 10 x 10 m quad within 5 %
-    const float s = 1.0f / std::sqrt(180.0f);
-    const Grid g2(1, 10.0f), g8(2, 10.0f);
-    const std::vector<uint8_t> r2 = g2.scatter(L, s);
-    const size_t n2 = r2.size() / L.stride;
-    CHECK(n2 > 0.95 * 18000 && n2 < 1.05 * 18000);
-    // (b) the same quad as 2 or 8 triangles: the same root XY set (and the same bytes, sorted)
-    const std::vector<uint8_t> r8 = g8.scatter(L, s);
-    CHECK(xy(r2, L) == xy(r8, L));
-    // (c) shared edges: no duplicates, also with lattice points exactly on the diagonals (no jitter)
-    {
-        const std::vector<std::pair<float, float>> a = xy(g8.scatter(L, 0.1f, false), L);
-        CHECK(std::adjacent_find(a.begin(), a.end()) == a.end());
-        // 100 x 100 lattice points over the quad, the outer edges by the top-left rule (bottom and right out; the top
-        // row is k x 0.1 = 10.000000000000002 in double, outside)
-        CHECK(a.size() == 9900 && std::binary_search(a.begin(), a.end(), std::make_pair(3.0f, 3.0f)));
-        const std::vector<std::pair<float, float>> b8 = xy(r8, L);
-        CHECK(std::adjacent_find(b8.begin(), b8.end()) == b8.end());
-        size_t diag = 0;
-        for (const auto &p : a)
-            diag += p.first == p.second;
-        CHECK(diag == 99);   // (k / 10, k / 10), k = 1..99 (two shared diagonals and the inner vertex): each once
-    }
-    // (d) a 70-degree slope gives none; 30 degrees still gives roots
-    CHECK(Grid(1, 10.0f, std::tan(70.0f * 3.14159265f / 180.0f)).scatter(L, s).empty());
-    CHECK(!Grid(1, 10.0f, std::tan(30.0f * 3.14159265f / 180.0f)).scatter(L, s).empty());
-    // (e) determinism; interpolated values: the flat quad's z = 0, normal (0, 0, 1), colour, uv = xy / 4, seed in [0, 1)
-    CHECK(g2.scatter(L, s) == r2);
-    {
-        bool ok = true;
-        for (size_t at = 0; at + L.stride <= r2.size(); at += L.stride) {
-            float p[4], t[4], e[2];
-            _Float16 n[4], cl[4];
-            memcpy(p, r2.data() + at, 16);
-            memcpy(n, r2.data() + at + 16, 8);
-            memcpy(cl, r2.data() + at + 24, 8);
-            memcpy(t, r2.data() + at + 32, 16);
-            memcpy(e, r2.data() + at + 48, 8);
-            ok = ok && p[2] == 0.0f && p[3] == 1.0f && (float)n[2] == 1.0f && std::fabs((float)cl[1] - 200 / 255.0f) < 2e-3f &&
-                 std::fabs(t[0] - p[0] * 0.25f) < 1e-4f && std::fabs(t[1] - p[1] * 0.25f) < 1e-4f && e[0] >= 0.0f &&
-                 e[0] < 1.0f && p[0] >= 0.0f && p[0] <= 10.0f && p[1] >= 0.0f && p[1] <= 10.0f;
-        }
-        CHECK(ok);
-    }
-    // (f) the decoder against vertex_format's Metal formats x ascale
-    {
-        float o[4];
-        auto is = [&](float a, float b, float c, float d) {
-            return std::fabs(o[0] - a) < 1e-5f && std::fabs(o[1] - b) < 1e-5f && std::fabs(o[2] - c) < 1e-5f &&
-                   std::fabs(o[3] - d) < 1e-5f;
-        };
-        const float f4[4] = {1.5f, -2.0f, 3.0f, 4.0f};
-        CHECK(remaster_grass::decode_input(0, (const uint8_t *)f4, o) && is(1.5f, 0, 0, 1));
-        CHECK(remaster_grass::decode_input(2, (const uint8_t *)f4, o) && is(1.5f, -2, 3, 1));
-        CHECK(remaster_grass::decode_input(3, (const uint8_t *)f4, o) && is(1.5f, -2, 3, 4));
-        const uint8_t c4[4] = {0x10, 0x20, 0x30, 0x40};
-        CHECK(remaster_grass::decode_input(4, c4, o) && is(0x30 / 255.0f, 0x20 / 255.0f, 0x10 / 255.0f, 0x40 / 255.0f));
-        CHECK(remaster_grass::decode_input(5, c4, o) && is(16, 32, 48, 64));
-        CHECK(remaster_grass::decode_input(8, c4, o) && is(16 / 255.0f, 32 / 255.0f, 48 / 255.0f, 64 / 255.0f));
-        const int16_t sh[4] = {-32768, 100, 32767, -32767};
-        CHECK(remaster_grass::decode_input(6, (const uint8_t *)sh, o) && is(-32767, 100, 0, 1));
-        CHECK(remaster_grass::decode_input(7, (const uint8_t *)sh, o) && is(-32767, 100, 32767, -32767));
-        CHECK(remaster_grass::decode_input(9, (const uint8_t *)(sh + 2), o) && is(1, -1, 0, 1));
-        CHECK(remaster_grass::decode_input(10, (const uint8_t *)sh, o) && is(-1, 100 / 32767.0f, 1, -1));
-        const uint16_t us[4] = {65535, 0, 32768, 1};
-        CHECK(remaster_grass::decode_input(11, (const uint8_t *)us, o) && is(1, 0, 0, 1));
-        CHECK(remaster_grass::decode_input(12, (const uint8_t *)us, o) && is(1, 0, 32768 / 65535.0f, 1 / 65535.0f));
-        const uint32_t u3 = 1023u | 5u << 10 | 0u << 20 | 3u << 30, d3 = 511u | 0x201u << 10 | 0u << 20 | 3u << 30;
-        CHECK(remaster_grass::decode_input(13, (const uint8_t *)&u3, o) && is(1023, 5, 0, 1));
-        CHECK(remaster_grass::decode_input(14, (const uint8_t *)&d3, o) && is(1, -1, 0, -1));
-        const _Float16 h4[4] = {(_Float16)1.5f, (_Float16)-2.0f, (_Float16)0.25f, (_Float16)8.0f};
-        CHECK(remaster_grass::decode_input(15, (const uint8_t *)h4, o) && is(1.5f, -2, 0, 1));
-        CHECK(remaster_grass::decode_input(16, (const uint8_t *)h4, o) && is(1.5f, -2, 0.25f, 8));
-        CHECK(!remaster_grass::decode_input(17, c4, o) && remaster_grass::format_bytes(17) == 0);
-        CHECK(remaster_grass::format_bytes(13) == 4 && remaster_grass::format_bytes(16) == 8);
-    }
-    // the cell cache: builds near cells once, draws them, evicts them when the eye leaves
-    {
-        remaster_grass::Blades b;
-        b.init(3);
-        std::vector<uint8_t> arena(b.page.size() * remaster_grass::kPage);
-        b.base = arena.data();
-        b.tick(1.0f);
-        std::vector<remaster_grass::Run> runs;
-        remaster_grass::Skip why = remaster_grass::FORMAT;
-        const float eye[3] = {5.0f, 5.0f, 1.5f};
-        CHECK(b.prepare(42, g8.m, kDecl, sizeof kDecl, vp, eye, &runs, &why));
-        CHECK(!runs.empty() && b.cells_built == 4 && b.roots_built > 0.95 * 18000 && b.roots_drawn == b.roots_built);
-        CHECK(!memcmp(arena.data() + runs[0].offset + 48 + 4, &b.time, 4));   // birth time
-        b.tick(1.1f);
-        CHECK(b.prepare(42, g8.m, kDecl, sizeof kDecl, vp, eye, &runs, &why) && b.cells_built == 4);
-        const float away[3] = {500.0f, 5.0f, 1.5f};
-        b.tick(1.2f);
-        CHECK(b.prepare(42, g8.m, kDecl, sizeof kDecl, vp, away, &runs, &why) && runs.empty());
-        b.tick(1.3f);
-        CHECK(b.chunks[42].cells.empty() && b.pages_used() == 0);
-        const D9GrassBlade G = b.params(0.001f);
-        CHECK(G.fade[0] == 25.0f && G.fade[1] == 35.0f && G.misc[1] == 3.0f && G.eye[0] == 500.0f);
-    }
-    // (g) the blade VS patch: once, [[vertex_id]] / buffer(19) / attribute(16), refused when t<slot> is written
-    {
-        std::string v = kVS;
-        CHECK(d9msl::grass_blade_vs_patch(&v, 0, 1, 3, 7));
-        CHECK(v.find("uint g_vid [[vertex_id]]") != std::string::npos && v.find("[[buffer(19)]]") != std::string::npos &&
-              v.find("float4 g_r [[attribute(16)]]") != std::string::npos);
-        CHECK(v.find("        vv[0].xyz = g_root + ") != std::string::npos && v.find("ot[7] = float4(g_t, g_seed") != std::string::npos);
-        CHECK(v.find("g_tx.sample(g_sm, vv[3].xy, level(2.0))") != std::string::npos);
-        CHECK(v.find("vv[0].xyz = g_root") < v.find("{ float4 w_ = ((vv[3].xyzw) + (c[7].xyzw))"));   // before the body
-        CHECK(!d9msl::grass_blade_vs_patch(&v, 0, 1, 3, 7));   // once
-        std::string w = kVS;
-        w.insert(w.find("    D9V2F o;\n"), "    ot[7] = vv[2];\n");
-        CHECK(!d9msl::grass_blade_vs_patch(&w, 0, 1, 3, 7));
-        CHECK(d9msl::grass_blade_vs_patch(&w, 0, 1, 3, 6));
-        std::string x = kVS;
-        CHECK(!d9msl::grass_blade_vs_patch(&x, 0, 1, 5, 7));   // no TEXCOORD0 load
-        // (h) blade PS: no discard, no alpha change; the shells keep their cut-out and get the fade-in decode
-        std::string p = std::string(kPS), q = p;
-        CHECK(d9msl::grass_ps_patch(&p, 7, true));
-        CHECK(p.find("discard_fragment") == std::string::npos && p.find("col.a =") == std::string::npos &&
-              p.find("col.rgb *= g_k;") > p.find("    float4 col = oc[0];\n") && p.find("tc[7].x") != std::string::npos);
-        CHECK(d9msl::grass_ps_patch(&q, 7) && q.find("g_end = floor(P.pad1 / 256.0)") != std::string::npos &&
-              q.find("discard_fragment") != std::string::npos);
-        std::string r = std::string(kPS);
-        r.insert(r.find("    float4 col"), "    r[1] = tc[7];\n");
-        CHECK(!d9msl::grass_ps_patch(&r, 7, true));
-        // variant keys differ from the plain and shell keys
-        d9msl::VertexVariant a, bb, sh;
-        bb.grass_blade = 7;
-        sh.grass = 7;
-        d9msl::PixelVariant pa, pb;
-        pb.grass_blade = 7;
-        CHECK(a.key() != bb.key() && sh.key() != bb.key() && pa.key() != pb.key());
-    }
-    // offline Metal compile input: the census pair, patched
-    if (const char *out = getenv("GRASS_MSL_OUT")) {
-        std::string v = gb::slurp(getenv("GRASS_VS")), f = gb::slurp(getenv("GRASS_PS"));
-        const bool vok = d9msl::grass_blade_vs_patch(&v, 0, 1, 3, 7), fok = d9msl::grass_ps_patch(&f, 7, true);
-        std::string sv = gb::slurp(getenv("GRASS_PS"));
-        const bool sok = d9msl::grass_ps_patch(&sv, 7);
-        CHECK(vok && fok && sok);
-        const std::pair<const char *, const std::string *> files[3] = {
-            {"/blade.vs.metal", &v}, {"/blade.ps.metal", &f}, {"/shell.ps.metal", &sv}};
-        for (const auto &kv : files)
-            if (FILE *fp = fopen((std::string(out) + kv.first).c_str(), "wb")) {
-                fputs(kv.second->c_str(), fp);
-                fclose(fp);
-            }
-    }
+// R3 run 22 (TEST) texture mip bias: plain 2D/cube lookups get bias(b), an existing bias(x) becomes bias(b + x),
+// level() / gradient lookups, non-tx textures and the shadow helper stay; nested lookups both biased; codes round-trip.
+static void test_mipbias_patch() {
+    CHECK(d9msl::mipbias_code(-0.585f) == 128 - 37 && d9msl::mipbias_value(d9msl::mipbias_code(-0.585f)) == -37 / 64.0f);
+    CHECK(d9msl::mipbias_code(-1.585f) == 128 - 101 && d9msl::mipbias_code(1.0f) == 192 && d9msl::mipbias_code(0.0f) == 128);
+    CHECK(d9msl::mipbias_code(-9.0f) == 1 && d9msl::mipbias_code(9.0f) == 255 && d9msl::mipbias_value(0) == 0.0f);
+    const std::string src =
+        "    r[0] = (tx1.sample(sm1, ((t[0].xyzw)).xy));\n"
+        "    r[1] = (tx12.sample(sm12, (tc[2]).xyz, bias((tc[2]).w)));\n"
+        "    r[2] = (tx0.sample(sm0, (tc[0]).xy, level((tc[0]).w)));\n"
+        "    r[3] = d9_orm.sample(sm0, t[0].xy);\n"
+        "    r[4] = d9_shadow(tx3, t[3]);\n"
+        "    r[5] = mytx0.sample(sm0, t[0].xy);\n"
+        "    r[6] = tx2.sample(sm2, tx1.sample(sm1, t[0].xy).xy);\n"
+        "    r[7] = tx0.sample(sm0, t[0].xy, int2(1, 0));\n";
+    std::string s = src;
+    uint32_t n = 99;
+    CHECK(d9msl::mipbias_patch(&s, d9msl::mipbias_code(-0.585f), &n) && n == 5);
+    CHECK(s.find("tx0.sample(sm0, t[0].xy, bias(-0.578125), int2(1, 0))") != std::string::npos);   // MSL order
+    CHECK(s.find("tx1.sample(sm1, ((t[0].xyzw)).xy, bias(-0.578125))") != std::string::npos);
+    CHECK(s.find("tx12.sample(sm12, (tc[2]).xyz, bias(-0.578125 + (tc[2]).w))") != std::string::npos);
+    CHECK(s.find("tx0.sample(sm0, (tc[0]).xy, level((tc[0]).w))") != std::string::npos);
+    CHECK(s.find("d9_orm.sample(sm0, t[0].xy);") != std::string::npos && s.find("d9_shadow(tx3, t[3]);") != std::string::npos);
+    CHECK(s.find("mytx0.sample(sm0, t[0].xy);") != std::string::npos);
+    CHECK(s.find("tx2.sample(sm2, tx1.sample(sm1, t[0].xy, bias(-0.578125)).xy, bias(-0.578125))") != std::string::npos);
+    std::string z = src;
+    CHECK(d9msl::mipbias_patch(&z, 0, &n) && n == 0 && z == src);                   // code 0: unchanged
+    std::string bad = "    r[0] = tx0.sample(sm0, (t[0].xy;\n";
+    CHECK(!d9msl::mipbias_patch(&bad, 100) && bad == "    r[0] = tx0.sample(sm0, (t[0].xy;\n");   // unclosed: refused
+    d9msl::PixelVariant a, b;
+    b.mipbias = 91;
+    CHECK(a.key() != b.key());
 }
+
 
 
 // Remaster run 14 foundation F1/F3 (review/run14/foundation-design.md 4.1 / 4.3 offline checks): the clip-register
@@ -1454,6 +1225,34 @@ static void test_foundation() {
         CHECK(std::fabs(dx - 0.0005f) < 1e-9f && std::fabs(dy + 0.001f) < 1e-9f);
         // a halfpix change of dx moves the geometry by dx x w / 2 pixels: the requested jitter
         CHECK(std::fabs(dx * 1000.0 / 2.0 - 0.25) < 1e-6 && std::fabs(-dy * 500.0 / 2.0 - 0.25) < 1e-6);
+        // R3 #2 J1 (run 20; technical-track.md 3.2): the units at 2560x1440
+        jitter_halfpix(0.25, -0.25, 2560.0, 1440.0, &dx, &dy);
+        CHECK(std::fabs(dx - 1.953125e-4f) < 1e-10f && std::fabs(dy - 3.4722222e-4f) < 1e-10f);
+        // J2: the halfpix change moves every projected point by (+jx, +jy) render pixels (x right, y down): pixel p
+        // then shows the scene at p - j (the bench's model)
+        {
+            const M4 VPj = mul(view(812.0, -40.0, 2300.0, 0.4), proj(1.0, 16.0 / 9.0, 0.5, 15000.0));
+            double worst = 0.0;
+            for (double jx : {-0.375, 0.125, 0.4})
+                for (double jy : {-0.2, 0.1111})
+                    for (int k = 0; k < 6; ++k) {
+                        const double X[3] = {812.0 + 3.0 * k, -40.0 + 0.7 * k, 2330.0 + 9.0 * k};
+                        float hx, hy;
+                        jitter_halfpix(jx, jy, 2560.0, 1440.0, &hx, &hy);
+                        double i0, j0, d0, i1, j1, d1;
+                        CHECK(pixel_of(VPj, X, 2560, 1440, 0.0, 0.0, &i0, &j0, &d0) &&
+                              pixel_of(VPj, X, 2560, 1440, hx, hy, &i1, &j1, &d1));
+                        worst = std::max({worst, std::fabs(i1 - i0 - jx), std::fabs(j1 - j0 - jy)});
+                    }
+            CHECK(worst < 1e-4);   // float halfpix: 1e-4 px
+        }
+        // J4/J5 note: the motion kernel's vector is (ndc x R - ndc) from the pixel centre (kFndSource fnd_body), so a
+        // parked R = I gives 0 whatever jc/jp are, and a pan gives the pan; jc/jp enter only the TEST reprojection
+        // counters (nj). The CPU twin motion() has no jitter inputs for that reason. R20J (run 20) measured it in game.
+        {
+            double ax, ay;
+            CHECK(motion(identity(), 100.0, 200.0, 0.73, 2560, 1440, 0.0, 0.0, &ax, &ay) && ax == 0.0 && ay == 0.0);
+        }
     }
     // (6) history resets
     {
@@ -1475,6 +1274,68 @@ static void test_foundation() {
         b.flags = 1;
         CHECK(camera_resets(a, b) == (RESET_PAUSE | RESET_CUT));
         CHECK(camera_resets(a, Camera{}) == RESET_NO_CAMERA);
+    }
+    // (Wave B WB1a) the parked gate's still flag: game frame advanced, < 1 mm, no turn
+    {
+        Camera a, b;
+        a.have = b.have = true;
+        a.V = b.V = V;
+        a.frame = 10;
+        b.frame = 11;
+        CHECK(camera_still(a, b));
+        b.frame = 10;
+        CHECK(!camera_still(a, b));   // paused: not still (the frame did not advance)
+        b.frame = 11;
+        b.V = view(1234.5 + 0.0005, -356.25, 41.0, 0.7);
+        CHECK(camera_still(a, b));
+        b.V = view(1234.5 + 0.002, -356.25, 41.0, 0.7);
+        CHECK(!camera_still(a, b));
+        b.V = view(1234.5, -356.25, 41.0, 0.7 + 1e-4);
+        CHECK(!camera_still(a, b));
+        CHECK(!camera_still(Camera{}, b));
+    }
+    // (Wave B WB1a) H-lag candidates: with VP_k = V_g x P, RG equals R; R maps this frame's clip of a world point to the
+    // previous frame's, R2 to the frame before that
+    {
+        const M4 V0 = view(1234.5, -356.25, 41.0, 0.7), V1 = view(1235.5, -356.0, 41.0, 0.71),
+                 V2 = view(1236.6, -355.7, 41.1, 0.72);
+        LagInputs li;
+        li.vp = mul(V2, P);
+        li.vp_prev = mul(V1, P);
+        li.vp_prev2 = mul(V0, P);
+        li.V = V2;
+        li.P = P;
+        li.V_prev = V1;
+        li.P_prev = P;
+        li.prev = li.prev2 = li.cam = true;
+        M4 R, R2, RG;
+        CHECK(lag_candidates(li, &R, &R2, &RG) == 7u);
+        double dmax = 0.0;
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j)
+                dmax = std::max(dmax, std::fabs(R.m[i][j] - RG.m[i][j]));
+        CHECK(dmax < 1e-9);
+        const double X[4] = {1250.0, -350.0, 45.0, 1.0};
+        const auto clip = [&](const M4 &m, double out[4]) {
+            for (int j = 0; j < 4; ++j)
+                out[j] = X[0] * m.m[0][j] + X[1] * m.m[1][j] + X[2] * m.m[2][j] + X[3] * m.m[3][j];
+        };
+        double c2[4], c1[4], c0[4];
+        clip(li.vp, c2);
+        clip(li.vp_prev, c1);
+        clip(li.vp_prev2, c0);
+        const double n2[4] = {c2[0] / c2[3], c2[1] / c2[3], c2[2] / c2[3], 1.0};
+        for (int pass = 0; pass < 2; ++pass) {
+            const M4 &M = pass ? R2 : R;
+            const double *want = pass ? c0 : c1;
+            double r[4];
+            for (int j = 0; j < 4; ++j)
+                r[j] = n2[0] * M.m[0][j] + n2[1] * M.m[1][j] + n2[2] * M.m[2][j] + n2[3] * M.m[3][j];
+            CHECK(std::fabs(r[0] / r[3] - want[0] / want[3]) < 1e-9 && std::fabs(r[1] / r[3] - want[1] / want[3]) < 1e-9 &&
+                  std::fabs(r[2] / r[3] - want[2] / want[3]) < 1e-9);
+        }
+        li.prev2 = li.cam = false;
+        CHECK(lag_candidates(li, &R, &R2, &RG) == 1u);
     }
 }
 
@@ -1926,12 +1787,590 @@ static void test_msaa_count() {
     CHECK(fit(4, none) == 1 && fit(2, none) == 1);
 }
 
+// ---- Run 15 Wave B (review/run15/waveb-plan.md P0): one test per package; each package owns its own function. ----
+// WB1b surface attachments: the S1 class/flag contract and the S0 oct normal round trip (< 0.1 degree).
+static void test_surface() {
+    using namespace remaster_fnd;
+    CHECK(MAT_UNKNOWN == 0 && MAT_ROAD == 1 && MAT_CAR_PAINT == 2 && MAT_GLASS == 5 && MAT_WATER == 6 && MAT_SKY == 10 &&
+          MAT_COUNT == 11);
+    CHECK((SURF_DYNAMIC | SURF_ALPHA_TEST | SURF_CAMERA_LOCKED | SURF_INSTANCED_W | SURF_EMISSIVE | SURF_DECAL) == 63);
+    double worst = 0.0;
+    for (int i = 0; i <= 64; ++i)
+        for (int j = 0; j < 128; ++j) {
+            const double th = M_PI * i / 64.0, ph = 2.0 * M_PI * j / 128.0;
+            const double n[3] = {std::sin(th) * std::cos(ph), std::sin(th) * std::sin(ph), std::cos(th)};
+            double u = 0, v = 0, m[3];
+            oct_encode(n, &u, &v);
+            CHECK(std::fabs(u) <= 1.0 && std::fabs(v) <= 1.0);
+            // through half precision (S0 is RGBA16F): 11-bit mantissa
+            const double hu = std::ldexp(std::round(std::ldexp(u, 11)), -11), hv = std::ldexp(std::round(std::ldexp(v, 11)), -11);
+            oct_decode(hu, hv, m);
+            const double d = std::min(1.0, n[0] * m[0] + n[1] * m[1] + n[2] * m[2]);
+            worst = std::max(worst, std::acos(d) * 180.0 / M_PI);
+        }
+    CHECK(worst < 0.1);
+    FndFrame f;
+    CHECK(!f.valid && f.reset == 0 && !f.motion && !f.s0 && !f.s1 && !f.s2 && !f.scene && !f.depth);
+    // ---- WB1b (surface.h): class values, priors, the variants' sources, the slot pick, the normal rows ----
+    using namespace remaster_surf;
+    CHECK(C_ROAD == MAT_ROAD && C_CAR_CHROME == MAT_CAR_CHROME && C_WORLD_NM == MAT_WORLD_NM && C_SKY == MAT_SKY &&
+          C_COUNT == MAT_COUNT && (SURF_DERIVED_N & 63) == 0);
+    CHECK(car_class(0.9f) == C_CAR_CHROME && car_class(0.3f) == C_CAR_PAINT && car_class(0.1f) == C_CAR_OTHER);
+    CHECK(prior(C_GLASS).rough < 0.4f && prior(C_WATER).rough < 0.4f && prior(C_CAR_PAINT).rough < 0.4f &&
+          prior(C_WORLD).rough > 0.4f && prior(C_SKY).f0 == 0.0f);
+    // a vs_2_0 with POSITION v0 and NORMAL v1: oPos = c0..c3 . v0, oT0 = v1
+    std::vector<uint32_t> w = {0xFFFE0200u, 0x0200001Fu, 0x80000000u, 0x900F0000u, 0x0200001Fu, 0x80000003u, 0x900F0001u};
+    for (int k = 0; k < 4; ++k)
+        w.insert(w.end(), {0x03000009u, 0xC0000000u | (1u << (16 + k)), 0x90E40000u, 0xA0E40000u | (uint32_t)k});
+    w.insert(w.end(), {0x02000001u, 0xE00F0000u, 0x90E40001u, 0x0000FFFFu});
+    const d9sh::Program &nvs = d9sh::program_for(smk::bytes(w)), &pp = d9sh::program_for(smk::ps()),
+                        &pvs = d9sh::program_for(smk::vs());
+    CHECK(nvs.ok && pp.ok);
+    d9msl::PixelVariant base;
+    base.depth_mask = 2;
+    std::string plain, src, why;
+    CHECK(d9msl::pixel_source(pp, base, &plain, &why));
+    d9msl::PixelVariant z = base;
+    z.surf = 0;
+    z.reactive = 0;
+    CHECK(z.key() == base.key() && d9msl::pixel_source(pp, z, &src, &why) && src == plain);   // off: byte-identical
+    CHECK(plain.find("d9s_") == std::string::npos && plain.find("[[color(4)]]") == std::string::npos);
+    d9msl::VertexVariant vz;
+    CHECK(vz.key() == d9msl::VertexVariant{}.key());
+    // the slot: 7 (the vertex program writes t0 only, the pixel program reads t0/t1); 6 when smoke holds t7
+    CHECK(d9msl::surf_slot(nvs, pp, d9msl::VertexVariant{}, base) == 7);
+    d9msl::VertexVariant vsm;
+    vsm.smoke = 1;
+    CHECK(d9msl::surf_slot(nvs, pp, vsm, base) == 6);
+    vsm = d9msl::VertexVariant{};
+    vsm.fefloor = 1;
+    CHECK(d9msl::surf_slot(nvs, pp, vsm, base) == -1);
+    // the vertex half: NORMAL0 x the rows at buffer(20) into t7; refused without NORMAL0
+    d9msl::VertexVariant vs7;
+    vs7.surf = 7;
+    std::string vsrc, vplain;
+    CHECK(d9msl::vertex_source(nvs, d9msl::VertexVariant{}, &vplain, &why) && vplain.find("d9surf") == std::string::npos);
+    CHECK(d9msl::vertex_source(nvs, vs7, &vsrc, &why));
+    CHECK(vsrc.find("constant float4 *d9surf [[buffer(20)]]) {") != std::string::npos &&
+          vsrc.find("    ot[7] = float4(vv[1].x * d9surf[0].xyz + vv[1].y * d9surf[1].xyz + vv[1].z * d9surf[2].xyz, 0.0);") <
+              vsrc.find("o.t4 = ot[4]; o.t5 = ot[5]; o.t6 = ot[6]; o.t7 = ot[7];"));
+    CHECK(vs7.key() != vz.key() && !d9msl::vertex_source(pvs, vs7, &vsrc, &why));
+    // the pixel half: outputs 4/5 (and 6), the block at buffer(6), the writes right before the return
+    for (uint8_t sv : {(uint8_t)1, (uint8_t)7})
+        for (uint8_t rv : {(uint8_t)0, (uint8_t)1, (uint8_t)3}) {
+            d9msl::PixelVariant v = base;
+            v.surf = sv;
+            v.reactive = rv;
+            CHECK(v.key() != base.key() && d9msl::pixel_source(pp, v, &src, &why));
+            CHECK(src.find("    float4 s0 [[color(4)]];\n    float4 s1 [[color(5)]];\n") != std::string::npos &&
+                  src.find("constant D9SurfParams &SFP [[buffer(6)]]") != std::string::npos &&
+                  src.find("static float2 d9s_oct(float3 n)") < src.find("fragment D9PSOut ps_main("));
+            CHECK((src.find("[[color(6)]]") != std::string::npos) == (rv != 0));
+            CHECK((src.find("dfdx(d9s_p)") != std::string::npos) == (sv == 1) &&
+                  (src.find("vin.t7.xyz") != std::string::npos) == (sv == 7));
+            CHECK(src.find("o.s1 = float4(SFP.tag.xyz, 0.0);") < src.rfind("    return o;\n}\n"));
+        }
+    d9msl::PixelVariant r2 = base;
+    r2.reactive = 2;
+    CHECK(d9msl::pixel_source(pp, r2, &src, &why) && src.find("buffer(6)") == std::string::npos &&
+          src.find("o.s2 = float4(saturate(max(o.c0.r, max(o.c0.g, o.c0.b))));") != std::string::npos);
+    r2.surf = 3;   // not a slot
+    CHECK(!d9msl::pixel_source(pp, r2, &src, &why));
+    // the normal rows: WVP = W x V x P with a rotated, uniformly scaled, translated W, a y-down camera and a D3D P
+    auto rot = [](double ax, double ay, double az, double a, double m[3][3]) {
+        const double l = std::sqrt(ax * ax + ay * ay + az * az), x = ax / l, y = ay / l, zz = az / l, c = std::cos(a),
+                     s = std::sin(a), t = 1 - c;
+        const double r[3][3] = {{t * x * x + c, t * x * y + s * zz, t * x * zz - s * y},
+                                {t * x * y - s * zz, t * y * y + c, t * y * zz + s * x},
+                                {t * x * zz + s * y, t * y * zz - s * x, t * zz * zz + c}};
+        memcpy(m, r, sizeof r);
+    };
+    double worst_n = 0.0;
+    for (int flip = 0; flip < 2; ++flip)
+        for (int trial = 0; trial < 6; ++trial) {
+            double Wr[3][3], Vr[3][3];
+            rot(1 + trial, 2 - trial, 0.5 + trial, 0.3 + 0.7 * trial, Wr);
+            rot(0.2, 1, -0.3 * trial, -0.5 + 0.4 * trial, Vr);
+            if (flip)   // a y-down view (det -1)
+                for (int i = 0; i < 3; ++i)
+                    Vr[i][1] = -Vr[i][1];
+            M4 Wm{}, Vm{}, Pm{};
+            const double sc = 0.5 + trial;
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) {
+                    Wm.m[i][j] = sc * Wr[i][j];
+                    Vm.m[i][j] = Vr[i][j];
+                }
+            Wm.m[3][0] = 10, Wm.m[3][1] = -3, Wm.m[3][2] = 7, Wm.m[3][3] = 1;
+            Vm.m[3][0] = -2, Vm.m[3][1] = 5, Vm.m[3][2] = 1, Vm.m[3][3] = 1;
+            Pm.m[0][0] = 1.2, Pm.m[1][1] = flip ? -1.6 : 1.6, Pm.m[2][2] = 1.0001, Pm.m[2][3] = 1, Pm.m[3][2] = -0.5;
+            const M4 M = mul(mul(Wm, Vm), Pm);
+            float c[16];
+            for (int r = 0; r < 4; ++r)
+                for (int k = 0; k < 4; ++k)
+                    c[4 * r + k] = (float)M.m[k][r];   // c[a + r] = column r of WVP
+            float T[12];
+            CHECK(normal_rows(c, Vm.m, T));
+            for (int k = 0; k < 8; ++k) {
+                const double n[3] = {std::cos(k * 0.9), std::sin(k * 1.7), std::cos(k * 2.3 + 1)};
+                double e[3], g[3];
+                for (int i = 0; i < 3; ++i) {
+                    e[i] = n[0] * Wr[0][i] + n[1] * Wr[1][i] + n[2] * Wr[2][i];   // the true world normal (rigid W)
+                    g[i] = n[0] * T[i] + n[1] * T[4 + i] + n[2] * T[8 + i];
+                }
+                const double le = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]),
+                             lg = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+                const double d = std::min(1.0, (e[0] * g[0] + e[1] * g[1] + e[2] * g[2]) / (le * lg));
+                worst_n = std::max(worst_n, std::acos(d) * 180.0 / M_PI);
+            }
+            Wm.m[0][0] *= 1.5;   // non-uniform scale: refused (derived normal)
+            const M4 M2 = mul(mul(Wm, Vm), Pm);
+            for (int r = 0; r < 4; ++r)
+                for (int k = 0; k < 4; ++k)
+                    c[4 * r + k] = (float)M2.m[k][r];
+            CHECK(!normal_rows(c, Vm.m, T));
+        }
+    CHECK(worst_n < 0.05);
+    D9SurfParams sp{};
+    CHECK(sizeof sp == 80);
+}
+// R3 #1 surface-normal basis (review/r3-design/technical-track.md 3.1, run 20): normal_rows against the game's camera
+// convention, a z-up world, the y-down view (det V3 = +1) and both P11 signs. N5 (non-uniform scale refused) is in
+// test_surface; N6 (the game's own block) below when the TEST log line has given one.
+namespace nbt {
+using namespace remaster_fnd;
+// world -> view of a level game camera at c with heading h (world z up): view x right, y down, z forward
+static M4 game_view(double cx, double cy, double cz, double h, double pitch = 0.0) {
+    const double f[3] = {std::cos(h) * std::cos(pitch), std::sin(h) * std::cos(pitch), std::sin(pitch)};
+    const double r[3] = {std::sin(h), -std::cos(h), 0.0};
+    const double d[3] = {f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]};   // f x r (down)
+    M4 v = identity();
+    const double *ax[3] = {r, d, f};
+    for (int j = 0; j < 3; ++j)
+        for (int i = 0; i < 3; ++i)
+            v.m[i][j] = ax[j][i];   // column j = view axis j in world (row-vector p_view = p_world x V)
+    for (int j = 0; j < 3; ++j)
+        v.m[3][j] = -(cx * ax[j][0] + cy * ax[j][1] + cz * ax[j][2]);
+    return v;
+}
+static M4 yawz(double t) {   // about world z (up): x -> (cos t, sin t, 0)
+    M4 r = identity();
+    r.m[0][0] = std::cos(t), r.m[0][1] = std::sin(t), r.m[1][0] = -std::sin(t), r.m[1][1] = std::cos(t);
+    return r;
+}
+static M4 dproj(double p11) {
+    M4 p{};
+    p.m[0][0] = 1.2, p.m[1][1] = p11, p.m[2][2] = 1.0001, p.m[2][3] = 1.0, p.m[3][2] = -0.5;
+    return p;
+}
+static void block(const M4 &wvp, float *c) {   // c[a + r] = column r of WVP
+    for (int r = 0; r < 4; ++r)
+        for (int k = 0; k < 4; ++k)
+            c[4 * r + k] = (float)wvp.m[k][r];
+}
+static void apply(const float *T, const double n[3], double o[3]) {   // n_w = n_o x T (rows of T at 0, 4, 8)
+    for (int i = 0; i < 3; ++i)
+        o[i] = n[0] * T[i] + n[1] * T[4 + i] + n[2] * T[8 + i];
+}
+static double det3(const M4 &a) {
+    return a.m[0][0] * (a.m[1][1] * a.m[2][2] - a.m[1][2] * a.m[2][1]) -
+           a.m[0][1] * (a.m[1][0] * a.m[2][2] - a.m[1][2] * a.m[2][0]) +
+           a.m[0][2] * (a.m[1][0] * a.m[2][1] - a.m[1][1] * a.m[2][0]);
+}
+} // namespace nbt
+
+static void test_surface_basis() {
+    using namespace nbt;
+    using remaster_surf::normal_rows;
+    // the camera helper is a proper game camera: det V3 = +1, world up -> view -y (up on screen)
+    {
+        const M4 V = game_view(802.2, 2303.8, 158.0, 0.7);
+        CHECK(std::fabs(det3(V) - 1.0) < 1e-12);
+        const double up[4] = {0, 0, 1, 0};
+        double o[4];
+        xform(up, V, o);
+        CHECK(std::fabs(o[1] + 1.0) < 1e-12 && std::fabs(o[0]) < 1e-12 && std::fabs(o[2]) < 1e-12);
+    }
+    // N1 identity: W = I at headings 0, 37, 90, 180 deg (and a pitched camera): T = I to 1e-5
+    for (double a : {0.0, 37.0, 90.0, 180.0})
+        for (double pitch : {0.0, -0.2}) {
+            const M4 V = game_view(802.2, 2303.8, 158.0, a * M_PI / 180.0, pitch);
+            float c[16], T[12];
+            block(mul(V, dproj(-1.6)), c);
+            CHECK(normal_rows(c, V.m, T));
+            double e = 0.0;
+            for (int k = 0; k < 3; ++k)
+                for (int i = 0; i < 3; ++i)
+                    e = std::max(e, std::fabs(T[4 * k + i] - (k == i ? 1.0 : 0.0)));
+            CHECK(e < 1e-5);
+        }
+    // N2 yawed instance (a placed model, W = yaw about up + translation): T = the 3x3 of W; road stays up exactly
+    for (double t : {30.0, 90.0, 180.0}) {
+        const double tr = t * M_PI / 180.0;
+        M4 W = yawz(tr);
+        W.m[3][0] = 812.0, W.m[3][1] = 2290.0, W.m[3][2] = 150.0;
+        const M4 V = game_view(802.2, 2303.8, 158.0, 0.4);
+        float c[16], T[12];
+        block(mul(mul(W, V), dproj(-1.6)), c);
+        CHECK(normal_rows(c, V.m, T));
+        double e = 0.0;
+        for (int k = 0; k < 3; ++k)
+            for (int i = 0; i < 3; ++i)
+                e = std::max(e, std::fabs(T[4 * k + i] - W.m[k][i]));
+        CHECK(e < 1e-5);
+        const double road[3] = {0, 0, 1}, wall[3] = {1, 0, 0};
+        double nr[3], nw[3];
+        apply(T, road, nr);
+        apply(T, wall, nw);
+        CHECK(std::fabs(nr[2] - 1.0) < 1e-5 && std::fabs(nr[0]) < 1e-5 && std::fabs(nr[1]) < 1e-5);
+        CHECK(std::fabs(nw[0] - std::cos(tr)) < 1e-5 && std::fabs(nw[1] - std::sin(tr)) < 1e-5 && std::fabs(nw[2]) < 1e-5);
+    }
+    // N3 the P11 sign: the same W, V with P11 = -1.6 and +1.6 give the same T
+    {
+        M4 W = yawz(0.9);
+        W.m[3][0] = 5.0;
+        const M4 V = game_view(10.0, 20.0, 3.0, 1.3, 0.1);
+        float c1[16], c2[16], T1[12], T2[12];
+        block(mul(mul(W, V), dproj(-1.6)), c1);
+        block(mul(mul(W, V), dproj(1.6)), c2);
+        CHECK(normal_rows(c1, V.m, T1) && normal_rows(c2, V.m, T2));
+        double e = 0.0;
+        for (int i = 0; i < 12; ++i)
+            e = std::max(e, (double)std::fabs(T1[i] - T2[i]));
+        CHECK(e < 1e-6);
+    }
+    // N4 mirrored W = diag(-1, 1, 1): accepted (unmirrored is assumed: surface.h normal_rows). The sign rule cannot see
+    // the mirror (P11's sign is unknown to it), so it returns T = W3 x (V3 D V3^T), D = diag(1, -1, 1): for a level
+    // camera that is the mirror x a flip of world up. The true normals are n x W3 (W3 orthogonal): road (0,0,1),
+    // wall (-1,0,0). Recorded as the known limit (the S1a census counts det(W) < 0 draws): road comes out DOWN.
+    {
+        M4 W = identity();
+        W.m[0][0] = -1.0;
+        const M4 V = game_view(802.2, 2303.8, 158.0, 0.4);
+        float c[16], T[12];
+        block(mul(mul(W, V), dproj(-1.6)), c);
+        CHECK(normal_rows(c, V.m, T));
+        const double road[3] = {0, 0, 1}, wall[3] = {1, 0, 0};
+        double nr[3], nw[3];
+        apply(T, road, nr);
+        apply(T, wall, nw);
+        CHECK(std::fabs(nr[2] + 1.0) < 1e-5);                          // the limit: road normal (0,0,-1), not (0,0,1)
+        CHECK(std::fabs(nw[0] + 1.0) < 1e-5 && std::fabs(nw[2]) < 1e-5);   // the wall happens to come out right
+    }
+    // N7 the vertex normal against the depth-derivative facet normal (the independent reference): a tilted plane under
+    // a yawed W, rendered by the test's own projection; the facet normal from three projected-and-unprojected points
+    // (what dfdx/dfdy of the view position give) vs normal_rows' world normal: < 1 deg
+    {
+        M4 W = yawz(0.6);
+        W.m[3][0] = 805.0, W.m[3][1] = 2310.0, W.m[3][2] = 157.0;
+        const M4 V = game_view(802.2, 2303.8, 158.5, 0.5, -0.15), P = dproj(-1.6);
+        float c[16], T[12];
+        block(mul(mul(W, V), P), c);
+        CHECK(normal_rows(c, V.m, T));
+        const double no[3] = {0.0, 0.3, 0.9539392};   // a 17.5-degree bank, unit length, in object space
+        double nw[3];
+        apply(T, no, nw);
+        // three object points on the plane through (0,0,0) with that normal -> world -> view; the facet normal in view,
+        // back to world through V3^T (the S0 path of a derived normal)
+        const double pts[3][4] = {{0, 0, 0, 1}, {1, 0, 0, 1}, {0, 0.9539392, -0.3, 1}};
+        double vw[3][4];
+        const M4 WV = mul(W, V);
+        for (int k = 0; k < 3; ++k)
+            xform(pts[k], WV, vw[k]);
+        const double a[3] = {vw[1][0] - vw[0][0], vw[1][1] - vw[0][1], vw[1][2] - vw[0][2]};
+        const double b[3] = {vw[2][0] - vw[0][0], vw[2][1] - vw[0][1], vw[2][2] - vw[0][2]};
+        double fv[3] = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+        double fw[3];
+        for (int i = 0; i < 3; ++i)
+            fw[i] = fv[0] * V.m[i][0] + fv[1] * V.m[i][1] + fv[2] * V.m[i][2];   // n_w = n_v x V3^T
+        const double lf = std::sqrt(fw[0] * fw[0] + fw[1] * fw[1] + fw[2] * fw[2]),
+                     ln = std::sqrt(nw[0] * nw[0] + nw[1] * nw[1] + nw[2] * nw[2]);
+        const double d = std::fabs(fw[0] * nw[0] + fw[1] * nw[1] + fw[2] * nw[2]) / (lf * ln);   // facet sign is winding
+        CHECK(std::acos(std::min(1.0, d)) * 180.0 / M_PI < 1.0);
+        CHECK(nw[2] > 0.9);   // and it still points up
+    }
+    // N6 the game's own block (run 20 R20N, Rosewood parked, "foundation surface block: frame 300"): the VP_k cluster's
+    // clip registers and the camera V the core mod sent, as logged. World geometry has W = I: T must be I to 1e-3. This
+    // is the case that tests the game's convention, not the test's own.
+    {
+        const float c[16] = {-0.770957947f, 0.366289318f, -0.00944759231f, 441.463776f, -0.0437870473f, -0.0549412072f,
+                             1.44307673f, -0.307125211f, -0.428203017f, -0.902493834f, -0.0473528877f, 3025.12793f,
+                             -0.428188711f, -0.902463734f, -0.0473513082f, 3025.52686f};
+        const double V[4][4] = {{-0.903193533, 0.0303072724, -0.428188711, 0},
+                                {0.429115683, 0.0380276404, -0.902463734, 0},
+                                {-0.0110680545, -0.998827755, -0.0473513082, 0},
+                                {517.184143, 0.212577194, 3025.52686, 1}};
+        float T[12];
+        double ortho = 1.0;
+        CHECK(normal_rows(c, V, T, &ortho) && ortho < 2e-3);
+        double e = 0.0;
+        for (int k = 0; k < 3; ++k)
+            for (int i = 0; i < 3; ++i)
+                e = std::max(e, std::fabs(T[4 * k + i] - (k == i ? 1.0 : 0.0)));
+        CHECK(e < 1e-3);
+        // and the game's V is a proper y-down camera: det V3 = +1, world up (z) maps to view -y within 3 deg of pitch
+        M4 Vm{};
+        memcpy(Vm.m, V, sizeof V);
+        CHECK(std::fabs(det3(Vm) - 1.0) < 1e-4 && V[2][1] < -0.99);
+    }
+}
+// WB2 MetalFX temporal: the reset policy and the spatial fallback (remaster_tmp, temporal.h).
+#include "../../host/gpu/metal/temporal.h"
+static void test_temporal() {
+    using namespace remaster_tmp;
+    using namespace remaster_fnd;
+    // the measured conventions (mfx_bench temporal-sign): +jitter, +1 motion scale
+    CHECK(kJitterSignX == 1.0f && kJitterSignY == 1.0f && kMotionScale == 1.0f);
+    // reset policy: every foundation reason except a pause; a new scaler; a gap in the temporal frames
+    CHECK(reset_reasons(0, false, 41, 42) == 0);
+    CHECK(reset_reasons(RESET_PAUSE, false, 41, 42) == 0);
+    for (uint32_t b : {RESET_CUT, RESET_JUMP, RESET_FOV, RESET_VP_INVALID, RESET_DISAGREE, RESET_GAP, RESET_RESIZE,
+                       RESET_NO_CAMERA})
+        CHECK(reset_reasons(b | RESET_PAUSE, false, 41, 42) == TRESET_FOUNDATION);
+    CHECK(reset_reasons(0, true, 41, 42) == TRESET_NEW_SCALER);
+    CHECK(reset_reasons(0, false, 0, 1) == TRESET_GAP);    // the first temporal frame
+    CHECK(reset_reasons(0, false, 40, 42) == TRESET_GAP);  // a spatial / A/B OLD / front-end frame in between
+    CHECK(reset_reasons(RESET_CUT, true, 0, 9) == (TRESET_FOUNDATION | TRESET_NEW_SCALER | TRESET_GAP));
+    // the spatial fallback, one reason at a time
+    Inputs ok;
+    ok.supported = true, ok.factor = 1.5, ok.min_scale = 1.0, ok.max_scale = 3.0, ok.frame = true;
+    ok.cw = ok.zw = ok.mw = 2560, ok.ch = ok.zh = ok.mh = 1440;
+    CHECK(check(ok) == REFUSE_NONE);
+    Inputs t = ok;
+    t.supported = false;
+    CHECK(check(t) == REFUSE_UNSUPPORTED);
+    t = ok, t.factor = 3.5;
+    CHECK(check(t) == REFUSE_SCALE);
+    t = ok, t.max_scale = 1.4;
+    CHECK(check(t) == REFUSE_SCALE);
+    t = ok, t.ab_old = true;
+    CHECK(check(t) == REFUSE_AB_OLD);
+    t = ok, t.frame = false;
+    CHECK(check(t) == REFUSE_NO_FRAME);
+    t = ok, t.mw = t.mh = 0;
+    CHECK(check(t) == REFUSE_NO_MOTION);
+    t = ok, t.zw = t.zh = 0;
+    CHECK(check(t) == REFUSE_NO_DEPTH);
+    t = ok, t.cs = 4;
+    CHECK(check(t) == REFUSE_MSAA);
+    t = ok, t.zs = 4;
+    CHECK(check(t) == REFUSE_MSAA);
+    t = ok, t.mw = 1280;
+    CHECK(check(t) == REFUSE_SIZE);
+    t = ok, t.zh = 720;
+    CHECK(check(t) == REFUSE_SIZE);
+    t = ok, t.mw = 3840, t.mh = 2160;   // R3 #2 J6: vectors at the output size while colour is at 1.5x below it
+    CHECK(check(t) == REFUSE_SIZE);
+    t = ok, t.usage_ok = false;
+    CHECK(check(t) == REFUSE_USAGE);
+    for (uint32_t r = 0; r < REFUSE_COUNT; ++r)
+        CHECK(std::string(refuse_name(r)) != "?");
+    // the scaler key: any field rebuilds
+    Key a, b;
+    a.iw = b.iw = 2560, a.ih = b.ih = 1440, a.ow = b.ow = 3840, a.oh = b.oh = 2160, a.color = b.color = 80, a.depth = b.depth = 260;
+    CHECK(a == b);
+    b.reactive = 10;
+    CHECK(a != b);
+    b = a, b.color = 115;
+    CHECK(a != b);
+    b = a, b.auto_exposure = true;
+    CHECK(a != b);
+    // exposure: float colour only, unless the TEST env says otherwise
+    CHECK(want_auto_exposure(true, -1) && !want_auto_exposure(false, -1));
+    CHECK(!want_auto_exposure(true, 0) && want_auto_exposure(false, 1));
+}
+// WB3 screen-space reflections: the CPU reference (remaster_ssr, ssr.h) on the synthetic ground + wall scene.
+#include "../../host/gpu/metal/ssr.h"
+static void test_ssr() {
+    using namespace remaster_ssr;
+    using namespace remaster_fnd;
+    // parameters: a D3D projection only; linear depth and the pixel <-> view round trip
+    {
+        SsrParams u;
+        CHECK(!ssr_params(identity(), identity(), 320, 180, 0, 0, 1.0, 1.0f, 0, &u));
+        const M4 P = d3d_projection(1.0, 16.0 / 9.0, 0.5, 1000.0);
+        CHECK(!ssr_params(P, M4{}, 320, 180, 0, 0, 1.0, 1.0f, F_SURF, &u));   // no camera: no world normals
+        CHECK(ssr_params(P, M4{}, 320, 180, 0, 0, 1.0, 1.0f, F_DEPTHN, &u));
+        CHECK(ssr_params(P, identity(), 320, 180, 0.25, -0.125, 1.0, 1.0f, F_SURF, &u));
+        CHECK(std::fabs(u.zn - 0.5f) < 1e-4f && u.steps == 40 && u.refine == 4 && u.thick == 0.015f);
+        const float d = (float)(P.m[2][2] + P.m[3][2] / 37.0);
+        CHECK(std::fabs(lin(d, u) - 37.0f) < 0.01f);
+        const V3 v = view_pos(100.5f, 40.5f, d, u), p = project(v, u);
+        CHECK(std::fabs(p.x - 100.5f) < 0.01f && std::fabs(p.y - 40.5f) < 0.01f && std::fabs(1.0f / p.z - 37.0f) < 0.01f);
+        CHECK(std::fabs(v.z - 37.0f) < 0.01f && v.y < 0.0f);   // the upper half of the screen is view y < 0 (y down)
+    }
+    // plane + wall, water ground (roughness 0.1): hit pixel within 1 px of the analytic mirror point
+    Synth sy = make_synth(MAT_WATER, 0.1f);
+    Images im = sy.images();
+    SsrParams u;
+    CHECK(ssr_params(sy.P, sy.V, sy.w, sy.h, 0, 0, 1.0, 1.0f, F_SURF | F_BACKFACE, &u));
+    int tested = 0, within = 0, sky = 0, sky_zero = 0, border = 0, border_ok = 0, full = 0;
+    float worst = 0.0f;
+    for (int y = sy.h / 2 + 1; y < sy.h; y += 3)
+        for (int x = 2; x < sy.w - 2; x += 5) {
+            Surf s;
+            const Hit r = ssr_trace_ref(im, u, x, y, &s);
+            if (im.depth[y * sy.w + x] >= 1.0f || sy.s1[4 * ((size_t)y * sy.w + x)] != MAT_WATER) {
+                CHECK(!s.ok && r.conf == 0.0f);   // the sky beyond the far plane, the matte wall
+                continue;
+            }
+            CHECK(s.ok);
+            float ax, ay;
+            if (synth_analytic(sy, u, x, y, &ax, &ay)) {
+                if (r.conf <= 0.0f)
+                    continue;   // faded to nothing (border / distance): no position to check
+                ++tested;
+                const float e = std::hypot(r.px - ax, r.py - ay);
+                worst = std::max(worst, e);
+                within += e <= 1.0f;
+                const float ux = r.px / sy.w, uy = r.py / sy.h;
+                const float edge = std::min(std::min(ux, 1 - ux), std::min(uy, 1 - uy));
+                if (edge < 0.05f) {
+                    ++border;
+                    border_ok += r.conf <= 0.5f + 1e-4f;
+                }
+                full += edge > 0.1f && r.conf > 0.99f;
+            } else {
+                // the reflected ray leaves past the wall's side (sky) with a margin: no hit
+                const V3 dir = normalize(view_pos(x + 0.5f, y + 0.5f, 0.5f, u));
+                const V3 g = dir * (2.0f / dir.y);
+                const V3 q = g + v3(dir.x, -dir.y, dir.z) * ((30.0f - g.z) / dir.z);
+                if (g.z < 30.0f && std::fabs(q.x) > 23.0f) {
+                    ++sky;
+                    sky_zero += r.conf == 0.0f;
+                }
+            }
+        }
+    fprintf(stderr, "ssr ref: %d hits tested, %d within 1 px (worst %.3f px), sky %d/%d zero, %d full\n", tested, within,
+            worst, sky_zero, sky, full);
+    CHECK(tested >= 100 && within == tested);
+    CHECK(sky >= 20 && sky_zero == sky);
+    CHECK(full >= 20);
+    // border fade: a wide wall puts hits near the screen sides (confidence <= the 10 % ramp)
+    {
+        Synth wd = make_synth(MAT_WATER, 0.1f, 0.0, 400.0f);
+        for (int y = sy.h / 2 + 1; y < sy.h; y += 2)
+            for (int x = 0; x < sy.w; x += 2) {
+                const Hit r = ssr_trace_ref(wd.images(), u, x, y);
+                if (r.conf <= 0.0f)
+                    continue;
+                const float ux = r.px / sy.w, uy = r.py / sy.h;
+                const float edge = std::min(std::min(ux, 1 - ux), std::min(uy, 1 - uy));
+                if (edge < 0.05f) {
+                    ++border;
+                    border_ok += r.conf <= edge / 0.1f + 1e-4f;
+                }
+            }
+        fprintf(stderr, "ssr ref: border %d/%d faded\n", border_ok, border);
+        CHECK(border >= 10 && border_ok == border);
+    }
+    // the wall (WORLD, matte) and the sky never receive
+    {
+        Surf s;
+        CHECK(ssr_trace_ref(im, u, sy.w / 2, sy.h / 2 - 10, &s).conf == 0.0f && !s.ok);
+        CHECK(ssr_trace_ref(im, u, 1, 1, &s).conf == 0.0f && !s.ok);
+    }
+    // the probe pixel: a ground pixel with a centred, confident hit
+    int px = sy.w / 2, py = -1;
+    for (int y = sy.h / 2 + 1; y < sy.h && py < 0; ++y)
+        if (ssr_trace_ref(im, u, px, y).conf > 0.99f)
+            py = y;
+    CHECK(py > 0);
+    if (py < 0)
+        return;
+    const Hit base = ssr_trace_ref(im, u, px, py);
+    // roughness: 0.3 fades, >= 0.4 is not a receiver
+    {
+        Synth r3 = make_synth(MAT_WATER, 0.3f), r4 = make_synth(MAT_WATER, 0.45f);
+        const Hit h3 = ssr_trace_ref(r3.images(), u, px, py);
+        Surf s4;
+        const Hit h4 = ssr_trace_ref(r4.images(), u, px, py, &s4);
+        CHECK(h3.conf > 0.0f && h3.conf < base.conf);
+        CHECK(!s4.ok && h4.conf == 0.0f);
+    }
+    // stale S0 (the last surface write is 2 % off the visible depth), emissive, a matte tag: no receiver
+    {
+        Synth st = sy;
+        st.s0[4 * ((size_t)py * st.w + px) + 3] *= 1.02f;
+        CHECK(ssr_trace_ref(st.images(), u, px, py).conf == 0.0f);
+        Synth em = sy;
+        em.s1[4 * ((size_t)py * em.w + px) + 2] = SURF_EMISSIVE;
+        CHECK(ssr_trace_ref(em.images(), u, px, py).conf == 0.0f);
+        Synth wo = make_synth(MAT_WORLD, 0.1f);
+        CHECK(ssr_trace_ref(wo.images(), u, px, py).conf == 0.0f);
+    }
+    // ROAD only with the TEST flag; car paint at half weight; Fresnel f0 at normal incidence, ~1 grazing
+    {
+        Synth rd = make_synth(MAT_ROAD, 0.1f);
+        CHECK(ssr_trace_ref(rd.images(), u, px, py).conf == 0.0f);
+        SsrParams ur = u;
+        ur.flags |= F_ROAD;
+        CHECK(std::fabs(ssr_trace_ref(rd.images(), ur, px, py).conf - base.conf) < 1e-6f);
+        Synth cp = make_synth(MAT_CAR_PAINT, 0.1f), gl = make_synth(MAT_GLASS, 0.1f);
+        Surf sc, sg;
+        const Hit hc = ssr_trace_ref(cp.images(), u, px, py, &sc), hg = ssr_trace_ref(gl.images(), u, px, py, &sg);
+        CHECK(sc.ok && sg.ok && std::fabs(sc.cw - 0.5f) < 1e-6f && sg.cw == 1.0f && sc.f0 == 0.05f && sg.f0 == 0.04f);
+        CHECK(std::fabs(hc.conf - hg.conf) < 1e-6f);
+        Surf n;
+        n.ok = true;
+        n.cw = 1.0f;
+        n.f0 = 0.04f;
+        n.pos = v3(0, 0, 10);
+        n.n = v3(0, 0, -1);
+        CHECK(std::fabs(fresnel(n) - 0.04f) < 1e-5f);
+        n.n = normalize(v3(0, -1, -0.02f));
+        CHECK(fresnel(n) > 0.85f);
+        CHECK(std::fabs(weight(sc, 1.0f, u) - 0.5f * fresnel(sc)) < 1e-6f && weight(sg, 0.0f, u) == 0.0f);
+        SsrParams u2 = u;
+        u2.strength = 2.0f;
+        CHECK(std::fabs(weight(sg, 0.5f, u2) - std::min(1.0f, fresnel(sg))) < 1e-6f);
+    }
+    // the world normal goes through V: a camera turned about its y axis traces the same picture
+    {
+        Synth yw = make_synth(MAT_WATER, 0.1f, 0.7);
+        SsrParams uy;
+        CHECK(ssr_params(yw.P, yw.V, yw.w, yw.h, 0, 0, 1.0, 1.0f, F_SURF | F_BACKFACE, &uy));
+        float dmax = 0.0f;
+        int same = 0, n = 0;
+        for (int y = sy.h / 2 + 1; y < sy.h; y += 7)
+            for (int x = 3; x < sy.w; x += 11) {
+                const Hit a = ssr_trace_ref(im, u, x, y), b = ssr_trace_ref(yw.images(), uy, x, y);
+                ++n;
+                same += (a.conf > 0.0f) == (b.conf > 0.0f);
+                if (a.conf > 0.0f && b.conf > 0.0f)
+                    dmax = std::max(dmax, std::hypot(a.px - b.px, a.py - b.py));
+            }
+        CHECK(same == n && dmax < 0.05f);
+    }
+    // TEST fallback: normals from the depth (no S0/S1) find the same mirror point on the flat ground
+    {
+        SsrParams ud = u;
+        ud.flags = F_DEPTHN;
+        Surf s;
+        const Hit h = ssr_trace_ref(im, ud, px, py, &s);
+        fprintf(stderr, "ssr ref: depth normals n %.4f %.4f %.4f hit %.2f %.2f (S0 %.2f %.2f) conf %.3f\n", s.n.x, s.n.y, s.n.z,
+                h.px, h.py, base.px, base.py, h.conf);
+        CHECK(s.ok && s.n.y < -0.99f && h.conf > 0.0f && std::hypot(h.px - base.px, h.py - base.py) < 1.0f);
+    }
+    // jitter: one render pixel is 2 / w in NDC (foundation.h jitter_halfpix), added to the halfpix
+    {
+        SsrParams uj;
+        CHECK(ssr_params(sy.P, sy.V, sy.w, sy.h, 0.3, -0.2, 1.0, 1.0f, F_SURF, &uj));
+        CHECK(std::fabs(uj.h[0] - u.h[0] - 0.6f / sy.w) < 1e-6f && std::fabs(uj.h[1] - u.h[1] - 0.4f / sy.h) < 1e-6f);
+    }
+}
+
 int main() {
+    test_surface();
+    test_surface_basis();
+    test_temporal();
+    test_ssr();
     test_msaa_count();
     test_volume_dds();
     test_lit_smoke();
     test_water_shapes();
-    test_grass_blades();
+    test_raindrop_patch();
+    test_mipbias_patch();
     test_foundation();
     test_atmosphere();
     mem_init();

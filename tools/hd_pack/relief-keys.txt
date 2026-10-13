@@ -1,0 +1,8 @@
+# Wall relief (albedo-height-v1): the five facade textures Setup makes a normal map for, from the HD pack's
+# albedo. Our own list, hashes only: key, family, polarity (dark_low: thin dark lines are low; light_low: the reverse).
+# key family polarity
+089fd9a200000000 concrete dark_low
+405880da00000000 concrete dark_low
+b523c3bd00000000 brick light_low
+764dea7900000000 concrete dark_low
+764d5d0c00000000 concrete dark_low

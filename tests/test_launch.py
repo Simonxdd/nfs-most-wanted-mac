@@ -67,6 +67,59 @@ def test_saves_backed_up_once_per_build(tmp_path):
     assert len([d for d in (prof / 'Save Backups').iterdir() if d.is_dir()]) == 1
 
 
+def _backups(prof):
+    return sorted(d.name for d in (prof / 'Save Backups').iterdir() if d.is_dir())
+
+
+def test_saves_backed_up_when_datamods_change(tmp_path):
+    """3.0: a changed DataMods folder copies the saves once (not again while it stays the same, not for the report
+    the game writes there); the first start of a build copies them already, so a DataMods change then adds none."""
+    prof = tmp_path / 'prof'
+    save = prof / 'Documents/NFS Most Wanted/NAME/NAME'
+    save.parent.mkdir(parents=True)
+    save.write_bytes(b'career')
+    game = 'echo "guest exit code:    0"\nexit 0\n'
+    run(tmp_path, game, wait=0.5)                          # first start of the build: one copy
+    assert len(_backups(prof)) == 1 and (prof / 'DataMods').is_dir()
+    attrs = prof / 'DataMods/GLOBAL/attributes.bin'
+    attrs.parent.mkdir(parents=True)
+    attrs.write_bytes(b'mod')
+    time.sleep(1.1)                                        # the copy's name has the second in it
+    r, log = run(tmp_path, game, wait=0.5)
+    names = _backups(prof)
+    assert len(names) == 2 and names[-1].endswith('before DataMods change') and 'DataMods folder changed' in log
+    assert (prof / 'Save Backups' / names[-1] / 'Documents/NFS Most Wanted/NAME/NAME').read_bytes() == b'career'
+    (prof / 'DataMods/datamods-report.txt').write_text('report')
+    run(tmp_path, game, wait=0.5)                          # unchanged (the report does not count): no copy
+    assert len(_backups(prof)) == 2
+    attrs.unlink()
+    time.sleep(1.1)
+    run(tmp_path, game, wait=0.5)                          # taken out again: a copy
+    assert len(_backups(prof)) == 3
+
+
+def test_datamods_no_saves_no_backup(tmp_path):
+    prof = tmp_path / 'prof'
+    (prof / 'DataMods/GLOBAL').mkdir(parents=True)
+    (prof / 'DataMods/GLOBAL/attributes.bin').write_bytes(b'mod')
+    r, log = run(tmp_path, 'echo "guest exit code:    0"\nexit 0\n', wait=0.5)
+    assert not (prof / 'Save Backups').exists() and r.returncode == 0
+
+
+def test_datamods_with_a_new_build_one_copy(tmp_path):
+    prof = tmp_path / 'prof'
+    save = prof / 'Documents/NFS Most Wanted/NAME/NAME'
+    save.parent.mkdir(parents=True)
+    save.write_bytes(b'career')
+    (prof / 'DataMods/GLOBAL').mkdir(parents=True)
+    (prof / 'DataMods/GLOBAL/attributes.bin').write_bytes(b'mod')
+    game = 'echo "guest exit code:    0"\nexit 0\n'
+    run(tmp_path, game, wait=0.5)                          # new build and a DataMods change: the build's copy only
+    assert len(_backups(prof)) == 1 and (prof / 'Save Backups/last-datamods').exists()
+    run(tmp_path, game, wait=0.5)
+    assert len(_backups(prof)) == 1
+
+
 def test_no_saves_no_backup(tmp_path):
     r, log = run(tmp_path, 'echo "guest exit code:    0"\nexit 0\n', wait=0.5)
     assert not (tmp_path / 'prof/Save Backups').exists() and r.returncode == 0

@@ -17,6 +17,12 @@
 // Nothing here draws the game itself. present_thread.cpp owns the swapchain
 // and d3d_render.cpp owns the Direct3D scene; this file owns the window, the
 // events and the lifetime.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_OSX
+void os_cursor_set_hidden(bool hidden);   // host/sdl/os_cursor_macos.mm (run 27: SDL alone left an idle arrow)
+#endif
 #include "../../mods/display_settings.h"
 #include "game_config.h"
 #include "../../runtime/layout.h"
@@ -388,6 +394,9 @@ void reconcile_os_cursor() {
         SDL_HideCursor();
     else
         SDL_ShowCursor();
+#if defined(__APPLE__) && TARGET_OS_OSX
+    ::os_cursor_set_hidden(hide);
+#endif
     g_os_cursor_hidden = hide;
 }
 std::atomic<bool> g_escape_held{false};
@@ -1646,7 +1655,80 @@ struct AppScript {
     bool on = false, started = false;
     uint32_t start_ms = 0;
     controls::PadState pad{};
+    // keyuntil (run 33): the step in progress
+    bool ku_started = false, ku_down = false;
+    uint32_t ku_since = 0, ku_pressed_at = 0, ku_presses = 0, ku_pressed_reads = 0;
+    // run 33: the last key press (time, the game's input reads) and since when its release has waited for a read
+    uint32_t key_down_ms = 0, key_down_reads = 0, release_waiting_since = 0;
 } g_app_script;
+
+uint32_t app_guest_u32(uint32_t a) {
+    if (!gm_valid(a, 4))
+        return 0;
+    const uint8_t *p = gm_ptr(a);
+    return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
+}
+
+void app_script_key(const HostScriptStep &step, bool down) {
+    const HostKeyMapping m = host_key_mapping_for_dik(step.dik);
+    if (!m.dik)
+        return;
+    PendingInput e;
+    e.kind = PendingInput::KEY;
+    e.key = m.mac;
+    e.down = down;
+    e.flags = current_modifier_flags();
+    apply_input(e);
+}
+
+// Run 33: keyuntil in the app runner, as in pop_smoke: 0 still pressing, 1 the claim holds, -1 it never did.
+int app_script_keyuntil(AppScript &s, const HostScriptStep &step, uint32_t now) {
+    if (!s.ku_started) {
+        s.ku_started = true;
+        s.ku_down = false;
+        s.ku_since = now;
+        s.ku_pressed_at = now - step.press_ms;
+        s.ku_presses = 0;
+    }
+    if (s.ku_down) {
+        if (host_script_key_release_ready(s.ku_pressed_at, s.ku_pressed_reads, now, host_input_read_count())) {
+            app_script_key(step, false);
+            s.ku_down = false;
+        }
+        return 0;
+    }
+    double v = host_script_fe_metric(step.name, app_guest_u32);
+    const bool passed = v >= 0 && (step.at_least ? v >= step.threshold : v > step.threshold);
+    if (!passed && now - s.ku_since < step.timeout_ms) {
+        if (now - s.ku_pressed_at >= step.press_ms) {
+            app_script_key(step, true);
+            s.ku_down = true;
+            s.ku_pressed_at = now;
+            s.ku_pressed_reads = host_input_read_count();
+            ++s.ku_presses;
+        }
+        return 0;
+    }
+    fprintf(stderr, "[app-script] keyuntil %s: %s after %u presses and %.1fs\n", step.name,
+            passed ? "reached" : "did NOT reach", s.ku_presses, (now - s.ku_since) / 1000.0);
+    s.ku_started = false;
+    return passed ? 1 : -1;
+}
+
+// Each change of the front-end screen that has the input, in the log (run 33; scripted runs only).
+void app_script_log_fe_screen(uint32_t now) {
+    static char last[64] = "";
+    static uint32_t polled_at = 0;
+    if (now - polled_at < 100)
+        return;
+    polled_at = now;
+    char screen[64];
+    host_script_fe_screen(app_guest_u32, screen, sizeof screen);
+    if (strcmp(screen, last)) {
+        snprintf(last, sizeof last, "%s", screen);
+        fprintf(stderr, "[app-script] fe screen: %s (at %.1fs)\n", screen[0] ? screen : "(none)", now / 1000.0);
+    }
+}
 
 bool app_script_load(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -1689,23 +1771,48 @@ void app_script_tick() {
         s.started = true;
         s.start_ms = now;
     }
+    app_script_log_fe_screen(now);
     while (s.next < s.steps.size() && now - s.start_ms >= s.steps[s.next].at_ms) {
+        if (s.steps[s.next].op == HOST_SCRIPT_KEYUNTIL) {
+            const uint32_t since = s.ku_started ? s.ku_since : now;
+            const int r = app_script_keyuntil(s, s.steps[s.next], now);
+            if (r == 0)
+                return;   // one key edge per tick; the steps after it wait
+            if (r < 0) {
+                s.next = s.steps.size();
+                boot_request_close("script readiness assertion timed out");
+                return;
+            }
+            s.start_ms += now - since;   // the steps after it keep their spacing
+            ++s.next;
+            return;
+        }
+        if (s.steps[s.next].op == HOST_SCRIPT_KEY && !s.steps[s.next].down) {
+            // run 33: a release waits until the game has read the press; the script clock waits with it
+            if (!host_script_key_release_ready(s.key_down_ms, s.key_down_reads, now, host_input_read_count())) {
+                if (!s.release_waiting_since)
+                    s.release_waiting_since = now;
+                return;
+            }
+            if (s.release_waiting_since) {
+                if (now - s.key_down_ms >= 250)   // only when the game was slower than the usual press
+                    fprintf(stderr, "[app-script] key %s held %u ms until the game read it\n", s.steps[s.next].name,
+                            now - s.key_down_ms);
+                s.start_ms += now - s.release_waiting_since;
+                s.release_waiting_since = 0;
+            }
+        }
+        if (s.steps[s.next].op == HOST_SCRIPT_KEY && s.steps[s.next].down) {
+            s.key_down_ms = now;
+            s.key_down_reads = host_input_read_count();
+        }
         const HostScriptStep &step = s.steps[s.next++];
         switch (step.op) {
         case HOST_SCRIPT_WAIT:
             break;
-        case HOST_SCRIPT_KEY: {
-            const HostKeyMapping m = host_key_mapping_for_dik(step.dik);
-            if (!m.dik)
-                break;
-            PendingInput e;
-            e.kind = PendingInput::KEY;
-            e.key = m.mac;
-            e.down = step.down != 0;
-            e.flags = current_modifier_flags();
-            apply_input(e);
+        case HOST_SCRIPT_KEY:
+            app_script_key(step, step.down != 0);
             break;
-        }
         case HOST_SCRIPT_PAD: {
             const int index = step.button;
             if (index < 13) {
@@ -1734,6 +1841,65 @@ void app_script_tick() {
                 fprintf(stderr, "[app-script] poke %08x = 0x%x (%u bytes; test)\n", step.addr, v, step.len);
             }
             break;
+        case HOST_SCRIPT_MOVE: {   // R3 run 17 TEST (D-119): the pointer to window point x,y, as a real motion event
+            if (!g_window)
+                break;
+            static float last_x = -1, last_y = -1;
+            SDL_MouseMotionEvent m{};
+            m.type = SDL_EVENT_MOUSE_MOTION;
+            m.windowID = SDL_GetWindowID(g_window);
+            m.which = 0;
+            m.x = float(step.x);
+            m.y = float(step.y);
+            m.xrel = last_x < 0 ? 0.0f : m.x - last_x;
+            m.yrel = last_y < 0 ? 0.0f : m.y - last_y;
+            last_x = m.x;
+            last_y = m.y;
+            handle_mouse_move(m);
+            int bw, bh, dw, dh;
+            window_sizes(&bw, &bh, &dw, &dh);
+            fprintf(stderr, "[app-script] move %d,%d points (window %dx%d points, %dx%d pixels)\n", step.x, step.y, bw, bh,
+                    dw, dh);
+            break;
+        }
+        case HOST_SCRIPT_WINDOW:   // R3 run 17 TEST (D-119): a resize to another aspect ratio, as a user's drag does
+            if (g_window) {
+                // A maximized or full-screen window ignores a size: leave those states first, as a user's drag does.
+                const SDL_WindowFlags fl = SDL_GetWindowFlags(g_window);
+                if (fl & SDL_WINDOW_FULLSCREEN)
+                    SDL_SetWindowFullscreen(g_window, false);
+                if (fl & SDL_WINDOW_MAXIMIZED)
+                    SDL_RestoreWindow(g_window);
+                SDL_SetWindowSize(g_window, step.x, step.y);
+                SDL_SyncWindow(g_window);
+                int bw, bh, dw, dh;
+                window_sizes(&bw, &bh, &dw, &dh);
+                fprintf(stderr, "[app-script] window %dx%d points requested: now %dx%d points, %dx%d pixels (was%s%s)\n",
+                        step.x, step.y, bw, bh, dw, dh, (fl & SDL_WINDOW_FULLSCREEN) ? " full screen" : "",
+                        (fl & SDL_WINDOW_MAXIMIZED) ? " maximized" : "");
+            }
+            break;
+        case HOST_SCRIPT_DUMPC: {   // R3 run 17 TEST (D-119): the composited frame as shown, to RECOMP_HOST_DUMP_DIR
+            const char *dir = recomp_env("HOST_DUMP_DIR");
+            HostCompletedComposite frame;
+            if (!dir || !*dir || !host_present_copy_composite(&frame)) {
+                fprintf(stderr, "[app-script] dumpc %s: unavailable (no dump dir, or no RGBA8/BGRA8 composite)\n", step.name);
+                break;
+            }
+            std::vector<uint8_t> rgb(size_t(frame.w) * frame.h * 3);
+            for (size_t i = 0; i < rgb.size() / 3; ++i)
+                memcpy(rgb.data() + i * 3, frame.rgba.data() + i * 4, 3);
+            char path[1024];
+            snprintf(path, sizeof path, "%s/app_%s_composite.ppm", dir, step.name);
+            const bool ok = host_write_ppm(path, rgb.data(), frame.w, frame.h);
+            const auto &sc = frame.layout.scene;
+            fprintf(stderr, "[app-script] dumpc %s %s: frame %llu class %d guest %dx%d drawable %dx%d scene %.4f,%.4f +%.1f,%.1f "
+                            "domain %d classic %d legacy %d\n",
+                    step.name, ok ? "written" : "FAILED", (unsigned long long)frame.frame_id, int(frame.cls), frame.guest_w,
+                    frame.guest_h, frame.w, frame.h, sc.scale_x, sc.scale_y, sc.offset_x, sc.offset_y, sc.domain_w,
+                    int(frame.layout.classic), int(frame.layout.legacy));
+            break;
+        }
         case HOST_SCRIPT_QUIT:
             fprintf(stderr, "[app-script] quit\n");
             boot_request_close("the test script asked to quit");

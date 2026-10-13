@@ -10,6 +10,7 @@
 #include "../../dx/host_api.h"
 
 MOD_TEST_SUITE(native_options_preserve_navigation_and_apply_controls) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     sched_set_guest_thread(true);
     mods_hooks_reset();
     mem_init();

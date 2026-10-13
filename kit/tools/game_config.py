@@ -156,6 +156,11 @@ def load(game_dir):
     resumable = translate.setdefault("resumable_stacks", False)
     if not isinstance(resumable, bool):
         raise ValueError("%s: [translate] resumable_stacks must be a boolean" % source)
+    # NFSMW run 31 (D-177): false compiles the translated stores without the watch / dirty-range check (a game
+    # that never opens a DirectDraw dirty range; the kit fails closed if one asks).
+    store_hooks = translate.setdefault("store_hooks", True)
+    if not isinstance(store_hooks, bool):
+        raise ValueError("%s: [translate] store_hooks must be a boolean" % source)
     alignment = translate.setdefault("function_alignment", 16)
     if type(alignment) is not int or alignment <= 0:
         raise ValueError("%s: [translate] function_alignment must be a positive integer" % source)

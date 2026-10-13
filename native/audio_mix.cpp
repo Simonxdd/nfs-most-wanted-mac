@@ -40,7 +40,7 @@ static int g_audio_native = -1;
 
 static int audio_native_on(X86 *c) {
     if (__builtin_expect(g_audio_native >= 0, 1))
-        return g_audio_native && !recomp_ab::old(recomp_ab::AUDIO); /* TEST ONLY in-run A/B */
+        return g_audio_native;
     const char *e = getenv("RECOMP_NATIVE");
     int want = !(e && e[0] == '0');
     const char *t = getenv("RECOMP_NATIVE_SELFTEST");

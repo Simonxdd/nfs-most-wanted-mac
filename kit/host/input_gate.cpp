@@ -213,10 +213,22 @@ bool pointer_correction(const HitResult &hit, int32_t *dx, int32_t *dy, bool del
                  g_drawable_x, g_drawable_y, g_layout.drawable_w, g_layout.drawable_h);
         return false;
     }
-    const double span_x = std::max(1, g_layout.drawable_w - 1);
-    const double span_y = std::max(1, g_layout.drawable_h - 1);
-    int64_t tx = p.left + int64_t(std::lround(g_drawable_x / span_x * (screen_w - 1)));
-    int64_t ty = p.top + int64_t(std::lround(g_drawable_y / span_y * (screen_h - 1)));
+    // R3 run 17 (D-119, the pointer offset after a resize to another aspect ratio): through the layout's scene
+    // rectangle, not the whole drawable. A Classic or letterboxed layout draws the game inside bars once the window's
+    // aspect differs from the mode's; spanning the whole drawable aimed the cursor at the window fraction while the
+    // picture (and WM_MOUSEMOVE, from the same scene) sat inside the bars. The compatibility full-frame layout
+    // (scale 1, offset 0, domain = the drawable) gives exactly the old physical mapping.
+    const SceneMapping &sc = g_layout.scene;
+    const bool scene_ok = std::isfinite(sc.scale_x) && sc.scale_x > 0 && std::isfinite(sc.scale_y) &&
+                          sc.scale_y > 0 && std::isfinite(sc.offset_x) && std::isfinite(sc.offset_y);
+    const double dom_w = scene_ok && sc.domain_w > 0 ? sc.domain_w : g_layout.drawable_w;
+    const double dom_h = scene_ok && g_layout.guest_h > 0 ? g_layout.guest_h : g_layout.drawable_h;
+    const double px = scene_ok ? (g_drawable_x - sc.offset_x) / sc.scale_x : g_drawable_x;
+    const double py = scene_ok ? (g_drawable_y - sc.offset_y) / sc.scale_y : g_drawable_y;
+    const double span_x = std::max(1.0, dom_w - 1);
+    const double span_y = std::max(1.0, dom_h - 1);
+    int64_t tx = p.left + int64_t(std::lround(std::clamp(px, 0.0, span_x) / span_x * (screen_w - 1)));
+    int64_t ty = p.top + int64_t(std::lround(std::clamp(py, 0.0, span_y) / span_y * (screen_h - 1)));
     // Enhanced composition publishes an explicit scene/HUD input domain.
     // Use that inverse mapping so the expanded world and fixed sidebar agree;
     // Classic retains main's physical-pointer mapping and loop health checks.

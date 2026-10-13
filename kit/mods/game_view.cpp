@@ -61,11 +61,11 @@ void mods_view_push() {
     Frame &f = t_view.frames.back();
     // Test71: a push comes with every mod callback (per draw on the render path), and the six
     // name lookups were most of its cost. The geometry is looked up again whenever the symbol
-    // tables change; the earlier phase of an in-run A/B (platform/ab_phase.h) looks it up each time.
+    // tables change.
     thread_local uint64_t seen = 0;
     thread_local uint32_t geometry[6];
     const uint64_t generation = mods_symbols_generation();
-    if (seen != generation || recomp_ab::old(recomp_ab::VIEW)) {
+    if (seen != generation) {
         geometry[0] = mods_symbol_global("entity_base");
         geometry[1] = mods_symbol_global_stride("entity_base");
         geometry[2] = mods_symbol_global_count("entity_base");

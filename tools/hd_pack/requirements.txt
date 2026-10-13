@@ -1,0 +1,22 @@
+# The HD texture pack's upscaler (tools/hd_pack), installed by hdpack.py into its own environment in the setup's
+# cache with --only-binary=:all: (ready-made wheels only). The set the owner's pack was made with (tools/a2,
+# knowledge INTAKE I4); spandrel from PyPI (the same 0.4.2 release). Licences: torch/torchvision BSD-3, spandrel MIT,
+# etcpak MIT, pillow MIT-CMU, numpy BSD.
+archspec==0.2.6
+einops==0.8.2
+etcpak==0.9.15
+filelock==4.0.12
+fsspec==2026.9.0
+Jinja2==3.1.6
+MarkupSafe==3.0.4
+mpmath==1.3.0
+networkx==3.7
+numpy==2.5.3
+pillow==12.3.0
+safetensors==0.8.0
+setuptools==84.0.0
+spandrel==0.4.2
+sympy==1.14.0
+torch==2.14.1
+torchvision==0.29.1
+typing_extensions==4.16.0

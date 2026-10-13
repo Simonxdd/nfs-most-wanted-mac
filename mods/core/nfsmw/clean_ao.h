@@ -3,7 +3,7 @@
  * of the clean chain (programs: tools/effects/gen_ssao.py). The host gives the projection (camera +0xbc/+0xc0 near and
  * far, +0xc4 vertical FOV, the frame's aspect), the strength (setting ssao_strength) and the TEST views; the manifest
  * gives the shape constants (AoParams, AoFade, AoBlur).
- * Off (setting ssao 0, the default; the Xbox 360 and PC looks force it through the Look-follow table): every clean_ao*
+ * Off (setting ssao 0): every clean_ao*
  * pass, the `recopy ao` line and the Ao constants are skipped before any device or effect call, and the AoA/AoB targets
  * are not made, so the frame is today's. An effect or manifest without the Ao parts = AO never on.
  * TEST ONLY: NFSMW_TEST_SSAO_VIEW=1 shows the blurred AO as grey, =2 the depth normals (blur skipped);
@@ -24,7 +24,7 @@ static uint64_t g_cc_ao_hist_frames, g_cc_ao_hist_resets;
 static int g_cc_ao_hist_made;      /* run 15: AoH (re)made since the last AO frame */
 static uint32_t g_cc_ao_meta_frame; /* run 16 TEST ssao meta: the game frame of this AO frame */
 static int g_cc_ao_ready;           /* effect has the Ao parameters and the manifest has ao passes */
-static int g_cc_ao_want;            /* setting ssao (read through setting(): the Look applies) */
+static int g_cc_ao_want;            /* setting ssao (read through setting(): the Mac preset applies) */
 static int g_cc_ao_on;              /* this frame draws the ao passes */
 static int g_cc_ao_targets_ok;      /* AoA/AoB made for this frame size */
 static int g_cc_have_depth;         /* cc_e_inputs: the depth copy is valid this frame */

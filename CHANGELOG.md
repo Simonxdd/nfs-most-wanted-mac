@@ -1,5 +1,40 @@
 # Changelog
 
+## 3.0.0 — HD textures made on your Mac
+
+- **One look:** the *Look* setting is retired; Definitive is the only look. F10 → Graphics → **Golden colour filter**
+  (Off / On, Off by default) gives the Xbox 360's warm colour, and wet roads, car reflections, glass, water and rain
+  drops keep their Xbox 360 versions as their own choices. A profile saved on the *Xbox 360* or *PC* look opens in
+  Definitive once (the log says so; from the Xbox 360 look the golden colour filter stays on).
+- **Setup: playable in about 10 minutes**: the HD textures and the shader warm-up are optional steps, off by default;
+  tick them in the Setup app, or run it again later with them ticked (the build is reused).
+- **HD textures made by Setup** (2.1 work): the optional "Make HD textures" step (about 1¼ hours on an M5 Pro) builds the Remaster HD
+  pack on your Mac from your own game files, then the road surface detail and the sunlit wall relief from it.
+- **HD HUD**: one switch (Interface → HD HUD, on): sharp HUD, minimap and fonts made by Setup from the game's own art
+  in a few minutes, with the gauges and icons redrawn as vector art (our own). Setup's "Make the HD HUD" checkbox.
+- **Settings menu by what you want to change**: pages Graphics, Display, Audio, Interface, Gameplay, Mods, Controls;
+  Graphics → Advanced by effect; every setting says what it does, what you see, its cost and a slower-Mac tip; about
+  twenty fine-tuning rows no longer listed (saved values kept). The settings guide follows the menu.
+- **Wall sun sheen** (Graphics → Advanced, on): in low sun, concrete, brick and stone walls catch a soft highlight, and
+  bare metal (railings, guard rails, poles, girders, storm grates) a sharper glint; painted metal, shade, night and the
+  mirror are unchanged. Needs the HD textures' road surface detail. The shader warm-up covers it.
+- **Mac preset** (Graphics, Auto by default): Auto picks Full, Balanced or Light from your Mac's chip and screen size;
+  Balanced and Light upscale the picture and turn off the costliest effects on slower Macs. Your own settings are
+  kept and come back with Full.
+- **Data mods** (Mods → Data mods, on): game files you put in the `DataMods` folder (next to `Mods` in your profile
+  folder) replace the game's own while it runs: cars, tracks, menus, sounds. Your game folder is never changed, and
+  Launch copies your saves first whenever that folder changes.
+- **A little less work per frame**: the game's main thread does about 0.2 ms less per frame (hooked calls, the draw
+  path, and a few of the game's busiest routines rewritten natively; each change has its own off switch).
+- **Fixed: a crash about two seconds after start** on Macs whose sound goes to a monitor (or another output that
+  takes a moment to start): the game no longer restarts its sound when the output is slow to begin (issue #8).
+- **Shader warm-up after the packs**: the warm-up now runs with the HD pack and materials loaded, so their shaders are
+  prepared too.
+- **Fixed: the shader warm-up could skip itself**: its offscreen drives pressed menu keys on a timer, so on a Mac
+  where the game reached its title sooner than expected the keys landed on the wrong screens and the warm-up gave up
+  ("the first drive did not reach a race"). Each key now waits for the screen it belongs to and stays down until
+  the game has read it.
+
 ## 2.0.4 — the Xbox 360 front end
 
 - **The Xbox 360 Stuff Pack's front end, optional**: the Xbox 360 menus, title and loading art and garages, from your

@@ -45,6 +45,7 @@ MOD_TEST_SUITE(symbols_verify_the_image) {
 }
 
 MOD_TEST_SUITE(symbols_one_namespace) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
     uint32_t addr = 0;
     MOD_CHECK_EQ(mods_symbol("main_loop_inner", &addr), POP_OK);

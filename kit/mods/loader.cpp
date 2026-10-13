@@ -145,12 +145,24 @@ bool g_shutdown_done = false;
 
 // The context a guard belongs to. Found by the api instance's own index,
 // which is fixed when the context is built and never changes.
+//
+// R3 run 31 O2: the answer is remembered per thread. Contexts are only ever
+// appended, never freed or moved (above), so the first context with an owner
+// stays the first for ever and the scan's answer cannot change once found; a
+// miss is never remembered, because the context may not have been built yet.
 ModContext *context_of(const PopModApi *api) {
     if (!api)
         return nullptr;
+    thread_local uint32_t last_owner = 0;
+    thread_local ModContext *last = nullptr;
+    if (last && last_owner == api->mod_index)
+        return last;
     for (ModContext &c : contexts())
-        if (c.owner == api->mod_index)
+        if (c.owner == api->mod_index) {
+            last_owner = c.owner;
+            last = &c;
             return &c;
+        }
     return nullptr;
 }
 

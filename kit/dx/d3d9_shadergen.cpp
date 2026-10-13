@@ -5,6 +5,7 @@
 #include "d3d9_glsl.h"
 #include "d3d9_msl.h"
 #include "d3d9_wgsl.h"
+#include "../host/gpu/metal/surface.h"   // Run 15 Wave B WB1b: surf_ps_patch
 
 #include <cctype>
 #include <cstdio>
@@ -1426,6 +1427,51 @@ bool sky_vs_patch(std::string *s) {
     }
     return false;
 }
+// R3 run 17 Xbox 360 lens drops, our own version (D-124; review/r3-design/visible-track.md B). The PC on-screen drop
+// samples its 16x16 displacement map (RAINDROPPC: yz the refraction, w a hard disc) at t0, offsets the scene copy by
+// yz x c0.zw + c0.xy, fades w by c1.x and brightens the scene x c2.x (1.2): one hard, bright disc. The 360 draws a soft
+// lens from a 4-shape atlas: the scene refracted and shaded, a darker rim, alpha = shape x fade (reference only; the
+// 360 code is not used). Ours keeps the game's refraction and fade and computes the lens: t0 spans the quad 0..1 (the
+// PC disc fills it), one of four shapes per drop picked by a hash of the drop's screen centre (stable while it lives),
+// a soft edge, a bright core and a darker rim. No x1.2, no hard mask, no texture asset. Anchored on the six PC lines.
+static const char *const kDropLines =
+    "    r[0] = (tx1.sample(sm1, ((t[0].xyzw)).xy));\n"
+    "    { float4 w_ = ((r[0].yyyy) * (c[0].zzzz) + (c[0].xxxx)); r[0].x = w_.x; }\n"
+    "    { float4 w_ = ((r[0].zzzz) * (c[0].wwww) + (c[0].yyyy)); r[0].y = w_.y; }\n"
+    "    { float4 w_ = ((r[0].wwww) * (c[1].xxxx)); r[0].w = w_.w; }\n"
+    "    r[1] = (tx0.sample(sm0, ((r[0].xyzw)).xy));\n"
+    "    { float4 w_ = ((r[1].xyzw) * (c[2].xxxx)); r[0].xyz = w_.xyz; }\n";
+bool raindrop_patch(std::string *s) {
+    const size_t at = s->find(kDropLines);
+    if (at == std::string::npos || s->find(kDropLines, at + 1) != std::string::npos)
+        return false;
+    s->replace(at, strlen(kDropLines),
+               "    {   // R3 run 17: Xbox 360 lens drop, our own version (the game's refraction and fade, a computed lens)\n"
+               "        const float4 rd_m = tx1.sample(sm1, t[0].xy);   // the PC map: yz refraction (w, its hard disc, unused)\n"
+               "        const float2 rd_d = float2(dfdx(t[0].x), dfdy(t[0].y));\n"
+               "        const float2 rd_c = vin.pos.xy - (t[0].xy - 0.5) / select(rd_d, float2(1.0), abs(rd_d) < 1e-6);\n"
+               "        const float rd_h = fract(sin(dot(floor(rd_c / 16.0), float2(12.9898, 78.233))) * 43758.5453);\n"
+               "        const int rd_k = min(int(rd_h * 4.0), 3);   // one of four shapes\n"
+               "        const float rd_a = (fract(rd_h * 7.31) - 0.5) * 0.5;   // a small tilt\n"
+               "        float2 q = t[0].xy * 2.0 - 1.0;\n"
+               "        q = float2(q.x * cos(rd_a) - q.y * sin(rd_a), q.x * sin(rd_a) + q.y * cos(rd_a));\n"
+               "        if (rd_k == 1) q *= float2(0.9, 1.1);                              // wide\n"
+               "        else if (rd_k == 2) q.x *= 1.0 + 0.4 * saturate(-q.y);            // a teardrop: narrow on top\n"
+               "        else if (rd_k == 3) q *= 1.18;                                     // small\n"
+               "        const float rd_r = length(q);\n"
+               "        const float rd_o = 1.0 - smoothstep(0.72, 1.0, rd_r);             // a soft edge\n"
+               "        const float rd_s = 1.08 - 0.46 * smoothstep(0.5, 0.97, rd_r);     // bright core, darker rim\n"
+               "        r[1] = tx0.sample(sm0, float2(rd_m.y * c[0].z + c[0].x, rd_m.z * c[0].w + c[0].y));\n"
+               "        r[0] = float4(r[1].xyz * rd_s, rd_o * c[1].x);\n"
+               "    }\n");
+    return true;
+}
+bool pixel_is_raindrop(const Program &p) {
+    std::string src, why;
+    if (!p.pixel || !pixel_source(p, PixelVariant{}, &src, &why))
+        return false;
+    return raindrop_patch(&src);
+}
 bool pixel_is_sky(const Program &p) {
     std::string src, why;
     if (!p.pixel || !pixel_source(p, PixelVariant{}, &src, &why))
@@ -1525,6 +1571,25 @@ bool vertex_source(const Program &p, const VertexVariant &vv, std::string *out, 
              "].xyz, 0.0);\n"
              "    ot[6] = float4(c[" + std::to_string(f.light) + "].xyz, 0.0);\n";
     }
+    if (vv.surf) {   // Run 15 Wave B WB1b: the world normal for S0 (NORMAL0 x the object -> world rows at buffer(20))
+        uint32_t sreg[4] = {};
+        const std::string slot = "ot[" + std::to_string(vv.surf) + "]";
+        const char kVsSig[] = "                     constant D9VSParams &P [[buffer(17)]]) {\n";
+        const size_t sig = s.find(kVsSig);
+        if (vv.surf < 4 || vv.surf > 7 || vv.fefloor || !pool_inputs(p, sreg, 2) ||
+            g.body.find(slot + " =") != std::string::npos || g.body.find(slot + ".") != std::string::npos ||
+            s.find(slot + " = ", s.find("vv[")) != std::string::npos || sig == std::string::npos) {
+            if (why)
+                *why = "surf variant: no NORMAL0 input, the slot is written, or a variant that edits the signature";
+            return false;
+        }
+        s.replace(sig, sizeof kVsSig - 1,
+                  "                     constant D9VSParams &P [[buffer(17)]],\n"
+                  "                     constant float4 *d9surf [[buffer(20)]]) {\n");
+        const std::string n = "vv[" + std::to_string(sreg[1]) + "]";
+        s += "    " + slot + " = float4(" + n + ".x * d9surf[0].xyz + " + n + ".y * d9surf[1].xyz + " + n +
+             ".z * d9surf[2].xyz, 0.0);   // Wave B WB1b\n";
+    }
     s += "    D9V2F o;\n"
          "    o.pos = opos;\n"
          "    o.pos.xy += P.halfpix.xy * opos.w;\n"
@@ -1560,22 +1625,6 @@ bool vertex_source(const Program &p, const VertexVariant &vv, std::string *out, 
         if (why)
             *why = "carenv: the environment strength lines are not as expected";
         return false;
-    }
-    if (vv.grass) {   // run 13 grass shells: never "a shell" drawn as a copy of the ground
-        uint32_t greg[4] = {};
-        if (!pool_inputs(p, greg, 2) || !grass_vs_patch(&s, greg[0], greg[1], vv.grass)) {
-            if (why)
-                *why = "grass: no POSITION0/NORMAL0 input or the shell slot is written";
-            return false;
-        }
-    }
-    if (vv.grass_blade) {   // run 14 grass blades: never "a blade" drawn as a copy of the ground
-        uint32_t greg[4] = {};
-        if (!pool_inputs(p, greg, 3) || !grass_blade_vs_patch(&s, greg[0], greg[1], greg[2], vv.grass_blade)) {
-            if (why)
-                *why = "grass blade: no POSITION0/NORMAL0/TEXCOORD0 input, the slot is written or the anchors differ";
-            return false;
-        }
     }
     *out = s;
     return true;
@@ -2003,6 +2052,10 @@ static bool glass_patch_mode(std::string *s, int mode) {
 }
 struct RoadSheenEnv {
     float rough = 0.55f, wet = 0.2f, nmix = 0.5f, bias = 2.0f, gain = 1.0f;
+    float bump = 4.0f, cav = 1.0f;   // R3 run 22 mode 3 (TEST envs _BUMP, _CAV): micro-normal strength, cavity exponent;
+                                     // run 27: 4 (was 3), the owner's road eye check (D-154, panel 8)
+    int taps = 2;   // run 23 mode 3: the gradient from 2 forward taps + the centre (run 27 default, D-154 panels 4 and 8;
+                    // TEST env _TAPS=4 brings back the 4 central taps)
     int debug = 0;
     int wetpct = 100;   // run 14: the sheen on a fully wet road, % (100 = the patch text as before)
 };
@@ -2021,7 +2074,11 @@ const RoadSheenEnv &sheen_env() {
         num("RECOMP_REMASTER_ROADSHEEN_NMIX", 0.0f, 1.0f, &x.nmix);
         num("RECOMP_REMASTER_ROADSHEEN_BIAS", 0.0f, 8.0f, &x.bias);
         num("RECOMP_REMASTER_ROADSHEEN_GAIN", 0.0f, 8.0f, &x.gain);
-        if (const char *d = std::getenv("RECOMP_REMASTER_ROADSHEEN_DEBUG"); d && *d >= '1' && *d <= '4')
+        num("RECOMP_REMASTER_ROADSHEEN_BUMP", 0.0f, 8.0f, &x.bump);
+        num("RECOMP_REMASTER_ROADSHEEN_CAV", 0.0f, 4.0f, &x.cav);
+        if (const char *t = std::getenv("RECOMP_REMASTER_ROADSHEEN_TAPS"); t && (t[0] == '2' || t[0] == '4') && !t[1])
+            x.taps = t[0] - '0';
+        if (const char *d = std::getenv("RECOMP_REMASTER_ROADSHEEN_DEBUG"); d && *d >= '1' && *d <= '5')
             x.debug = *d - '0';
         if (const char *w = std::getenv("RECOMP_REMASTER_ROADSHEEN_WETPCT"); w && *w) {
             const long p = std::strtol(w, nullptr, 10);
@@ -2126,22 +2183,54 @@ std::string sheen_num(float v) {
     snprintf(b, sizeof b, "%d.%04d", int(v), int((v - float(int(v))) * 10000.0f + 0.5f) % 10000);
     return b;
 }
-bool roadsheen_patch(std::string *s) {
+// R3 run 18 material sets (D-131; review/run18/c-design-check.md 9.4): mode 2 = the dry roughness comes from the
+// material set's ORM map (d9_orm, texture 19, G = perceptual roughness, sampled with sm0 at t[0] as the diffuse): GGX
+// alpha = r^2 (the constant 0.55 of mode 1 is alpha, = 0.7416^2). The wet alpha and everything else stay as mode 1.
+bool roadsheen_patch(std::string *s, int mode) {
     SheenAnchors a;
     if (!roadsheen_find(*s, &a))
         return false;
     const RoadSheenEnv &e = sheen_env();
     const std::string N = std::to_string(a.nreg), H = std::to_string(a.hreg), SP = std::to_string(a.spreg),
                       O = std::to_string(a.outreg);
-    std::string b = "    { float3 rs_game = ((r[" + H + "].xyzw) * (r[" + SP + "].xyzw)).xyz;\n"
-                    "      const float rs_rough = " + sheen_num(e.rough) + ", rs_wetr = " + sheen_num(e.wet) +
+    // R3 run 22 mode 3 (D-136; review/run22/c-cavity-design.md): mode 2 + cavity (the ORM's R as specular occlusion)
+    // + micro normals (the diffuse tx0's luminance gradient at its own mip tilts the map normal); needs the program's
+    // plain diffuse lookup at t0 (else refused: the host falls back to mode 2).
+    if (mode == 3 && s->find("tx0.sample(sm0, ((t[0].xyzw)).xy)") == std::string::npos)
+        return false;
+    std::string b = "    { float3 rs_game = ((r[" + H + "].xyzw) * (r[" + SP + "].xyzw)).xyz;\n";
+    if (mode == 2)
+        b += "      const float rs_og = d9_orm.sample(sm0, t[0].xy).y;\n";
+    if (mode == 3)
+        b += "      const float2 rs_orm = d9_orm.sample(sm0, t[0].xy).xy;\n"
+             "      const float rs_og = rs_orm.y, rs_cav = rs_orm.x;\n"
+             "      const float3 rs_lw = float3(0.2126, 0.7152, 0.0722);\n"
+             + std::string(e.taps == 2
+                   // run 23 (G-M5 cost): forward differences x 2 ~ the central difference's span; the centre is the
+                   // texel the program itself just read (a cache hit), so two new taps instead of four
+                   ? "      float3 rs_c0 = tx0.sample(sm0, t[0].xy).xyz;\n"
+                     "      float rs_hx = 2.0 * dot(tx0.sample(sm0, t[0].xy, int2(1, 0)).xyz - rs_c0, rs_lw);\n"
+                     "      float rs_hy = 2.0 * dot(tx0.sample(sm0, t[0].xy, int2(0, 1)).xyz - rs_c0, rs_lw);\n"
+                   : "      float rs_hx = dot(tx0.sample(sm0, t[0].xy, int2(1, 0)).xyz - tx0.sample(sm0, t[0].xy, int2(-1, 0)).xyz, rs_lw);\n"
+                     "      float rs_hy = dot(tx0.sample(sm0, t[0].xy, int2(0, 1)).xyz - tx0.sample(sm0, t[0].xy, int2(0, -1)).xyz, rs_lw);\n") +
+             "      float2 rs_tilt = clamp(float2(-rs_hx, -rs_hy) * " + sheen_num(0.5f * e.bump) + ", -0.35, 0.35);\n"
+             "      float3 rs_nb = normalize(rs_nm + float3(rs_tilt, 0.0));\n";
+    b += "      const float rs_rough = " + (mode >= 2 ? std::string("rs_og * rs_og") : sheen_num(e.rough)) +
+                    ", rs_wetr = " + sheen_num(e.wet) +
                     ", rs_nmix = " + sheen_num(e.nmix) + ", rs_bias = " + sheen_num(e.bias) + ", rs_gain = " +
                     sheen_num(e.gain) + ";\n";
-    b += "      float3 rs_l = normalize(t[3].xyz), rs_v = normalize(t[4].xyz);\n"
-         "      float3 rs_n = normalize(mix(float3(0.0, 0.0, 1.0), rs_nm, rs_nmix));\n"
-         "      float rs_a0 = mix(rs_rough, rs_wetr, saturate(c[1].w));\n"
-         "      float3 rs_dx = dfdx(rs_n), rs_dy = dfdy(rs_n);\n"
-         "      float rs_aa = min(dot(rs_dx, rs_dx) + dot(rs_dy, rs_dy), 0.18);\n"
+    b += "      float3 rs_l = normalize(t[3].xyz), rs_v = normalize(t[4].xyz);\n";
+    // mode 3: the specular AA keeps reading the un-tilted normal (the micro tilt must not turn into roughness)
+    if (mode == 3)
+        b += "      float3 rs_n0 = normalize(mix(float3(0.0, 0.0, 1.0), rs_nm, rs_nmix));\n"
+             "      float3 rs_n = normalize(mix(float3(0.0, 0.0, 1.0), rs_nb, rs_nmix));\n"
+             "      float rs_a0 = mix(rs_rough, rs_wetr, saturate(c[1].w));\n"
+             "      float3 rs_dx = dfdx(rs_n0), rs_dy = dfdy(rs_n0);\n";
+    else
+        b += "      float3 rs_n = normalize(mix(float3(0.0, 0.0, 1.0), rs_nm, rs_nmix));\n"
+             "      float rs_a0 = mix(rs_rough, rs_wetr, saturate(c[1].w));\n"
+             "      float3 rs_dx = dfdx(rs_n), rs_dy = dfdy(rs_n);\n";
+    b += "      float rs_aa = min(dot(rs_dx, rs_dx) + dot(rs_dy, rs_dy), 0.18);\n"
          "      float rs_a2 = clamp(rs_a0 * rs_a0 + rs_aa, 1.0e-4, 1.0);\n"
          "      float3 rs_h = normalize(rs_l + rs_v);\n"
          "      float rs_nl = saturate(dot(rs_n, rs_l)), rs_nv = clamp(dot(rs_n, rs_v), 1.0e-3, 1.0);\n"
@@ -2157,11 +2246,15 @@ bool roadsheen_patch(std::string *s) {
     // by the road's wetness (c1.w, as rs_a0). At 100 the patch text is unchanged.
     if (e.wetpct != 100)
         b += "      rs_s *= mix(1.0, " + sheen_num(float(e.wetpct) / 100.0f) + ", saturate(c[1].w));\n";
+    // mode 3 cavity: specular occlusion of the sheen only, fading out as the road gets wet (water fills the pits)
+    if (mode == 3)
+        b += "      rs_s *= mix(pow(rs_cav, " + sheen_num(e.cav) + "), 1.0, saturate(c[1].w));\n";
     switch (e.debug) {
     case 1: b += "      rs_dbg = rs_n * 0.5 + 0.5;\n"; break;
     case 2: b += "      rs_dbg = rs_game;\n"; break;
     case 3: b += "      rs_dbg = rs_s;\n"; break;
     case 4: b += "      rs_dbg = float3(sqrt(rs_a2), rs_aa * 5.0, rs_f * 4.0);\n"; break;
+    case 5: b += mode == 3 ? "      rs_dbg = rs_nb * 0.5 + 0.5;\n" : "      rs_dbg = rs_n * 0.5 + 0.5;\n"; break;
     default: break;
     }
     b += "      r[" + O + "].xyz = rs_s; }\n";
@@ -2199,38 +2292,6 @@ size_t pbr_find_b(const std::string &s, size_t from, std::string *bexpr, size_t 
         }
     }
     return std::string::npos;
-}
-// TEST ONLY probe (run 12 step 0): the colour is unchanged; one fragment in 64 (8x8 pixel grid) adds the sun's share
-// of its colour to the histograms in pbq (layout: kPbrProbeCounters in d3d9_msl.h). cls: 0..3 (allow list, main view).
-void pbrprobe_patch(std::string *s, uint32_t cls) {
-    const size_t c = s->find(kPbrC);
-    std::string bexpr;
-    size_t blen = 0;
-    const size_t b = c == std::string::npos ? c : pbr_find_b(*s, c, &bexpr, &blen);
-    if (b == std::string::npos)
-        return;
-    const std::string k = std::to_string(cls);
-    std::string add =
-        "    { const float3 pbq_w = float3(0.2126, 0.7152, 0.0722);\n"
-        "      uint2 pbq_p = uint2(vin.pos.xy);\n"
-        "      if (((pbq_p.x | pbq_p.y) & 7u) == 0u) {\n"
-        "        float pbq_b = (" + bexpr + ").x;\n"
-        "        float pbq_yt = dot(max(r[0].xyz, 0.0), pbq_w);\n"
-        "        float pbq_ys = max(pbq_b, 0.0) * dot(max(pbq_sun, 0.0), pbq_w);\n"
-        "        float pbq_sf = pbq_yt > 1.0e-5 ? saturate(pbq_ys / pbq_yt) : 0.0;\n"
-        "        float pbq_yl = dot(max(pbq_sun, 0.0) + max(pbq_amb, 0.0), pbq_w);\n"
-        "        float pbq_sl = pbq_yl > 1.0e-5 ? saturate(dot(max(pbq_sun, 0.0), pbq_w) / pbq_yl) : 0.0;\n"
-        "        uint pbq_sub = pbq_sh >= 0.5 ? (pbq_d1 >= 0.05 ? 2u : 1u) : 0u;\n"
-        "        uint pbq_bf = min(uint(pbq_sf * 16.0), 15u), pbq_bl = min(uint(pbq_sl * 16.0), 15u);\n"
-        "        for (uint pbq_i = 0u; pbq_i <= pbq_sub; ++pbq_i) {\n"
-        "          atomic_fetch_add_explicit(&pbq[((0u * 4u + " + k + "u) * 3u + pbq_i) * 16u + pbq_bf], 1u, memory_order_relaxed);\n"
-        "          atomic_fetch_add_explicit(&pbq[((1u * 4u + " + k + "u) * 3u + pbq_i) * 16u + pbq_bl], 1u, memory_order_relaxed);\n"
-        "        }\n"
-        "      }\n"
-        "    }\n";
-    s->insert(b + blen, add);
-    s->insert(c, "    float3 pbq_sun = r[1].xyz * r[1].w; float3 pbq_amb = r[0].xyz; float pbq_sh = r[1].w;\n"
-                 "    float pbq_d1 = max(iv[1].x, max(iv[1].y, iv[1].z));\n");
 }
 
 // Remaster run 12 PBR step 2 pilot settings, read once (TEST ONLY switches; baked into the patch text, so the
@@ -2356,6 +2417,101 @@ bool pbrworld_patch(std::string *s, std::string *why) {
                "    float4 pw_tex = d9_pbrn.sample(sm0, pw_uv);\n");
     *s = out;
     return true;
+}
+
+// R3 run 29 facade glint settings, read once (baked into the patch text): micro-normal strength
+// RECOMP_REMASTER_FACADEGLINT_BUMP (default 2, the walls' built-in value; the roads' D-154 value is 4; 0..8) and the
+// highlight gain RECOMP_REMASTER_FACADEGLINT_GAIN (default 1; 0..8). TEST ONLY switches.
+struct GlintEnv {
+    float bump = 2.0f, gain = 1.0f;
+};
+const GlintEnv &glint_env() {
+    static const GlintEnv e = [] {
+        GlintEnv x;
+        if (const char *v = std::getenv("RECOMP_REMASTER_FACADEGLINT_BUMP"); v && *v)
+            x.bump = std::strtof(v, nullptr);
+        if (!(x.bump >= 0.0f && x.bump <= 8.0f))
+            x.bump = 2.0f;
+        if (const char *v = std::getenv("RECOMP_REMASTER_FACADEGLINT_GAIN"); v && *v)
+            x.gain = std::strtof(v, nullptr);
+        if (!(x.gain >= 0.0f && x.gain <= 8.0f))
+            x.gain = 1.0f;
+        return x;
+    }();
+    return e;
+}
+// R3 run 29 facade glint (review/run29/c-facade-design.md 2): the sun's specular on walls, from the material set. The
+// GGX is the road sheen's (mode 3: alpha = r^2 from the ORM's G, specular AA on the un-tilted normal, the two-tap
+// micro normals from tx0's luminance, cavity as specular occlusion), written apart so the road programs' text never
+// changes. N = the vertex normal t4 tilted in the cotangent frame of t5 and the uv (pbrworld's frame); L = t6, V = -t5.
+// The sun colour x N.L is the per-vertex d1 (iv[1]); the tilted N.L only masks the lobe (no glint from behind). Added
+// to r[1] just before line C, so the shadow (r[1].w) and the brightness constant apply; the diffuse is unchanged
+// (D-136: the texture detail stays). Every derivative comes before any lookup that depends on it. False if the source
+// lacks line C once or the plain stage-0 lookup at t0.
+bool facadeglint_patch(std::string *s, std::string *why) {
+    const GlintEnv &e = glint_env();
+    const size_t c = s->find(kPbrC);
+    if (c == std::string::npos || s->find(kPbrC, c + 1) != std::string::npos ||
+        s->find("tx0.sample(sm0, ((t[0].xyzw)).xy)") == std::string::npos || s->find(kPbrPrelude) == std::string::npos) {
+        if (why)
+            *why = "facadeglint: line C once and the plain stage-0 lookup are not both present";
+        return false;
+    }
+    const std::string b =
+        "    { float3 fg_p = t[5].xyz;\n"
+        "      float2 fg_uv = t[0].xy;\n"
+        "      float3 fg_dp1 = dfdx(fg_p), fg_dp2 = dfdy(fg_p);\n"
+        "      float2 fg_du1 = dfdx(fg_uv), fg_du2 = dfdy(fg_uv);\n"
+        "      float3 fg_nv = t[4].xyz * rsqrt(max(dot(t[4].xyz, t[4].xyz), 1.0e-12));\n"
+        "      float3 fg_ndx = dfdx(fg_nv), fg_ndy = dfdy(fg_nv);\n"
+        "      float3 fg_l = t[6].xyz * rsqrt(max(dot(t[6].xyz, t[6].xyz), 1.0e-12));\n"
+        "      float3 fg_v = -fg_p * rsqrt(max(dot(fg_p, fg_p), 1.0e-12));\n"
+        "      float fg_sg = dot(fg_nv, cross(fg_dp1, fg_dp2)) < 0.0 ? -1.0 : 1.0;\n"
+        "      float3 fg_a = cross(fg_dp2, fg_nv), fg_b = cross(fg_nv, fg_dp1);\n"
+        "      float3 fg_t = (fg_a * fg_du1.x + fg_b * fg_du2.x) * fg_sg;\n"
+        "      float3 fg_bt = (fg_a * fg_du1.y + fg_b * fg_du2.y) * fg_sg;\n"
+        "      float fg_m = max(dot(fg_t, fg_t), dot(fg_bt, fg_bt));\n"
+        "      bool fg_ok = isfinite(fg_m) && fg_m > 1.0e-20;\n"
+        "      float fg_inv = fg_ok ? rsqrt(fg_m) : 0.0;\n"
+        "      float4 fg_orm = d9_orm.sample(sm0, fg_uv);\n"
+        "      const float3 fg_lw = float3(0.2126, 0.7152, 0.0722);\n"
+        "      float3 fg_c0 = tx0.sample(sm0, fg_uv).xyz;\n"
+        "      float fg_hx = 2.0 * dot(tx0.sample(sm0, fg_uv, int2(1, 0)).xyz - fg_c0, fg_lw);\n"
+        "      float fg_hy = 2.0 * dot(tx0.sample(sm0, fg_uv, int2(0, 1)).xyz - fg_c0, fg_lw);\n"
+        "      float2 fg_tilt = clamp(float2(-fg_hx, -fg_hy) * " + sheen_num(0.5f * e.bump) + ", -0.35, 0.35);\n"
+        "      float3 fg_n = fg_ok ? normalize(fg_nv + (fg_t * fg_tilt.x + fg_bt * fg_tilt.y) * fg_inv) : fg_nv;\n"
+        "      float fg_r = fg_orm.y * fg_orm.y;\n"
+        "      float fg_aa = min(dot(fg_ndx, fg_ndx) + dot(fg_ndy, fg_ndy), 0.18);\n"
+        "      float fg_a2 = clamp(fg_r * fg_r + fg_aa, 1.0e-4, 1.0);\n"
+        "      float3 fg_h = normalize(fg_l + fg_v);\n"
+        "      float fg_nl = saturate(dot(fg_n, fg_l)), fg_nw = clamp(dot(fg_n, fg_v), 1.0e-3, 1.0);\n"
+        "      float fg_nh = saturate(dot(fg_n, fg_h)), fg_vh = saturate(dot(fg_v, fg_h));\n"
+        "      float fg_dd = fg_nh * fg_nh * (fg_a2 - 1.0) + 1.0;\n"
+        "      float fg_d = fg_a2 / (3.14159265 * fg_dd * fg_dd);\n"
+        "      float fg_vis = 0.5 / max(fg_nl * sqrt(fg_nw * fg_nw * (1.0 - fg_a2) + fg_a2) +\n"
+        "                               fg_nw * sqrt(fg_nl * fg_nl * (1.0 - fg_a2) + fg_a2), 1.0e-5);\n"
+        "      float3 fg_f0 = mix(float3(0.04), saturate(fg_c0), saturate(fg_orm.z));\n"
+        "      float3 fg_f = fg_f0 + (1.0 - fg_f0) * pow(1.0 - fg_vh, 5.0);\n"
+        "      float3 fg_s = max(iv[1].xyz, 0.0) * fg_f * (3.14159265 * fg_d * fg_vis * " + sheen_num(e.gain) +
+        " * smoothstep(0.0, 0.05, fg_nl) * saturate(fg_orm.x));\n"
+        "      r[1].xyz += (fg_ok && isfinite(fg_s.x + fg_s.y + fg_s.z)) ? fg_s : float3(0.0); }\n";
+    s->insert(c, b);
+    return true;
+}
+
+// R3 run 29 O1 (review/run29/opt-design.md): the run-27 scenery fade-in patch (was applied to every pixel shader at
+// compile time in d3d9_metal.mm d9_msl_source): before the epilogue, a fragment is discarded while an ordered 4x4 dither
+// value is at or above P.fade.x (render state 243 / 255); the parameter block gains "float4 fade" as its last member.
+void fade_patch(std::string *s) {
+    static const char kAt[] = "    (void)aL;\n";
+    static const char kPs[] = "float pad1;\n    int4 bconst[4];\n};";
+    const size_t at = s->find(kAt), ps = s->find(kPs);
+    if (at == std::string::npos || ps == std::string::npos || ps >= at)
+        return;
+    s->insert(at, "    if (P.fade.x > 0.0) { uint2 fq = uint2(vin.pos.xy) & 3u; "
+                  "const uint fb[16] = {0u, 8u, 2u, 10u, 12u, 4u, 14u, 6u, 3u, 11u, 1u, 9u, 15u, 7u, 13u, 5u}; "
+                  "if ((float(fb[fq.y * 4u + fq.x]) + 0.5) / 16.0 >= P.fade.x) discard_fragment(); }\n");
+    s->insert(ps + sizeof kPs - 1 - 2, "    float4 fade;\n");
 }
 
 // ---- Remaster run 13 natural water (review/run13/x360-study-design.md 3(c), census 8 Oct) ----------------------------
@@ -2516,245 +2672,6 @@ bool water_patch(std::string *s, int mode) {
 }
 // ---- end natural water ----------------------------------------------------------------------------------------------
 
-// Remaster run 13 grass shells (owner 8 Oct; review/run13/x360-shader-map.md GRASS). Our own shell grass: the host
-// re-issues an eligible terrain draw N times (kit/host/gpu/metal/grass.h). Each shell's vertex half lifts POSITION0 along
-// NORMAL0 by P.halfpix.z and passes the unmoved position in t<slot>; its pixel half keeps the draw's own lit, shadowed and
-// fogged colour, darkens it toward the root (self-shadow) and replaces the alpha with procedural blades: one blade per
-// ~3.6 cm cell of the object-space ground plane (hashed height and centre, tapering with height), clumped by a ~0.7 m
-// value noise, only where the base texel is green-dominant and not grey (the TRNS strips mix pavement). LOD: shell 1
-// fades out from 40 to 80 m, the others from 25 to 40 m (view depth). The host sets the alpha test (or coverage) at 0.5.
-bool grass_vs_patch(std::string *s, uint32_t position, uint32_t normal, uint32_t slot) {
-    if (slot < 4 || slot > 7 || position > 15 || normal > 15 || position == normal)
-        return false;
-    const std::string pv = "vv[" + std::to_string(position) + "]", nv = "vv[" + std::to_string(normal) + "]";
-    const std::string ot = "ot[" + std::to_string(slot) + "]";
-    const size_t a = s->rfind("* P.ascale[");
-    if (a == std::string::npos || s->find("    " + pv + " = vin.v") == std::string::npos ||
-        s->find("    " + nv + " = vin.v") == std::string::npos)
-        return false;
-    size_t start = s->find('\n', a);
-    if (start == std::string::npos)
-        return false;
-    ++start;
-    const size_t end = s->find("    D9V2F o;\n", start);
-    if (end == std::string::npos || s->find(ot, start) < end)
-        return false;
-    s->insert(start, "    " + ot + " = " + pv + ";   // grass shell: the unmoved position (blade noise)\n"
-                     "    { const float3 g_n = " + nv + ".xyz; " + pv +
-                     ".xyz += g_n * (rsqrt(max(dot(g_n, g_n), 1.0e-8)) * P.halfpix.z); }\n");
-    return true;
-}
-// Remaster run 14 grass blades (review/run14/grass-blades-design.md 1-2). The blade draw is instanced: one instance per
-// root (its record holds every VS input as Direct3D values, all at buffer 10 per instance; P.ascale = 1), g_vid the
-// strip vertex (2 x segments + 1). Before the body: distance thinning (seed-ordered, 1 -> 0.5 over the full radius, to 0
-// by the fade end), pixel-width floor with matched thinning, cell fade-in, the stage-0 grass mask at the root texcoord
-// (mip 2), then the blade vertex (height x seed x ~0.7 m clumps x mask x shrink, frame between the ground normal and +Z,
-// random azimuth, static bend 0.25 H t^2, wind sway A H t^2 with gusts) replaces POSITION; NORMAL and the rest stay the
-// root's, so the body lights, shadows and fogs the blade as the ground it grows from. Culled roots return a clip
-// position outside the frustum before the body. t<slot> = (t along the blade, seed) for grass_ps_patch blade mode.
-bool grass_blade_vs_patch(std::string *s, uint32_t position, uint32_t normal, uint32_t texcoord, uint32_t slot) {
-    static const char kIn[] = "struct D9VIn {\n";
-    static const char kSig[] = "                     constant D9VSParams &P [[buffer(17)]]) {\n";
-    static const char kFn[] = "vertex D9V2F vs_main(";
-    if (slot < 4 || slot > 7 || position > 15 || normal > 15 || texcoord > 15 || position == normal ||
-        position == texcoord || normal == texcoord)
-        return false;
-    const std::string pv = "vv[" + std::to_string(position) + "]", nv = "vv[" + std::to_string(normal) + "]",
-                      tv = "vv[" + std::to_string(texcoord) + "]", ot = "ot[" + std::to_string(slot) + "]";
-    const size_t in = s->find(kIn), sig = s->find(kSig), fn = s->find(kFn), a = s->rfind("* P.ascale[");
-    if (in == std::string::npos || sig == std::string::npos || fn == std::string::npos || a == std::string::npos ||
-        s->find(kSig, sig + 1) != std::string::npos || s->find("[[vertex_id]]") != std::string::npos ||
-        s->find("    " + pv + " = vin.v") == std::string::npos || s->find("    " + nv + " = vin.v") == std::string::npos ||
-        s->find("    " + tv + " = vin.v") == std::string::npos || !(in < fn && fn < sig && sig < a))
-        return false;
-    size_t start = s->find('\n', a);
-    if (start == std::string::npos)
-        return false;
-    ++start;
-    const size_t end = s->find("    D9V2F o;\n", start);
-    if (end == std::string::npos || s->find(ot, start) < end)
-        return false;
-    s->insert(start,
-              "    {   // grass blade (run 14): this instance's root, strip vertex g_vid; only POSITION moves\n"
-              "        const float3 g_root = " + pv + ".xyz;\n"
-              "        const float g_seed = vin.g_r.x;\n"
-              "        const float g_dist = length(g_root - G.eye.xyz);\n"
-              "        const float g_full = G.fade.x, g_end = G.fade.y;\n"
-              "        const float g_u = saturate((g_dist - g_full) / max(g_end - g_full, 1.0e-3));\n"
-              "        const float g_r1 = fract(g_seed * 4099.0), g_r2 = fract(g_seed * 257.0), g_r3 = fract(g_seed * 61.0);\n"
-              "        float g_keep = g_dist < g_full ? 1.0 - 0.5 * g_dist / max(g_full, 1.0e-3) : 0.5 * (1.0 - g_u);\n"
-              "        const float g_w0 = G.fade.w * (0.73 + 0.54 * g_r2);\n"
-              "        const float g_w = max(g_w0, 0.8 * G.misc.x * g_dist);   // >= 0.8 px wide\n"
-              "        g_keep *= g_w0 / g_w;                                    // fewer, wider: the same covered area\n"
-              "        const float g_age = saturate(fmod(G.eye.w - vin.g_r.y + 1000.0, 1000.0) / max(G.misc.z, 1.0e-3));\n"
-              "        const float4 g_b = g_tx.sample(g_sm, " + tv + ".xy, level(2.0));\n"
-              "        const float g_g = max(g_b.g, 0.04);\n"
-              "        const float g_m = saturate((g_b.g - 1.05 * g_b.r) / g_g * 10.0) *\n"
-              "                          saturate(((g_b.g - g_b.b) / g_g - 0.18) * 6.0);\n"
-              "        if (g_r1 >= g_keep || g_m < 0.5 || g_u >= 1.0) {\n"
-              "            D9V2F g_o = {};\n"
-              "            g_o.pos = float4(0.0, 0.0, -1.0, 1.0);\n"
-              "            return g_o;\n"
-              "        }\n"
-              "        const float g_h = G.fade.z * (0.6 + 0.8 * g_r3) * mix(0.7, 1.0, d9gb_value(g_root.xy * 1.4 + 17.0)) *\n"
-              "                          mix(0.4, 1.0, (g_m - 0.5) * 2.0) * (1.0 - g_u) * g_age;\n"
-              "        const uint g_seg = max(uint(G.misc.y), 1u);\n"
-              "        const float g_t = float(min(g_vid >> 1, g_seg)) / float(g_seg);\n"
-              "        const float g_side = g_vid >= 2u * g_seg ? 0.0 : ((g_vid & 1u) != 0u ? 0.5 : -0.5);\n"
-              "        const float3 g_n = " + nv + ".xyz * rsqrt(max(dot(" + nv + ".xyz, " + nv + ".xyz), 1.0e-8));\n"
-              "        const float3 g_up = normalize(mix(g_n, float3(0.0, 0.0, 1.0), 0.5));\n"
-              "        const float g_az = fract(g_seed * 16411.0) * 6.2831853;\n"
-              "        const float3 g_sd = normalize(cross(g_up, float3(cos(g_az), sin(g_az), 0.0)));\n"
-              "        const float3 g_fc = cross(g_sd, g_up);\n"
-              "        const float g_tt = g_t * g_t;\n"
-              "        const float2 g_wd = G.wind.xy;\n"
-              "        const float g_gust = d9gb_value(g_root.xy * 0.08 - g_wd * (G.eye.w * 0.6)) * 2.0 - 1.0;\n"
-              "        const float g_sway = G.wind.z * g_h * g_tt * (1.0 - g_u) *\n"
-              "                             (0.6 * sin(1.7 * G.eye.w + dot(g_root.xy, g_wd) * 0.9 + g_r1 * 6.2831853) +\n"
-              "                              0.4 * G.wind.w * g_gust);\n"
-              "        " + pv + ".xyz = g_root + g_up * (g_h * g_t) + g_fc * (0.25 * g_h * g_tt) + float3(g_wd * g_sway, 0.0) +\n"
-              "                     g_sd * (g_w * (1.0 - g_t) * g_side);\n"
-              "        " + ot + " = float4(g_t, g_seed, 0.0, 0.0);\n"
-              "    }\n");
-    s->replace(sig, strlen(kSig),
-               "                     constant D9VSParams &P [[buffer(17)]],\n"
-               "                     uint g_vid [[vertex_id]], constant D9GrassBlade &G [[buffer(19)]],\n"
-               "                     texture2d<float> g_tx [[texture(0)]], sampler g_sm [[sampler(0)]]) {\n");
-    s->insert(fn, "struct D9GrassBlade { float4 eye; float4 fade; float4 wind; float4 misc; };\n"
-                  "static float d9gb_cell(int2 i) {\n"
-                  "    uint s = as_type<uint>(i.x) * 0x8da6b343u ^ as_type<uint>(i.y) * 0xd8163841u;\n"
-                  "    s ^= s >> 16; s *= 0x7feb352du; s ^= s >> 15; s *= 0x846ca68bu; s ^= s >> 16;\n"
-                  "    return float(s & 0xffffu) * (1.0 / 65535.0);\n"
-                  "}\n"
-                  "static float d9gb_value(float2 p) {\n"
-                  "    const float2 c = floor(p), f = p - c, u = f * f * (3.0 - 2.0 * f);\n"
-                  "    const int2 i = int2(c);\n"
-                  "    return mix(mix(d9gb_cell(i), d9gb_cell(i + int2(1, 0)), u.x),\n"
-                  "               mix(d9gb_cell(i + int2(0, 1)), d9gb_cell(i + int2(1, 1)), u.x), u.y);\n"
-                  "}\n");
-    s->insert(in + strlen(kIn), "    float4 g_r [[attribute(16)]];   // grass blade: (seed, cell birth time)\n");
-    return true;
-}
-bool grass_ps_patch(std::string *s, uint32_t slot, bool blade) {
-    static const char kTop[] = "    float4 odepth = float4(vin.pos.z);\n";
-    static const char kFn[] = "fragment D9PSOut ps_main(";
-    if (slot < 4 || slot > 7)
-        return false;
-    const size_t top = s->find(kTop);
-    if (top == std::string::npos || s->find(kTop, top + 1) != std::string::npos)
-        return false;
-    const size_t body = top + strlen(kTop);
-    std::string col_line = "    float4 col = oc[0];\n";
-    size_t col = s->find(col_line, body);
-    if (col == std::string::npos) {
-        col_line = "    float4 col = saturate(r[0]);\n";
-        col = s->find(col_line, body);
-    }
-    if (col == std::string::npos || s->find(col_line, col + 1) != std::string::npos)
-        return false;
-    if (blade) {   // run 14: opaque blade geometry; only the colour terms (t<slot> = (t along the blade, seed))
-        const std::string n = std::to_string(slot), part = s->substr(body, col - body);
-        if (part.find("t[" + n + "]") != std::string::npos || part.find("tc[" + n + "]") != std::string::npos ||
-            part.find("vin.t" + n) != std::string::npos)
-            return false;
-        s->insert(col + col_line.size(), "    col.rgb *= g_k;   // grass blade: root self-shadow, tone, dry tip\n");
-        s->insert(body,
-                  "    // grass blade (t" + n + " = (t along the blade, seed)): root self-shadow, per-blade tone and green,\n"
-                  "    // a warm dry tip on ~20 % of the blades\n"
-                  "    float3 g_k = float3(1.0);\n"
-                  "    {\n"
-                  "        const float g_t = tc[" + n + "].x, g_s = tc[" + n + "].y;\n"
-                  "        g_k = float3(mix(0.55, 1.1, g_t) * (0.9 + 0.2 * fract(g_s * 7.31)));\n"
-                  "        g_k.g *= 1.0 + 0.12 * (fract(g_s * 13.7) - 0.5);\n"
-                  "        if (fract(g_s * 3.17) < 0.2)\n"
-                  "            g_k *= mix(float3(1.0), float3(1.08, 1.0, 0.75), g_t * g_t);\n"
-                  "    }\n");
-        return true;
-    }
-    // The stage-0 lookup of interpolants only (evaluated again before the body, where they are unchanged).
-    const size_t q = s->find("tx0.sample(sm0, ", body);
-    if (q == std::string::npos || q > col)
-        return false;
-    size_t i = q + strlen("tx0.sample");
-    int depth = 0;
-    for (; i < col; ++i) {
-        if ((*s)[i] == '(')
-            ++depth;
-        else if ((*s)[i] == ')' && --depth == 0)
-            break;
-    }
-    if (i >= col)
-        return false;
-    const std::string look = s->substr(q, i + 1 - q);
-    if (look.find("r[") != std::string::npos || look.find("oc[") != std::string::npos ||
-        look.find('\n') != std::string::npos)
-        return false;
-    const std::string n = std::to_string(slot), part = s->substr(body, col - body);
-    if (part.find("t[" + n + "]") != std::string::npos || part.find("tc[" + n + "]") != std::string::npos ||
-        part.find("vin.t" + n) != std::string::npos)
-        return false;
-    const size_t fn = s->find(kFn);
-    if (fn == std::string::npos || fn > top)
-        return false;
-    s->insert(col + col_line.size(), "    col.rgb *= g_k;   // grass shell: root self-shadow\n"
-                                     "    col.a = g_alpha;\n");
-    s->insert(body,
-              "    // grass shell (P.pad1 = shell index x 16 + shell count): LOD, grass mask, blade coverage\n"
-              "    float g_alpha = 0.0, g_k = 1.0;\n"
-              "    {\n"
-              "        const float g_cnt = max(fmod(P.pad1, 16.0), 1.0), g_idx = max(floor(fmod(P.pad1, 256.0) / 16.0), 1.0);\n"
-              "        const float g_end = floor(P.pad1 / 256.0);   // run 14: the blade fade end (0: no blades)\n"
-              "        const float g_h = (g_idx - 0.5) / g_cnt;\n"
-              "        const float g_dist = 1.0 / max(vin.pos.w, 1.0e-6);\n"
-              "        const float g_lod = (g_idx < 1.5 ? saturate((80.0 - g_dist) * (1.0 / 40.0))\n"
-              "                                         : saturate((40.0 - g_dist) * (1.0 / 15.0))) *\n"
-              "                            (g_end > 0.5 ? saturate((g_dist - (g_end - 10.0)) * 0.1) : 1.0);\n"
-              "        const float4 g_b = " + look + ";\n"
-              "        const float g_g = max(g_b.g, 0.04);\n"
-              "        const float g_m = saturate((g_b.g - 0.97 * g_b.r) / g_g * 12.0) *\n"
-              "                          saturate(((g_b.g - g_b.b) / g_g - 0.12) * 6.0);\n"
-              "        if (g_lod * g_m <= 0.0)\n"
-              "            discard_fragment();\n"
-              "        const float2 g_p = tc[" + n + "].xy;\n"
-              "        const float2 g_q = g_p * 28.0;\n"
-              "        const float2 g_c = floor(g_q);\n"
-              "        const uint g_s = d9g_hash(g_c);\n"
-              "        const float g_r = float(g_s & 0xffffu) * (1.0 / 65535.0);\n"
-              "        const float2 g_j = float2(float((g_s >> 16) & 0xffu), float(g_s >> 24)) * (0.5 / 255.0) + 0.25;\n"
-              "        const float g_cl = d9g_value(g_p * 1.4 + 17.0);\n"
-              "        const float g_hb = (0.3 + 0.7 * g_r) * mix(0.5, 1.0, g_cl) * g_m * g_lod;\n"
-              "        const float g_rad = 0.46 * (1.0 - g_h / max(g_hb, 1.0e-3));\n"
-              "        g_alpha = 0.5 + (g_rad - length(g_q - g_c - g_j)) * 2.0;\n"
-              "        g_k = mix(0.6, 1.08, g_h) * (0.92 + 0.16 * g_r);\n"
-              "    }\n");
-    s->insert(fn, "static uint d9g_hash(float2 c) {\n"
-                  "    uint s = as_type<uint>(int(c.x)) * 0x8da6b343u ^ as_type<uint>(int(c.y)) * 0xd8163841u;\n"
-                  "    s ^= s >> 16; s *= 0x7feb352du; s ^= s >> 15; s *= 0x846ca68bu; s ^= s >> 16;\n"
-                  "    return s;\n"
-                  "}\n"
-                  "static float d9g_value(float2 p) {\n"
-                  "    const float2 c = floor(p), f = p - c, u = f * f * (3.0 - 2.0 * f);\n"
-                  "    const float a = float(d9g_hash(c) & 0xffffu), b = float(d9g_hash(c + float2(1.0, 0.0)) & 0xffffu);\n"
-                  "    const float d = float(d9g_hash(c + float2(0.0, 1.0)) & 0xffffu), e = float(d9g_hash(c + 1.0) & 0xffffu);\n"
-                  "    return mix(mix(a, b, u.x), mix(d, e, u.x), u.y) * (1.0 / 65535.0);\n"
-                  "}\n");
-    return true;
-}
-uint8_t grass_slot(const Program &vs, const Program &ps, bool blade) {
-    uint32_t reg[4] = {};
-    std::string v, f;
-    if (!pool_inputs(vs, reg, blade ? 3 : 2) || !vertex_source(vs, &v, nullptr) ||
-        !pixel_source(ps, PixelVariant{}, &f, nullptr))
-        return 0;
-    for (uint32_t slot = 7; slot >= 4; --slot) {
-        std::string a = v, b = f;
-        if (blade ? grass_blade_vs_patch(&a, reg[0], reg[1], reg[2], slot) && grass_ps_patch(&b, slot, true)
-                  : grass_vs_patch(&a, reg[0], reg[1], slot) && grass_ps_patch(&b, slot))
-            return (uint8_t)slot;
-    }
-    return 0;
-}
-
 // PLAN_R2 item 10 real HDR (review/run14/hdr-design.md s2.2): a float target does not clamp what the shader writes,
 // Direct3D 9 does (to the 8-bit target's range, before blending). The clamp, inserted after every patch, right before the
 // output struct: alpha to [0,1] (blend factors, as D3D9), rgb to [0, ceiling] (1: as PC; 2: 64, light keeps its excess).
@@ -2832,6 +2749,73 @@ static std::string smoke_epilogue(uint32_t kind, bool shadow1) {
          ");\n"
          "    }\n";
     return s;
+}
+
+// R3 run 22 (TEST): the texture mip bias under upscaling (PixelVariant::mipbias). Every tx<n>.sample(sm<n>, uv) call
+// with two arguments gets a third, bias(b); one whose third argument is bias(x) gets bias(b + x), one whose third is a
+// texel offset int2(..) gets bias(b) before it (MSL order); level(), gradient
+// and min_lod_clamp lookups are left alone (an explicit LOD is the program's own choice).
+bool mipbias_patch(std::string *s, uint8_t code, uint32_t *count) {
+    if (count)
+        *count = 0;
+    if (!code)
+        return true;
+    char b[32];
+    snprintf(b, sizeof b, "%.6f", mipbias_value(code));
+    const std::string bs = b;
+    std::string r = *s;
+    uint32_t n = 0;
+    size_t pos = 0;
+    while ((pos = r.find(".sample(sm", pos)) != std::string::npos) {
+        size_t k = pos;
+        while (k > 0 && std::isdigit((unsigned char)r[k - 1]))
+            --k;
+        const bool tx = k < pos && k >= 2 && r.compare(k - 2, 2, "tx") == 0 &&
+                        (k == 2 || !(std::isalnum((unsigned char)r[k - 3]) || r[k - 3] == '_'));
+        const size_t open = pos + 7;
+        size_t close = std::string::npos;
+        size_t commas[3] = {0, 0, 0};
+        int nc = 0, depth = 0;
+        for (size_t i = open; i < r.size(); ++i) {
+            const char c = r[i];
+            if (c == '(') {
+                ++depth;
+            } else if (c == ')') {
+                if (--depth == 0) {
+                    close = i;
+                    break;
+                }
+            } else if (c == ',' && depth == 1 && nc < 3) {
+                commas[nc++] = i;
+            }
+        }
+        if (close == std::string::npos)
+            return false;
+        if (!tx) {
+            pos = open;
+            continue;
+        }
+        if (nc == 1) {
+            r.insert(close, ", bias(" + bs + ")");
+            ++n;
+        } else if (nc == 2) {
+            size_t a = commas[1] + 1;
+            while (a < close && r[a] == ' ')
+                ++a;
+            if (r.compare(a, 5, "bias(") == 0) {
+                r.insert(a + 5, bs + " + ");
+                ++n;
+            } else if (r.compare(a, 5, "int2(") == 0) {   // a texel offset: MSL takes the bias before it
+                r.insert(a, "bias(" + bs + "), ");
+                ++n;
+            }
+        }
+        pos = open;
+    }
+    *s = r;
+    if (count)
+        *count = n;
+    return true;
 }
 
 bool pixel_source(const Program &p, const PixelVariant &v, std::string *out, std::string *why) {
@@ -2920,8 +2904,8 @@ bool pixel_source(const Program &p, const PixelVariant &v, std::string *out, std
         s += ",\n                         constant D9SmokeParams &SP [[buffer(5)]]";
     if (v.pool)
         s += ",\n                         constant float4 *pb [[buffer(2)]]";
-    if (v.pbrprobe)
-        s += ",\n                         device atomic_uint *pbq [[buffer(3)]]";
+    if (v.roadsheen >= 2 || v.facadeglint)   // R3 run 18 material sets: the ORM map (run 22: mode 3; run 29: walls)
+        s += ",\n                         texture2d<float> d9_orm [[texture(19)]]";
     if (v.pbrworld) {
         s += ",\n                         texture2d<float> d9_pbrn [[texture(17)]]";
         if (pbr_env().debug)
@@ -3039,7 +3023,13 @@ bool pixel_source(const Program &p, const PixelVariant &v, std::string *out, std
             *why = "sky: the sky combine is not as expected";
         return false;
     }
-    if (v.roadsheen && !roadsheen_patch(&s)) {   // never "counted as sheen, drawn plain"
+    // run 17 360 lens drops (ours): never "counted as 360, drawn plain"; raindrop 2 = TEST the forced failure
+    if (v.raindrop && (v.raindrop == 2 || !raindrop_patch(&s))) {
+        if (why)
+            *why = "raindrop: the PC drop lines are not as expected";
+        return false;
+    }
+    if (v.roadsheen && (v.roadsheen > 3 || !roadsheen_patch(&s, v.roadsheen))) {   // never "counted as sheen, drawn plain"
         if (why)
             *why = "roadsheen: the road highlight lines are not as expected";
         return false;
@@ -3054,23 +3044,10 @@ bool pixel_source(const Program &p, const PixelVariant &v, std::string *out, std
             *why = "fefloor: the colour lines are not as expected or t7 is read";
         return false;
     }
-    if (v.grass && !grass_ps_patch(&s, v.grass)) {   // run 13 grass shells: never "a shell" drawn as a copy of the ground
-        if (why)
-            *why = "grass: no plain stage-0 lookup or the shell slot is read";
+    if (v.pbrworld && !pbrworld_patch(&s, why))   // never "counted as pbr, drawn plain"
         return false;
-    }
-    if (v.grass_blade && !grass_ps_patch(&s, v.grass_blade, true)) {   // run 14 grass blades
-        if (why)
-            *why = "grass blade: the colour line is not as expected or the blade slot is read";
+    if (v.facadeglint && !facadeglint_patch(&s, why))   // R3 run 29: never "counted as glint, drawn plain"
         return false;
-    }
-    if (v.pbrprobe)
-        pbrprobe_patch(&s, v.pbrprobe - 1u);
-    if (v.pbrworld && (v.pbrprobe || !pbrworld_patch(&s, why))) {   // never "counted as pbr, drawn plain"
-        if (why && v.pbrprobe)
-            *why = "pbrworld: refused with the sun-share probe";
-        return false;
-    }
     if (v.pool) {   // Remaster run 10: the pool varyings and the pool light (clean-pools.hlsl PoolLight / PoolsShade)
         pool_varyings(&s);
         const size_t f = s.find("fragment D9PSOut ps_main(");
@@ -3108,8 +3085,50 @@ bool pixel_source(const Program &p, const PixelVariant &v, std::string *out, std
             *why = "hdr: the output lines are not as expected";
         return false;
     }
+    if ((v.surf || v.reactive) && !remaster_surf::surf_ps_patch(&s, v.surf, v.reactive)) {   // Run 15 Wave B WB1b
+        if (why)
+            *why = "surf: the output struct / signature / return are not as expected";
+        return false;
+    }
+    if (v.mipbias && !mipbias_patch(&s, v.mipbias)) {   // R3 run 22 (TEST): last, after every text-matching patch
+        if (why)
+            *why = "mipbias: a texture lookup's parentheses do not close";
+        return false;
+    }
+    if (v.fade)   // R3 run 29 O1: the scenery fade-in's discard, on the fading draws only (text as run 27)
+        fade_patch(&s);
     *out = s;
     return true;
+}
+
+// Run 15 Wave B WB1b: a varying slot for the surface normal (7 first: the fewest programs use it).
+int surf_slot(const Program &vs, const Program &ps, const VertexVariant &vv, const PixelVariant &pv) {
+    if (vv.fefloor)
+        return -1;
+    std::string vsrc, psrc, why;
+    if (!vertex_source(vs, VertexVariant{}, &vsrc, &why) || !pixel_source(ps, PixelVariant{}, &psrc, &why))
+        return -1;
+    uint32_t used = 0;
+    if (vv.pbr || pv.pbrworld || pv.water)
+        used |= 0x70;
+    if (vv.glass || pv.glass)
+        used |= vv.glass == 2 || pv.glass == 2 ? 0xe0 : 0x60;
+    if (vv.carenv == 2 || pv.carpaint)
+        used |= 0x40;
+    if (vv.smoke || pv.smoke)
+        used |= 0x80;
+    for (int k = 7; k >= 4; --k) {
+        const std::string o = "ot[" + std::to_string(k) + "]", t = "t[" + std::to_string(k) + "]";
+        if (used >> k & 1)
+            continue;
+        if (vsrc.find(o + " =") != std::string::npos || vsrc.find(o + ".") != std::string::npos)
+            continue;
+        if (psrc.find(t) != std::string::npos || psrc.find("tc[" + std::to_string(k) + "]") != std::string::npos ||
+            psrc.find("vin.t" + std::to_string(k) + ".") != std::string::npos)
+            continue;
+        return k;
+    }
+    return -1;
 }
 
 bool pixel_is_wetroad(const Program &p) {

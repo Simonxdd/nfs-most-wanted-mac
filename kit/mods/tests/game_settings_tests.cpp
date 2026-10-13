@@ -71,6 +71,7 @@ uint32_t graphics_controls(int choice) {
 } // namespace
 
 MOD_TEST_SUITE(game_settings_resolution_and_quick_defaults_restart) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     const std::string profile = mod_test_dir("game-settings-graphics");
     boot(profile);
     modes();
@@ -118,6 +119,7 @@ MOD_TEST_SUITE(game_settings_resolution_and_quick_defaults_restart) {
 }
 
 MOD_TEST_SUITE(game_settings_higher_resolutions) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     const std::string profile = mod_test_dir("game-settings-higher-modes");
     const uint32_t sizes[][2] = {{640, 480},   {800, 600},   {1024, 768}, {1280, 720},
                                  {1920, 1080}, {2560, 1440}, {3840, 2160}};
@@ -171,6 +173,7 @@ MOD_TEST_SUITE(game_settings_higher_resolutions) {
 }
 
 MOD_TEST_SUITE(game_settings_camera_scales_without_changing_zoom_preferences) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     boot(mod_test_dir("game-settings-camera"));
     MOD_CHECK(mods_game_settings_init());
     guest_call(loader_context(), 0x416f50, 0x88f004); // original camera defaults
@@ -208,6 +211,7 @@ MOD_TEST_SUITE(game_settings_camera_scales_without_changing_zoom_preferences) {
 }
 
 MOD_TEST_SUITE(game_settings_minimap_buffer_bounds_and_wrap) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     boot(mod_test_dir("game-settings-minimap"));
     X86 *c = loader_context();
     // Use the CRT's normal large-block path and an initialized heap lock.
@@ -283,6 +287,7 @@ MOD_TEST_SUITE(game_settings_minimap_buffer_bounds_and_wrap) {
 }
 
 MOD_TEST_SUITE(game_settings_reload_and_restart) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     const std::string profile = mod_test_dir("game-settings");
     boot(profile);
     wr8(0x895db4, 93);
@@ -329,6 +334,7 @@ MOD_TEST_SUITE(game_settings_reload_and_restart) {
 }
 
 MOD_TEST_SUITE(game_settings_autosave_all_options_and_retry) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     const std::string profile = mod_test_dir("game-settings-frame");
     boot(profile);
     save();

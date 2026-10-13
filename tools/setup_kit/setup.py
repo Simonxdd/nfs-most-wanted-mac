@@ -41,6 +41,17 @@ TOOLS = {
 }
 ALLOW_GAPS = "MSVC 7.1 switch shapes; see docs/analysis.md"
 PY = sys.executable
+# 2.1: the HD texture pack step (tools/hd_pack) runs only when asked: --hd-textures runs it, --no-hd-textures skips
+# it; with neither flag this default decides (owner D-169 (9): on; 3.0, owner D-185: OFF, so the game is playable about
+# 10 minutes after Build; the Setup app's toggle and a later run add it).
+HD_DEFAULT_ON = False
+# 2.0.4: the shader warm-up (tools/warm_seed; about 25-35 minutes of offscreen drives). 3.0 (owner D-185): OFF by
+# default like the HD textures; --shader-seed (the Setup app's "Prepare the shaders" toggle) makes it.
+WARM_DEFAULT_ON = False
+HD_CACHE = CACHE / "hd"
+# 3.0 (owner D-172/D-173): the HD HUD step (tools/hd_pack/hud_pack.py; minutes, no model) has its own toggle, on by
+# default; the material set and the wall relief are made inside the HD textures step (they need its pictures).
+HUD_CACHE = CACHE / "hud"
 
 
 def say(msg):
@@ -290,6 +301,19 @@ def mod_names_list(*extra, out=MOD_NAMES, timeout=1800):
     return None
 
 
+def stream(cmd, prefix):
+    """Run a generator step, its output to the log; lines starting with prefix are shown. Returns the exit code."""
+    with LOG.open("a") as log:
+        log.write("  $ " + " ".join(str(a) for a in cmd) + "\n")
+        p = subprocess.Popen([str(a) for a in cmd], cwd=ROOT, env=ENV, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True)
+        for line in p.stdout:
+            log.write(line)
+            if line.startswith(prefix):
+                say("  " + line.strip())
+        return p.wait()
+
+
 def find_dir_ci(base, name):
     """base/name, a folder, matching the name without regard to case."""
     base = Path(base)
@@ -339,8 +363,18 @@ def main():
                     "folder) for the Xbox 360 front end (default: an X360-Stuff or Easy Installation folder in your game "
                     "folder, if it's there)")
     ap.add_argument("--no-pools", action="store_true", help="do not build the light pools")
-    ap.add_argument("--no-shader-seed", action="store_true", help="skip the shader warm-up (about 35 minutes; without it "
-                    "the first drive stutters once while the game prepares its shaders)")
+    warm = ap.add_mutually_exclusive_group()
+    warm.add_argument("--shader-seed", dest="shader_seed", action="store_true", default=WARM_DEFAULT_ON,
+                      help="prepare the game's shaders ahead (about 35 minutes; without it the first drive stutters "
+                      "for a few minutes, once)")
+    warm.add_argument("--no-shader-seed", dest="shader_seed", action="store_false", help="skip the shader warm-up")
+    hd = ap.add_mutually_exclusive_group()
+    hd.add_argument("--hd-textures", dest="hd_textures", action="store_true", default=HD_DEFAULT_ON,
+                    help="make the HD texture pack from your game (about 1¼ hours on an M5 Pro, much longer on a base M1; "
+                    "about 5 GB of downloads and cache; resumes when you run the setup again)")
+    hd.add_argument("--no-hd-textures", dest="hd_textures", action="store_false", help="skip the HD texture pack")
+    ap.add_argument("--no-hd-hud", dest="hd_hud", action="store_false", default=True,
+                    help="skip the HD HUD (a few minutes; without it the original HUD shows)")
     ap.add_argument("--out", type=Path, default=ROOT / "dist", help="where to write the app (default dist/)")
     ap.add_argument("--check-only", action="store_true", help="only check the game folder and speed.exe")
     ap.add_argument("--ghidra-home", type=Path, help="use this Ghidra 12.1.3 instead of downloading one")
@@ -472,22 +506,58 @@ def main():
     # front-end overlay). Never fails the setup: without it every mod still loads, unchecked.
     mod_names = mod_names_list(gen / "x360fe")
 
+    # 2.1: the HD texture pack, made on this Mac from the player's own files (tools/hd_pack; its own Python
+    # environment, model and photos in ~/Library/NFSMW-Native-Setup/hd, outside the build tree, so a new run resumes).
+    # Never fails the setup: without it the game's own textures show. 3.0: the material set and the wall relief follow
+    # it, made from its pictures (each optional; without them those features stay off and the game says so).
+    hd_pack, materials, relief = HD_CACHE / "pack", HD_CACHE / "materials", HD_CACHE / "relief"
+    if not args.hd_textures:
+        say("  HD textures: skipped" + (" (--no-hd-textures)" if HD_DEFAULT_ON else " (turn on Make HD textures, or "
+            "pass --hd-textures, to make them)"))
+    else:
+        say("  HD textures: making the HD texture pack (about 1¼ hours on an M5 Pro, much longer on a base M1)")
+        hd_cmd = [PY, "tools/hd_pack/hdpack.py", "--game", game, "--cache", HD_CACHE]
+        if args.x360_stuff:
+            hd_cmd += ["--stuff", stuff_src]
+        rc = stream(hd_cmd, "HD textures:")
+        if rc and (hd_pack / "index.tsv").is_file():   # only a finished earlier run writes index.tsv
+            say("  HD textures: not finished this time (see build/setup.log); the pack made earlier is used")
+        elif rc or not (hd_pack / "index.tsv").is_file():
+            say("  HD textures: skipped (see build/setup.log); the game's own textures show")
+        if (hd_pack / "index.tsv").is_file():
+            say("  HD textures: making the material set and the wall relief (about 3-10 minutes)")
+            if stream([PY, "tools/hd_pack/materials.py", "--hd-cache", HD_CACHE, "--out", materials], "HD textures:") \
+                    or not (materials / "index.tsv").is_file():
+                say("  HD textures: material set skipped (see build/setup.log); road detail and the wall sun sheen stay off")
+            if stream([PY, "tools/hd_pack/relief.py", "--hd-cache", HD_CACHE, "--out", relief], "HD textures:") \
+                    or not (relief / "index.tsv").is_file():
+                say("  HD textures: wall relief skipped (see build/setup.log); the walls keep the game's look")
+    have_hd = args.hd_textures and (hd_pack / "index.tsv").is_file()
+
+    # 3.0 (D-173): the HD HUD, made on this Mac from the game's own HUD, minimap and font pictures (4x, edges redrawn)
+    # with our own vector gauges and icons over them (tools/hd_pack/hud_pack.py). Minutes; never fails the setup.
+    if not args.hd_hud:
+        say("  HD HUD: skipped (--no-hd-hud); the original HUD shows")
+    else:
+        say("  HD HUD: making the HD HUD (a few minutes)")
+        hud_cmd = [PY, "tools/hd_pack/hud_pack.py", "--game", game, "--out", HUD_CACHE]
+        if args.x360_stuff:
+            hud_cmd += ["--stuff", stuff_src]
+        if stream(hud_cmd, "HUD textures:") or not (HUD_CACHE / "ui/index.tsv").is_file():
+            say("  HD HUD: skipped (see build/setup.log); the original HUD shows")
+
     # 2.0.4: the shader warm-up, made on this Mac (offscreen Quick Races). Never fails the setup: without it the first
-    # drive only stutters once.
+    # drive only stutters once. 3.0: after the packs, and with them, so it records the shaders they turn on.
     seed = ROOT / "build/warm/seed"
-    if args.no_shader_seed:
-        say("  shader warm-up: skipped (--no-shader-seed); the first drive will stutter once")
+    if not args.shader_seed:
+        say("  shader warm-up: skipped" + (" (--no-shader-seed)" if WARM_DEFAULT_ON else " (turn on Prepare the shaders, "
+            "or pass --shader-seed, to make it)") + "; the first drive will stutter once")
     else:
         say("  shader warm-up: preparing the game's shaders (about 35 minutes; offscreen, no window)")
-        with LOG.open("a") as log:
-            p = subprocess.Popen([PY, "tools/warm_seed/warmseed.py", "--cache", ROOT / "build/warm", "--out", seed],
-                                 cwd=ROOT, env=ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for line in p.stdout:
-                log.write(line)
-                if line.startswith("shader warm-up:"):
-                    say("  " + line.strip())
-            rc = p.wait()
-        if rc or not (seed / "order.txt").is_file():
+        warm_cmd = [PY, "tools/warm_seed/warmseed.py", "--cache", ROOT / "build/warm", "--out", seed]
+        if have_hd:
+            warm_cmd += ["--hd-pack", hd_pack, "--materials", materials, "--relief", relief]
+        if stream(warm_cmd, "shader warm-up:") or not (seed / "order.txt").is_file():
             say("  shader warm-up: skipped (see build/setup.log); the first drive will stutter once")
 
     say("7/7 Packaging")
@@ -497,8 +567,12 @@ def main():
         pack += ["--movies", movies]
     if mod_names:
         pack += ["--mod-names", mod_names]
-    if not args.no_shader_seed and (seed / "order.txt").is_file():
+    if args.shader_seed and (seed / "order.txt").is_file():
         pack += ["--warm-seed", seed]
+    if have_hd:
+        pack += ["--hd-pack", hd_pack, "--materials", materials, "--relief", relief]
+    if args.hd_hud and (HUD_CACHE / "ui/index.tsv").is_file():
+        pack += ["--hud-pack", HUD_CACHE]
     run(pack)
     app = args.out.expanduser().resolve() / "NFS Most Wanted Native.app"
     say(f"\nDone: {app}\nOpen it, or move it to Applications first. Your saves and settings will be in "

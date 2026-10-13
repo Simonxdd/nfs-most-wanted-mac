@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 double host_script_counter_metric(const char *name, uint32_t (*guest_u32)(uint32_t),
                                   uint32_t (*view_turn)(), uint32_t (*view_command_frame)()) {
@@ -25,6 +26,46 @@ double host_script_counter_metric(const char *name, uint32_t (*guest_u32)(uint32
         }
     }
     return value;
+}
+
+int host_script_fe_screen(uint32_t (*guest_u32)(uint32_t), char *out, size_t cap) {
+    if (!cap)
+        return 0;
+    out[0] = 0;
+#ifdef RECOMP_GLOBAL_FE_ROOT_ADDR
+    // As the game's own FindPackageWithControl (NFSMW 005b0be0): the root object's engine (+0x00), its package
+    // list's last entry (engine +0xe4), walked back (+0x08) to the first entry with a control mask (+0x20); that
+    // entry's name (+0x0c, e.g. "MainMenu.fng"). Reads only; a torn read during a screen change answers the next poll.
+    const uint32_t root = guest_u32(RECOMP_GLOBAL_FE_ROOT_ADDR);
+    const uint32_t engine = root ? guest_u32(root) : 0;
+    uint32_t package = engine ? guest_u32(engine + 0xe4) : 0;
+    for (int guard = 0; package && guard < 256; ++guard, package = guest_u32(package + 0x08)) {
+        if (!guest_u32(package + 0x20))
+            continue;
+        const uint32_t name = guest_u32(package + 0x0c);
+        size_t n = 0;
+        char c;
+        while (name && n + 1 < cap && (c = (char)(guest_u32(name + (uint32_t)n) & 0xffu)) != 0)
+            out[n++] = c;
+        out[n] = 0;
+        return n > 0;
+    }
+#else
+    (void)guest_u32;
+#endif
+    return 0;
+}
+
+int host_script_key_release_ready(uint32_t down_ms, uint32_t down_reads, uint32_t now_ms, uint32_t now_reads) {
+    const uint32_t held = now_ms - down_ms;
+    return held >= 3000u || (held >= 160u && now_reads - down_reads >= 2u);
+}
+
+double host_script_fe_metric(const char *name, uint32_t (*guest_u32)(uint32_t)) {
+    if (strncmp(name, "fe:", 3))
+        return -1.0;
+    char screen[64];
+    return host_script_fe_screen(guest_u32, screen, sizeof screen) && strcasestr(screen, name + 3) ? 1.0 : 0.0;
 }
 
 namespace {
@@ -426,6 +467,50 @@ int host_script_parse(const char *text, HostScriptStep *out, int max, char *erro
                 return fail(line_number, "key needs down or up", dir);
             step.op = HOST_SCRIPT_KEY;
             snprintf(step.name, sizeof step.name, "%s", name);
+        } else if (equal_nocase(verb, "keyuntil")) {
+            // `keyuntil RETURN fe:MC_Main>0 every 2500 within 60000`: press the key (and release it 160 ms later)
+            // every `every` ms until the claim holds; a claim still false at `within` stops the run. For a screen
+            // that ignores a key while it animates (NFSMW's title, run 33): the claim, not a clock, says it worked.
+            char *name = word(&cursor);
+            char *claim = word(&cursor);
+            if (!name || !claim)
+                return fail(line_number, "keyuntil needs a key and metric>value", nullptr);
+            step.dik = host_script_dik(name);
+            if (!step.dik)
+                return fail(line_number, "no such key", name);
+            char *gt = strchr(claim, '>');
+            if (!gt || gt == claim || !gt[1])
+                return fail(line_number, "keyuntil must be key metric>value or metric>=value", claim);
+            char *number = gt + 1;
+            step.at_least = (*number == '=');
+            if (step.at_least)
+                ++number;
+            *gt = 0;
+            double value = 0.0;
+            if (!real(number, &value))
+                return fail(line_number, "keyuntil needs a number after >", number);
+            step.op = HOST_SCRIPT_KEYUNTIL;
+            snprintf(step.name, sizeof step.name, "%s", claim);
+            step.threshold = value;
+            step.press_ms = 2500;
+            step.timeout_ms = 60000;
+            for (;;) {
+                char *clause = word(&cursor);
+                if (!clause)
+                    break;
+                const bool every = equal_nocase(clause, "every");
+                if (!every && !equal_nocase(clause, "within"))
+                    return fail(line_number, "keyuntil takes `every` or `within`", clause);
+                char *ms = word(&cursor);
+                long v = 0;
+                if (!ms || !whole(ms, &v) || v <= 0)
+                    return fail(line_number, "keyuntil needs a number of ms above zero after", clause);
+                if (every && v < 400)
+                    return fail(line_number, "keyuntil presses at most every 400 ms", ms);
+                (every ? step.press_ms : step.timeout_ms) = (uint32_t)v;
+            }
+            if (step.press_ms >= step.timeout_ms)
+                return fail(line_number, "keyuntil would time out before its second press", verb);
         } else if (equal_nocase(verb, "focus")) {
             char *state = word(&cursor);
             if (state && equal_nocase(state, "on"))
@@ -532,6 +617,15 @@ int host_script_parse(const char *text, HostScriptStep *out, int max, char *erro
             step.down = poke ? 1 : 0;
             step.len = poke ? uint32_t(n) : uint32_t(v);
             step.threshold = poke ? double(v) : 0.0;
+        } else if (equal_nocase(verb, "window")) {   // R3 run 17 TEST: window <w> <h> in points (app runner)
+            char *w = word(&cursor);
+            char *h = word(&cursor);
+            long vw = 0, vh = 0;
+            if (!w || !h || !whole(w, &vw) || !whole(h, &vh) || vw < 64 || vw > 16384 || vh < 64 || vh > 16384)
+                return fail(line_number, "window needs a width and a height in points (64..16384)", w);
+            step.op = HOST_SCRIPT_WINDOW;
+            step.x = (int32_t)vw;
+            step.y = (int32_t)vh;
         } else if (equal_nocase(verb, "watch")) {
             char *owner = word(&cursor);
             char *kind = word(&cursor);

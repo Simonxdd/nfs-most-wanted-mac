@@ -35,7 +35,7 @@ static int g_aabb_native = -1;
 
 static int aabb_native_on(X86 *c) {
     if (__builtin_expect(g_aabb_native >= 0, 1))
-        return g_aabb_native && !recomp_ab::old(recomp_ab::AABB);
+        return g_aabb_native;
     const char *e = getenv("RECOMP_NATIVE");
     int want = !(e && e[0] == '0');
     const char *t = getenv("RECOMP_NATIVE_SELFTEST");

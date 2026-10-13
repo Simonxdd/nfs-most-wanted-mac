@@ -5,8 +5,8 @@
 
 The game's shaders are translated to Metal while it draws; each new one costs a short hold the first time it is seen.
 The warm-up records them ahead: the built game runs offscreen through a few Quick Races with its own AI driving, in
-the settings combinations a player is most likely to use (rain, HDR, the Xbox 360 and PC looks, the Advanced
-effects), and every shader it translates is kept. The packager puts the result in the app
+the settings combinations a player is most likely to use (rain, HDR, the Xbox 360 modes and the golden filter, the
+Advanced effects), and every shader it translates is kept. The packager puts the result in the app
 (Contents/Resources/ShaderWarmSeed); at start the game compiles them in the background before they are needed.
 The shaders are your Mac's own: made here from your game, never downloaded. Resumable: run it again and it carries on
 from the drives already done. Progress lines: "shader warm-up: drive N of M" and "shader warm-up: seed ready (...)".
@@ -30,30 +30,38 @@ ROOT = HERE.parents[1]
 DRIVES = [
     ("rain-hdr", 16, {"weather": 1, "antialiasing": 1}, {"NFSMW_TEST_WEATHER_START": "0.65", "RECOMP_TEST_HDR_FLOAT": "1"}),
     ("adv-b", 5, {"lit_smoke": 1, "atmosphere": 1, "vehicle_lights": 1, "antialiasing": 2, "natural_water": 2}, {}),
-    ("x360", 8, {"look": 1}, {}),
-    ("pc", 12, {"look": 2}, {}),
+    # 3.0: the Looks are retired; the Xbox 360 modes each feature keeps, with the golden colour filter.
+    ("x360", 8, {"wet_roads": 2, "car_reflections": 2, "natural_glass": 2, "natural_water": 2, "golden_grade": 1}, {}),
     ("hdr", 14, {"antialiasing": 1}, {"RECOMP_TEST_HDR_FLOAT": "1"}),
     ("default", 0, {}, {}),
     ("adv-a", 2, {"lit_smoke": 1, "atmosphere": 1, "vehicle_lights": 1, "mirror_shadows": 1, "mirror_pools": 1,
-                  "mirror_msaa": 1, "mirror_glass": 50, "antialiasing": 1, "natural_water": 1}, {}),
+                  "mirror_msaa": 1, "mirror_glass": 50, "antialiasing": 1, "natural_water": 1, "wall_sheen": 1}, {}),
     ("rain", 21, {"weather": 1}, {"NFSMW_TEST_WEATHER_START": "0.65"}),
     # 2.0.4: the Xbox 360 Stuff Pack front end has its own menus (and shaders): one short drive boots to its main
-    # menu and stays there. Track None = menus only (the race drives above use the PC menus, whose path PREFIX is).
+    # menu and stays there. Track None = menus only (the race drives above use the PC menus, whose path PATH is).
     ("x360-menus", None, {"x360_frontend": 1}, {}),
 ]
 # Lines only the world prints (the first scenery item, the weather cycle, light pools with items: that line also prints
-# "0 terrain-piece items" in the menus; the day cycle, the one marker the PC look keeps, run 28): a drive that logged
+# "0 terrain-piece items" in the menus; the day cycle): a drive that logged
 # one reached the race.
 WORLD = re.compile(r"core\.nfsmw: (Xbox scenery lights: \d+ draw items so far|Weather: |Xbox light pools: [1-9]\d* terrain"
                    r"|Time of day: day cycle from|Time of day: \d)")
-# From boot to the Quick Race circuit list on a fresh profile, every step seen in frames (run 28,
-# harness/r28/pathcheck.py): skip the intro movies, dismiss the title, answer "Create a new alias?" (No is highlighted),
-# Right Right = Quick Race, Enter; the Quick Race menu opens on Quick Play (a random race, drag included): Right to the
-# next entry, Enter, Enter on Circuit (the first mode) = the circuit list. (The earlier path skipped the alias answer
-# and entered Challenge Series.)
-PREFIX = [(20000, None), (0, "RETURN"), (12000, None), (0, "RETURN"), (8000, None), (0, "RETURN"), (8000, None),
-          (0, "RIGHT"), (2000, None), (0, "RIGHT"), (2000, None), (0, "RETURN"), (5000, None), (0, "RIGHT"),
-          (2000, None), (0, "RETURN"), (5000, None), (0, "RETURN"), (5000, None)]
+# From boot to the race on a fresh profile (3.0, run 33, D-183). Each key that changes the screen is pressed until the
+# screen it leads to has the input (`keyuntil`, read from the game's front end by the runner), so a slower or faster
+# boot cannot shift the keys onto the wrong screen (J3: this runner plays no intro movies, the title took input after
+# 1 s, the timed path of 2.0.4 entered Career and stayed there; the title also ignores keys while its HD notice shows).
+# Screens (run 33 census, frames viewed): the title WS_MW_LS_Splash -> "Create a new alias?" MC_Main (No is
+# highlighted) -> MainMenu (Right Right = Quick Race) -> MainMenu_Sub (Quick Play, then Right + Enter: the mode list in
+# the same screen, Enter on Circuit) -> Track_Select (Right x track) -> Track_Options -> Car_Select -> Dialog (the
+# gearbox; Enter = automatic) -> Loading. A screen that never comes stops the drive (the runner quits).
+PATH = [("RETURN", "MC_Main.fng", 3000, 90000, 1500),        # the title (pressed again while it ignores keys)
+        ("RETURN", "MainMenu.fng", 5000, 30000, 2500),       # No: no alias
+        ("RIGHT", None, 1000), ("RIGHT", None, 1500),       # Quick Race
+        ("RETURN", "MainMenu_Sub.fng", 5000, 30000, 2500),
+        ("RIGHT", None, 2000), ("RETURN", None, 5000),      # past Quick Play, into the mode list
+        ("RETURN", "Track_Select.fng", 5000, 30000, 2500)]  # Circuit
+RACE = [("RETURN", "Track_Options.fng", 5000, 30000, 2000), ("RETURN", "Car_Select.fng", 5000, 30000, 2500),
+        ("RETURN", "Dialog.fng", 5000, 30000, 1500), ("RETURN", "Loading.fng", 5000, 30000, 20000)]
 KEY = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -66,19 +74,16 @@ def script(track, race_ms):
     if track is None:                      # menus only: boot, skip the intro and title, answer the profile question
         return "wait 20000\n" + "".join(f"key RETURN down\nwait 160\nkey RETURN up\nwait {w}\n" for w in (12000, 30000)) + "quit\n"
 
-    def press(k, after):
-        lines.extend([f"key {k} down", "wait 160", f"key {k} up", f"wait {after}"])
-    for wait, key in PREFIX:
-        if key:
-            press(key, 0)
-        else:
-            lines.append(f"wait {wait}")
-    for _ in range(track):
-        press("RIGHT", 1100)
-    press("RETURN", 5000)    # the race options
-    press("RETURN", 5000)    # the car list
-    press("RETURN", 2500)    # this car: the transmission question
-    press("RETURN", 20000)   # Auto: the race loads and starts
+    def steps(path):
+        for k, screen, *rest in path:
+            if screen:   # pressed until that screen has the input, then its settle time
+                every, within, settle = rest
+                lines.extend([f"keyuntil {k} fe:{screen}>0 every {every} within {within}", f"wait {settle}"])
+            else:
+                lines.extend([f"key {k} down", "wait 160", f"key {k} up", f"wait {rest[0]}"])
+    steps(PATH)
+    steps([("RIGHT", None, 1100)] * track)
+    steps(RACE)   # the race options, the car list, this car (the gearbox question), Auto: the race loads and starts
     # hold the accelerator (automatic gearbox): the car moves along the track, so more of it is drawn (run 28: with
     # no driver the car sat on the start line for the whole race)
     lines += ["key UP down", f"wait {race_ms}", "key UP up", "quit"]
@@ -121,7 +126,7 @@ def drive(exe, core, run, track, settings, extra, race_s):
     ms = json.loads((d / "mod-settings.json").read_text())
     ms.update({"core.nfsmw/unlock_all": 1, "core.nfsmw/surround_audio": 0, "core.nfsmw/width": 1280,
                "core.nfsmw/height": 720, "core.nfsmw/weather": 0,
-               "core.nfsmw/x360_frontend": 0})     # the race drives' menu path (PREFIX) is the PC front end's
+               "core.nfsmw/x360_frontend": 0})     # the race drives' menu path (PATH) is the PC front end's
     ms.update({"core.nfsmw/" + k: v for k, v in settings.items()})
     (prof / "mod-settings.json").write_text(json.dumps(ms, indent=1, sort_keys=True) + "\n")
     (run / "drive.script").write_text(script(track, race_s * 1000))
@@ -183,12 +188,31 @@ def fingerprint():
     return hashlib.sha256("".join(f"{h}  {f}\n" for f, h in parts()).encode()).hexdigest()
 
 
+def pack_env(hd, materials, relief):
+    """The environment the core mod would set from the app's Resources (remaster_tex.h), for the drives' runner, which
+    has no app around it. A pack is used only when its index.tsv is there (written last, so it is finished)."""
+    env = {}
+    if hd and (hd / "index.tsv").is_file():
+        env["RECOMP_REMASTER_PACK"] = str(hd.expanduser().resolve())
+        if materials and (materials / "index.tsv").is_file():
+            env.update(RECOMP_REMASTER_MATERIALS="1", RECOMP_REMASTER_MATERIALS_PACK=str(materials.expanduser().resolve()))
+        if relief and (relief / "index.tsv").is_file():
+            env.update(RECOMP_REMASTER_PBRWORLD="1", RECOMP_REMASTER_PBRWORLD_PACK=str(relief.expanduser().resolve()),
+                       RECOMP_REMASTER_PBRWORLD_STRENGTH="1")
+    return env
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--cache", type=Path, default=ROOT / "build/warm")
     ap.add_argument("--out", type=Path, default=ROOT / "build/warm/seed")
     ap.add_argument("--drives", type=int, default=len(DRIVES))
     ap.add_argument("--race-seconds", type=int, default=150)
+    # 3.0: the packs Setup made (each used only when finished): with them the drives record the shader variants the
+    # packs turn on (material sets, wall relief, the wall sun sheen in adv-a), as the player's app will draw them.
+    ap.add_argument("--hd-pack", type=Path, help="the HD texture pack (its index.tsv)")
+    ap.add_argument("--materials", type=Path, help="the material set (Resources/Materials in the app)")
+    ap.add_argument("--relief", type=Path, help="the wall relief (Resources/PbrPilot in the app)")
     a = ap.parse_args()
     cache, out = a.cache.expanduser().resolve(), a.out.expanduser().resolve()
     rows = DRIVES[:max(0, min(a.drives, len(DRIVES)))]
@@ -198,10 +222,12 @@ def main():
     work = cache / "drives"
     work.mkdir(parents=True, exist_ok=True)
     fp = fingerprint()
+    packs = pack_env(a.hd_pack, a.materials, a.relief)
     exe = smoke()
     core = core_dir(cache)
     done, raced, unconfirmed = [], 0, []
     for i, (name, track, settings, extra) in enumerate(rows):
+        extra = {**packs, **extra}
         run = work / name
         mark = run / "done"
         # run 28 review F2: a drive is reused only if the shaders' sources AND its own script and settings are the

@@ -471,5 +471,117 @@ inline uint32_t camera_resets(const Camera &prev, const Camera &cur) {
     }
     return r;
 }
+// Run 15 Wave B WB1a: a still camera (the parked gate's per-frame lines `reset 0x0 still 1`): the game frame advanced
+// and the camera moved < 1 mm and turned < 1e-5 (rotation entries). Without both cameras: not still.
+inline bool camera_still(const Camera &prev, const Camera &cur) {
+    if (!prev.have || !cur.have || cur.frame == prev.frame)
+        return false;
+    double a[3], b[3];
+    camera_position(prev.V, a);
+    camera_position(cur.V, b);
+    const double d = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+    double rot = 0.0;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            rot = std::max(rot, std::fabs(cur.V.m[i][j] - prev.V.m[i][j]));
+    return d < 0.001 && rot < 1e-5;
+}
+// Run 15 Wave B WB1a H-lag (TEST counters, review/run15/waveb-plan.md WB1a 2): the three candidate reprojections the
+// motion kernel scores against the previous depth: R = VP_k^-1 x VP_prev (the vector source), R2 = VP_k^-1 x VP_(n-2)
+// (the depth or VP one frame off) and RG = (V_g P)^-1 x (V_g,prev P_prev) with one P for both frames (the caller passes
+// P_prev twice; this frame's own P = V_g^-1 x VP_k would make RG = R) (the mod camera instead of the picked block:
+// a stale plurality block). Returns which of them were formed (bits 1 R, 2 R2, 4 RG).
+struct LagInputs {
+    M4 vp{}, vp_prev{}, vp_prev2{}, V{}, P{}, V_prev{}, P_prev{};
+    bool prev = false, prev2 = false, cam = false;   // vp_prev / vp_prev2 valid; V/P and V_prev/P_prev valid
+};
+inline uint32_t lag_candidates(const LagInputs &in, M4 *R, M4 *R2, M4 *RG) {
+    uint32_t got = 0;
+    if (in.prev && reprojection(in.vp, in.vp_prev, R))
+        got |= 1u;
+    if (in.prev2 && reprojection(in.vp, in.vp_prev2, R2))
+        got |= 2u;
+    if (in.cam && reprojection(mul(in.V, in.P), mul(in.V_prev, in.P_prev), RG))
+        got |= 4u;
+    return got;
+}
+
+// ---- Run 15 Wave B contract (review/run15/waveb-plan.md P0) -------------------------------------------------------
+// FndFrame: what the foundation hands its consumers (WB2 MetalFX temporal, WB3 SSR, later RT) for the scene window
+// that just closed. WB1a fills it at the end of fnd_end (d3d9_metal.mm); consumers only read it, between fnd_end and
+// upscale_end (scene_split's END order: fnd_end(); ssr_apply(); upscale_end(true);). valid == false: skip and count.
+// Texture ids are non-owning (__bridge) pointers to the id<MTLTexture> the Metal device holds in fnd_tex_; nullptr
+// when that attachment does not exist this frame (surface off, MSAA on, ...).
+enum MatClass : uint8_t {   // S1.r tag (surface attachments F2, WB1b): the material class of the pixel's last write
+    MAT_UNKNOWN = 0,
+    MAT_ROAD = 1,
+    MAT_CAR_PAINT = 2,
+    MAT_CAR_CHROME = 3,
+    MAT_CAR_OTHER = 4,   // tyres, lights, interior, undercarriage
+    MAT_GLASS = 5,
+    MAT_WATER = 6,
+    MAT_WORLD = 7,       // world geometry with no normal map
+    MAT_WORLD_NM = 8,    // world geometry with a normal map
+    MAT_FOLIAGE = 9,
+    MAT_SKY = 10,
+    MAT_COUNT = 11
+};
+enum SurfFlag : uint8_t {   // S1.b flag bits
+    SURF_DYNAMIC = 1,         // moving object (cars, traffic, props): its own motion is not in the camera reprojection
+    SURF_ALPHA_TEST = 2,      // alpha-tested (foliage, fences): thin, unreliable history
+    SURF_CAMERA_LOCKED = 4,   // the player's car under the chase camera (the q[16] class)
+    SURF_INSTANCED_W = 8,     // world matrix not recoverable (instanced W, debug view 10)
+    SURF_EMISSIVE = 16,       // lights, signs: no reflection receiver
+    SURF_DECAL = 32,          // decal / overlay draw: the tag of the surface below
+    // 64, 128 free (WB1b may claim them; state it in wb-wb1b.md)
+};
+// S0 RGBA16F: xy oct-encoded WORLD normal (oct_encode), z roughness 0..1, w linear view depth (the pass's own, for the
+// stale test |S0.w - linear depth| < 1/512 rel). S1 RGBA8: r MatClass, g F0 (0..1), b SurfFlag bits, a reserved 0.
+// S2 R8: reactive 0..1 (MetalFX reactive mask). motion RG16F: current -> previous, render pixels, x right y down.
+struct FndFrame {
+    bool valid = false;
+    uint32_t reset = 0;          // RESET_* bits of this window (0: the history may be used)
+    uint64_t frame = 0;          // the foundation's window serial (fnd_.windows)
+    uint32_t w = 0, h = 0;       // render (scene backing) pixels
+    double jx = 0.0, jy = 0.0;   // this window's jitter in render pixels (0 with jitter off)
+    M4 vp{}, vp_inv{};           // VP_k (the picked world -> clip) and its inverse
+    M4 V{}, P{};                 // V_g (world -> view, y down) and the D3D projection P = V_g^-1 x VP_k
+    double zn = 0.0, zf = 0.0;   // P's near / far (view units)
+    void *motion = nullptr;      // id<MTLTexture> RG16F
+    void *s0 = nullptr;          // id<MTLTexture> RGBA16F normal oct / roughness / linear depth
+    void *s1 = nullptr;          // id<MTLTexture> RGBA8 tag / F0 / flags
+    void *s2 = nullptr;          // id<MTLTexture> R8 reactive
+    void *scene = nullptr;       // id<MTLTexture> the single-sample scene colour (the window's back buffer backing)
+    void *depth = nullptr;       // id<MTLTexture> the scene depth
+};
+// Octahedral normal encoding (C++ reference; WB1b ports it to MSL for S0.xy): unit n -> [-1, 1]^2 and back.
+inline void oct_encode(const double n[3], double *u, double *v) {
+    double s = std::fabs(n[0]) + std::fabs(n[1]) + std::fabs(n[2]);
+    if (s <= 0.0) {
+        *u = *v = 0.0;
+        return;
+    }
+    double x = n[0] / s, y = n[1] / s;
+    if (n[2] < 0.0) {
+        double ox = (1.0 - std::fabs(y)) * (x >= 0.0 ? 1.0 : -1.0);
+        double oy = (1.0 - std::fabs(x)) * (y >= 0.0 ? 1.0 : -1.0);
+        x = ox;
+        y = oy;
+    }
+    *u = x;
+    *v = y;
+}
+inline void oct_decode(double u, double v, double n[3]) {
+    double x = u, y = v, z = 1.0 - std::fabs(u) - std::fabs(v);
+    if (z < 0.0) {
+        double t = -z;
+        x += x >= 0.0 ? -t : t;
+        y += y >= 0.0 ? -t : t;
+    }
+    double l = std::sqrt(x * x + y * y + z * z);
+    n[0] = x / l;
+    n[1] = y / l;
+    n[2] = z / l;
+}
 
 } // namespace remaster_fnd

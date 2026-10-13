@@ -135,6 +135,23 @@ bool resolve_in(const std::string &root, const std::string &rel, bool create, bo
     *out = host;
     return true;
 }
+} // namespace
+// Remaster run 29 (NFSMW modding stage 1, review/run29/modding-design.md 2.3): a pushed LAYER never serves program
+// files (Windows executables, libraries, script plugins, shortcuts): a mod folder cannot place one where the game or
+// the host would open it. The profile root and the game folder are not filtered (the game's own files resolve).
+bool mods_overlay_layer_name_refused(const std::string &rel) {
+    static const char *const kExt[] = {".exe", ".dll", ".asi", ".com", ".bat", ".cmd", ".scr", ".lnk",
+                                       ".dylib", ".so", ".app", ".pkg"};
+    size_t cut = rel.find_last_of("/\\");
+    const std::string name = lower(cut == std::string::npos ? rel : rel.substr(cut + 1));
+    for (const char *e : kExt) {
+        const size_t n = strlen(e);
+        if (name.size() > n && !name.compare(name.size() - n, n, e))
+            return true;
+    }
+    return false;
+}
+namespace {
 std::vector<std::string> roots_snapshot() {
     RegistryLock lock;
     std::vector<std::string> roots{profile()};
@@ -312,9 +329,13 @@ bool mods_cpp_overlay_resolve(const std::string &rel, int op, std::string *out) 
     out->clear();
     const auto roots = roots_snapshot();
     if (op == WIN32_FILE_READ || op == WIN32_FILE_LIST) {
-        for (const auto &root : roots)
-            if (resolve_in(root, rel, false, false, out))
+        const bool refused = mods_overlay_layer_name_refused(rel);
+        for (size_t i = 0; i < roots.size(); ++i) {
+            if (refused && i > 0 && i + 1 < roots.size())   // a layer root (run 29)
+                continue;
+            if (resolve_in(roots[i], rel, false, false, out))
                 return true;
+        }
         return false;
     }
     if (rel.empty())
@@ -330,6 +351,8 @@ bool mods_cpp_overlay_resolve(const std::string &rel, int op, std::string *out) 
     if (op == WIN32_FILE_WRITE && os_lstat(target.c_str(), &st) != 0) {
         for (size_t i = 1; i < roots.size(); ++i) {
             std::string source;
+            if (i + 1 < roots.size() && mods_overlay_layer_name_refused(rel))   // run 29: never copied up from a layer
+                continue;
             if (!resolve_in(roots[i], rel, false, false, &source))
                 continue;
             if (!copy_up(source, target))
@@ -346,9 +369,12 @@ struct ListCollector {
     std::unordered_set<std::string> *seen;
     std::vector<std::pair<std::string, std::string>> *out;
     std::string host;
+    bool layer;
 };
 int collect_listing(const char *name, void *user) {
     ListCollector *c = (ListCollector *)user;
+    if (c->layer && mods_overlay_layer_name_refused(name))   // run 29: a layer's program files are not listed
+        return 0;
     if (c->seen->insert(lower(name)).second)
         c->out->push_back({name, c->host + "/" + name});
     return 0;
@@ -360,11 +386,12 @@ void mods_cpp_overlay_list(const std::string &rel,
     if (!out)
         return;
     std::unordered_set<std::string> seen;
-    for (const auto &root : roots_snapshot()) {
+    const auto roots = roots_snapshot();
+    for (size_t i = 0; i < roots.size(); ++i) {
         std::string host;
-        if (!resolve_in(root, rel, false, false, &host))
+        if (!resolve_in(roots[i], rel, false, false, &host))
             continue;
-        ListCollector collect{&seen, out, host};
+        ListCollector collect{&seen, out, host, i > 0 && i + 1 < roots.size()};
         os_listdir(host.c_str(), collect_listing, &collect);
     }
 }

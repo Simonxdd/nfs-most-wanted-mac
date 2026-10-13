@@ -24,13 +24,23 @@ def test_drive_settings_are_real_settings():
 def test_script_grammar():
     s = m.script(3, 1000)
     for line in s.splitlines():
-        assert re.fullmatch(r'wait \d+|key (RETURN|RIGHT|UP) (down|up)|quit', line), line
-    assert s.count('key RIGHT down') == 3 + 3 and s.rstrip().endswith('quit')
-    # run 28 (frames seen): 3 Enter (intro, title, alias answer), Right Right Enter (Quick Race), Right Enter (past
-    # Quick Play), Enter (Circuit); then Right x track, 4 Enter into the race, the accelerator held
-    keys = [l.split()[1] for l in s.splitlines() if l.endswith(' down')]
-    assert keys[:9] == ['RETURN', 'RETURN', 'RETURN', 'RIGHT', 'RIGHT', 'RETURN', 'RIGHT', 'RETURN', 'RETURN']
-    assert keys[9:12] == ['RIGHT'] * 3 and keys[12:16] == ['RETURN'] * 4 and keys[16:] == ['UP']
+        assert re.fullmatch(r'wait \d+|key (RETURN|RIGHT|UP) (down|up)|quit'
+                            r'|keyuntil RETURN fe:[A-Za-z_]+\.fng>0 every \d+ within \d+', line), line
+    assert s.rstrip().endswith('quit')
+    # run 33 (D-183, census frames viewed): each screen change waits for its screen; the keys in order
+    keys = [l.split()[1] + (':' + l.split()[2] if l.startswith('keyuntil') else '') for l in s.splitlines()
+            if l.endswith(' down') or l.startswith('keyuntil')]
+    assert keys[:8] == ['RETURN:fe:MC_Main.fng>0', 'RETURN:fe:MainMenu.fng>0', 'RIGHT', 'RIGHT',
+                        'RETURN:fe:MainMenu_Sub.fng>0', 'RIGHT', 'RETURN', 'RETURN:fe:Track_Select.fng>0']
+    assert keys[8:11] == ['RIGHT'] * 3
+    assert keys[11:15] == ['RETURN:fe:Track_Options.fng>0', 'RETURN:fe:Car_Select.fng>0', 'RETURN:fe:Dialog.fng>0',
+                           'RETURN:fe:Loading.fng>0'] and keys[15:] == ['UP']
+    # every keyuntil presses again only after its screen change had time to show (census: under 1.5 s), so a second
+    # press cannot land on the next screen; none waits forever
+    for l in s.splitlines():
+        if l.startswith('keyuntil'):
+            w = l.split()
+            assert int(w[4]) >= 3000 and int(w[4]) < int(w[6]) <= 90000, l
 
 
 def test_stuff_pack_front_end():
@@ -49,7 +59,7 @@ def test_stuff_pack_front_end():
     assert not m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox 360 front end on (Stuff Pack: FrontB, GlobalB, garages)')
     assert not m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox light pools: 0 terrain-piece items, 0 lit items')   # printed in menus too
     assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Xbox light pools: 412 terrain-piece items, 3 lit items')
-    assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Time of day: day cycle from 0.382 (a day lasts 60 min)')   # PC look
+    assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Time of day: day cycle from 0.382 (a day lasts 60 min)')
     assert m.WORLD.search('[mod core.nfsmw] core.nfsmw: Time of day: 0.393')
 
 
@@ -78,9 +88,26 @@ def test_merge(tmp_path):
 def test_plumbing():
     setup = (ROOT / 'tools/setup_kit/setup.py').read_text()
     assert '--no-shader-seed' in setup and 'tools/warm_seed/warmseed.py' in setup and '"--warm-seed", seed' in setup
+    assert '"--shader-seed"' in setup and 'WARM_DEFAULT_ON = False' in setup   # 3.0, owner D-185: opt-in
     assert '--warm-seed' in (ROOT / 'tools/setup_kit/package.py').read_text()
     launch = (ROOT / 'tools/setup_kit/defaults/Launch').read_text()
     assert re.search(r'if \[ -f "\$app_resources/ShaderWarmSeed/order.txt" \]; then\n\s+export RECOMP_D3D9_SHADER_WARM_SEED=', launch)
     assert 'unset RECOMP_D3D9_SHADER_WARM_SEED' in launch
     swift = (ROOT / 'tools/installer/SetupApp.swift').read_text()
-    assert '"--no-shader-seed"' in swift and 'shader warm-up: drive ' in swift
+    assert '"--no-shader-seed"' in swift and '"--shader-seed"' in swift and 'shader warm-up: drive ' in swift
+    assert '@Published var shaderSeed = false' in swift
+
+
+def test_setup_warm_flags_parse():
+    """3.0 (owner D-185): --shader-seed / --no-shader-seed with WARM_DEFAULT_ON (off) as the default."""
+    import argparse, pytest
+    src = (ROOT / 'tools/setup_kit/setup.py').read_text()
+    block = src[src.index('    warm = ap.add_mutually_exclusive_group()'):src.index('    hd = ap.add_mutually_exclusive_group()')]
+    for default in (False, True):
+        ap = argparse.ArgumentParser()
+        exec(re.sub(r'^    ', '', block, flags=re.M), {'ap': ap, 'WARM_DEFAULT_ON': default})
+        assert ap.parse_args([]).shader_seed is default
+        assert ap.parse_args(['--shader-seed']).shader_seed is True
+        assert ap.parse_args(['--no-shader-seed']).shader_seed is False
+        with pytest.raises(SystemExit):
+            ap.parse_args(['--shader-seed', '--no-shader-seed'])

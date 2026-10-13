@@ -11,8 +11,7 @@
  * Settings (owner, 6 Oct: both on by default): remaster_textures turns tagging on and points the host at the pack
  * bundled with the app (Resources/RemasterPack, beside Resources/Game); remaster_a2c sets the host's alpha-to-coverage.
  * Explicit environment values (the harness) always win: RECOMP_REMASTER_PACK, NFSMW_REMASTER_TEXTAG,
- * RECOMP_REMASTER_A2C. The host reads them when the device is created, after this runs.
- * 2.0.4: player_mods (on, every Look) turns on the kit's Mods folder scan (kit remaster_mods.h). */
+ * RECOMP_REMASTER_A2C. The host reads them when the device is created, after this runs. */
 #ifndef REMASTER_TEX_H
 #define REMASTER_TEX_H
 #include <stddef.h>
@@ -95,7 +94,7 @@ static void rtex_create_wrap(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvoc
     if ((g_rtex_calls & 1023u) == 0) rtex_report(api);
 }
 
-/* 2.0.4: 1 when the Mods folder holds anything besides hidden files and our report, 0 when empty or missing. */
+/* R3 run 19: 1 when the Mods folder holds anything besides hidden files and our report, 0 when empty or missing. */
 static int rmods_has_content(const char *dir) {
     DIR *d = opendir(dir);
     if (!d) return 0;
@@ -135,21 +134,63 @@ static void rtex_defaults(const PopModApi *api) {
         api->log(api, "core.nfsmw: Remaster textures on (pack from RECOMP_REMASTER_PACK)");
     } else {
         api->log(api, "core.nfsmw: Remaster textures off (setting)");
-        /* Run 14: grass and natural water find their textures by these keys. With the pack off (Look Xbox 360 / PC
-         * read remaster_textures as Original) tagging stayed off, so both drew nothing (ALL14). Tagging alone replaces
+        /* Run 14: grass and natural water find their textures by these keys. With the pack off (the retired
+         * Xbox 360 / PC looks read remaster_textures as Original) tagging stayed off, so both drew nothing (ALL14). Tagging alone replaces
          * nothing: the kit's replacement cache starts only with a pack. */
-        const int64_t w = setting("natural_water", 1), g = setting("grass", 0);
-        if ((w == 1 || w == 2 || (g >= 1 && g <= 3)) && !getenv("NFSMW_REMASTER_TEXTAG")) {
+        const int64_t w = setting("natural_water", 1);
+        if ((w == 1 || w == 2) && !getenv("NFSMW_REMASTER_TEXTAG")) {
             setenv("NFSMW_REMASTER_TEXTAG", "1", 0);
-            api->log(api, "core.nfsmw: Remaster texture keys on (no pack) for grass / natural water");
+            api->log(api, "core.nfsmw: Remaster texture keys on (no pack) for natural water");
         }
     }
-    /* 2.0.4 player mods: textures from <profile>/Mods, matched by file name, win over the pack; the kit scans the
-     * folder when the device is created and writes Mods/mods-report.txt (kit remaster_mods.h). Not in k_look_follow:
-     * a mod is the player's own choice, so it shows in every Look. The game texture list Setup made from the player's
-     * game files (Resources/ModNames/known.tsv, hashes and sizes only) lets the report judge names and shapes and
-     * resolves 23-character names; without it every mod file still loads. Texture keys go on only when the folder
-     * holds something (an empty folder changes nothing); RECOMP_REMASTER_PACK_MODS names another folder. */
+    /* R3 run 17 (owner 10 Oct, D-124): sharp race HUD, minimap and fonts: the UI pack
+     * at Resources/RemasterPack/ui (harness/a2/ui_pack.py, upscaled and edge-redrawn from the game's own files). It
+     * needs the texture keys, with or without the world pack; RECOMP_REMASTER_PACK_UI from the environment wins. */
+    if (setting("hud_hd", 1) != 0) {   /* D-125: on by default */
+        const char *ui = getenv("RECOMP_REMASTER_PACK_UI");
+        int ok = ui && *ui;
+        if (!ok) {
+            const char *exe = getenv("RECOMP_EXE");
+            const char *slash = exe ? strrchr(exe, '/') : NULL;
+            char dir[PATH_MAX], idx[PATH_MAX + 16];
+            if (slash && (size_t)(slash - exe) + 24 < sizeof dir) {
+                snprintf(dir, sizeof dir, "%.*s/../RemasterPack/ui", (int)(slash - exe), exe);
+                snprintf(idx, sizeof idx, "%s/index.tsv", dir);
+                ok = access(idx, R_OK) == 0;
+                if (ok)
+                    setenv("RECOMP_REMASTER_PACK_UI", dir, 0);
+            }
+        }
+        if (ok && !getenv("NFSMW_REMASTER_TEXTAG"))
+            setenv("NFSMW_REMASTER_TEXTAG", "1", 0);
+        api->log(api, ok ? "core.nfsmw: sharp HUD and minimap on (UI pack)"
+                         : "core.nfsmw: HD HUD on, but this app has no UI pack");
+        /* R3 run 28 (A2, D-130; review/run28/a2-design.md): the vector HUD, the race gauges and icons redrawn as SVG
+         * from the originals' shapes (harness/ui2), at Resources/RemasterPack/ui2; its rows win over the UI pack's and
+         * the rest keep theirs. Run 30 (owner, D-173): one "HD HUD" switch (hud_hd) loads both layers; hud_vector is
+         * hidden and no longer read. RECOMP_REMASTER_PACK_UI2 from the environment wins. */
+        if (ok) {
+            const char *ui2 = getenv("RECOMP_REMASTER_PACK_UI2");
+            int ok2 = ui2 && *ui2;
+            const char *exe = getenv("RECOMP_EXE");
+            const char *slash = exe ? strrchr(exe, '/') : NULL;
+            char dir2[PATH_MAX], idx2[PATH_MAX + 16];
+            if (!ok2 && slash && (size_t)(slash - exe) + 24 < sizeof dir2) {
+                snprintf(dir2, sizeof dir2, "%.*s/../RemasterPack/ui2", (int)(slash - exe), exe);
+                snprintf(idx2, sizeof idx2, "%s/index.tsv", dir2);
+                ok2 = access(idx2, R_OK) == 0;
+                if (ok2)
+                    setenv("RECOMP_REMASTER_PACK_UI2", dir2, 0);
+            }
+            api->log(api, ok2 ? "core.nfsmw: vector HUD on (UI pack v2)"
+                              : "core.nfsmw: vector HUD on, but this app has no UI pack v2");
+        }
+    }
+    /* R3 run 19 player mods (ROADMAP M, D-127/D-132; review/run18/m-design.md): textures from <profile>/Mods, matched
+     * by file name, win over both packs; the kit scans the folder when the device is created and writes
+     * Mods/mods-report.txt (kit remaster_mods.h). A mod is the player's own choice. The game texture list (Resources/ModNames/known.tsv, hashes and sizes only) lets the report judge
+     * names and shapes and resolves 23-character names. Texture keys go on only when the folder holds something
+     * (an empty folder changes nothing); RECOMP_REMASTER_PACK_MODS (the harness) names another folder. */
     if (setting("player_mods", 1) != 0) {
         if (!getenv("RECOMP_REMASTER_MODS"))
             setenv("RECOMP_REMASTER_MODS", "1", 0);
@@ -174,6 +215,9 @@ static void rtex_defaults(const PopModApi *api) {
     } else {
         api->log(api, "core.nfsmw: player mods off (setting)");
     }
+    /* R3 run 17 Xbox 360 lens drops, our own version (D-124): the PC drop draw gets the kit's raindrop variant. */
+    if (setting("rain_drops", 1) == 1 && !getenv("RECOMP_REMASTER_RAINDROP"))   /* D-125: default on */
+        setenv("RECOMP_REMASTER_RAINDROP", "1", 0);
     if (!getenv("RECOMP_REMASTER_A2C"))
         setenv("RECOMP_REMASTER_A2C", a2c ? "1" : "0", 0);
     /* Soft particles (owner 6 Oct: approved, on by default): 2 = depth copy + fade. */
@@ -204,6 +248,33 @@ static void rtex_defaults(const PopModApi *api) {
         api->log(api, ok ? "core.nfsmw: sunlit wall relief on (pilot, strength 1)"
                          : "core.nfsmw: sunlit wall relief on, but this app has no PbrPilot pack");
     }
+    /* R3 run 18 material sets (D-131; review/run18/c-design-check.md): the ORM slot pack at Resources/Materials for the
+     * road sheen's roughness. Default off until the owner's eye check; the kit also requires 16 GB of RAM or more
+     * (D-131 item 3) and the road sheen on, and logs ON/OFF with the reason. */
+    if (tex && setting("material_sets", 1) == 1 && !getenv("RECOMP_REMASTER_MATERIALS")) {
+        const char *exe = getenv("RECOMP_EXE");
+        const char *slash = exe ? strrchr(exe, '/') : NULL;
+        char dir[PATH_MAX], idx[PATH_MAX + 16];
+        int ok = 0;
+        if (slash && (size_t)(slash - exe) + 20 < sizeof dir) {
+            snprintf(dir, sizeof dir, "%.*s/../Materials", (int)(slash - exe), exe);
+            snprintf(idx, sizeof idx, "%s/index.tsv", dir);
+            ok = access(idx, R_OK) == 0;
+        }
+        if (ok) {
+            setenv("RECOMP_REMASTER_MATERIALS", "1", 0);
+            setenv("RECOMP_REMASTER_MATERIALS_PACK", dir, 0);
+        }
+        api->log(api, ok ? "core.nfsmw: material sets on (road roughness; the renderer checks memory)"
+                         : "core.nfsmw: material sets on, but this app has no Materials pack");
+    }
+    /* R3 run 29 wall sun sheen (review/run29/c-facade-design.md; off until the owner's eye check): sunlit walls and
+     * metal props whose key is in the Materials pack's glint.tsv get a GGX sun highlight from their ORM map (kit
+     * PixelVariant.facadeglint). Needs the material set (the kit logs "facadeglint: ON/OFF" with the reason). */
+    if (tex && setting("material_sets", 1) == 1 && setting("wall_sheen", 0) == 1 && !getenv("RECOMP_REMASTER_FACADEGLINT")) {
+        setenv("RECOMP_REMASTER_FACADEGLINT", "1", 0);
+        api->log(api, "core.nfsmw: wall sun sheen on (walls and metal from the material set)");
+    }
     /* Run 13 road sheen (owner 7 Oct: road glare at a real intensity; default on since run 14, owner 8 Oct): the road
      * effect's sun highlight becomes a measured GGX sheen (kit PixelVariant.roadsheen). Run 14 (owner: "the reflection
      * intensity on rain seemed a bit strong"): road_sheen_rain % scales the sheen on a fully wet road (kit
@@ -219,13 +290,6 @@ static void rtex_defaults(const PopModApi *api) {
     { const int64_t w = setting("natural_water", 1);
       if ((w == 1 || w == 2) && !getenv("RECOMP_REMASTER_WATER"))
           setenv("RECOMP_REMASTER_WATER", w == 1 ? "1" : "2", 0); }
-    /* Run 13 grass (our own version of the 360 GRASS fur), run 14 real blades (owner 8 Oct): Low/Medium/High = blade
-       quality 1/2/3 near the camera plus 0/1/2 light shells beyond the blade fade (kit grass.h). Default off. */
-    { const int64_t g = setting("grass", 0);
-      if (g >= 1 && g <= 3 && !getenv("RECOMP_REMASTER_GRASS_BLADES"))
-          setenv("RECOMP_REMASTER_GRASS_BLADES", g == 1 ? "1" : g == 2 ? "2" : "3", 0);
-      if (g >= 1 && g <= 3 && !getenv("RECOMP_REMASTER_GRASS"))
-          setenv("RECOMP_REMASTER_GRASS", g == 1 ? "0" : g == 2 ? "1" : "2", 0); }
     /* Run 13 wall parallax (our own version of the 360/X360Stuff parallax on WORLDNORMALMAP). */
     if (setting("wall_parallax", 1) != 0 && !getenv("RECOMP_REMASTER_PARALLAX"))
         setenv("RECOMP_REMASTER_PARALLAX", "1", 0);

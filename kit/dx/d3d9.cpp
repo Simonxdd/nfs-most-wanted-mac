@@ -908,7 +908,7 @@ static std::unordered_map<uint32_t, GpuMirror> &gpu_mirrors() {
 // Test75: a resource's mirror without the hash lookup (map nodes do not move; gpu_forget clears the
 // cached pointer before it erases). RECOMP_AB_SWITCHES=mirrors (TEST ONLY) takes the lookup every time.
 static GpuMirror &mirror_of(ComObj *o) {
-    if (o->gpu_mirror && !recomp_ab::old(recomp_ab::MIRRORS))
+    if (o->gpu_mirror)
         return *static_cast<GpuMirror *>(o->gpu_mirror);
     GpuMirror &m = gpu_mirrors()[o->id];
     o->gpu_mirror = &m;
@@ -1094,9 +1094,8 @@ static void gpu_sync(ComObj *o) {
     if (!o)
         return;
     GpuMirror &m = gpu_define(o);
-    // Remaster C3: nothing to upload for most bound textures on most draws. The A/B switch "mirrors" walks the
-    // slots every time, as before.
-    if (!m.any_dirty && !recomp_ab::old(recomp_ab::MIRRORS))
+    // Remaster C3: nothing to upload for most bound textures on most draws.
+    if (!m.any_dirty)
         return;
     m.any_dirty = false; // every slot below is cleared before anything else can mark it again
     for (uint32_t slot = 0; slot < m.cpu_dirty.size(); ++slot) {
@@ -2100,12 +2099,11 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
         pl.vs_key = d9sh::code_key(pl.vs.data(), pl.vs.size());
     if (!pl.ps_key)
         pl.ps_key = d9sh::code_key(pl.ps.data(), pl.ps.size());
-    const bool lookup_always = recomp_ab::old(recomp_ab::MIRRORS);
-    if (!pl.vs_prog || pl.vs_prog_key != pl.vs_key || lookup_always) {
+    if (!pl.vs_prog || pl.vs_prog_key != pl.vs_key) {
         pl.vs_prog = &d9sh::program_for_key(pl.vs_key, pl.vs.data(), pl.vs.size());
         pl.vs_prog_key = pl.vs_key;
     }
-    if (!pl.ps_prog || pl.ps_prog_key != pl.ps_key || lookup_always) {
+    if (!pl.ps_prog || pl.ps_prog_key != pl.ps_key) {
         pl.ps_prog = &d9sh::program_for_key(pl.ps_key, pl.ps.data(), pl.ps.size());
         pl.ps_prog_key = pl.ps_key;
     }
@@ -2155,7 +2153,7 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
     }
     d.vs_key = pl.vs_key;
     d.ps_key = pl.ps_key;
-    d.programs_ready = lookup_always ? 0u : 1u; // Remaster C2 (A/B switch "mirrors" restores the second lookup)
+    d.programs_ready = 1u; // Remaster C2: the render thread uses these programs (no second lookup)
     prof_t = rprof::lap(rprof::DRAW_PROG, prof_t);
     d.vs = pl.vs.data();
     d.vs_size = (uint32_t)pl.vs.size();
@@ -2212,8 +2210,6 @@ static void gpu_draw(ComObj *dev, HostD9Draw &d) {
     // A volume-LOD draw passes a local copy (sampler [s][9] raised), not the pipeline's tables: version 0 so the queue
     // neither reuses an earlier table for it nor lets the next draw reuse this one (Remaster C-A4L1 finding).
     d.state_version = volume_lod ? 0 : pl.state_version;
-    d.state_dirty = volume_lod ? nullptr : pl.state_dirty; // Remaster A4-lite: deltas only of the pipeline's own tables
-    d.pipeline_id = dev->id;
     // Test133: private render state 251 = a guest texture pointer the mod counts as scene content under the HUD.
     if (pl.rs[251] && pl.sampler_tex[0]) {
         ComObj *scene_tex = com_this(pl.rs[251]);

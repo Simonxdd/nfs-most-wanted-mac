@@ -381,73 +381,15 @@ static void mirror_lights(const PopModApi *api, pop_cpu_v1 *cpu,
  * native mod presentation. Apply at load/save/reset boundaries, not per draw.
  * This explicit native option is reversible for original-PC comparisons. */
 static void video_mod_lighting(const PopModApi *api) {
-    /* Appearance (Test77). PC: the PC's own colour treatment and OverBright bloom (the Xbox stage stands
-     * aside while either is on); motion blur stays the game's own option. Xbox 360: its colour treatment is
-     * the Xbox stage's, so the PC treatment and bloom are off whatever mod_lighting says. */
-    if (g_look == LOOK_PC) {
-        api->guest_write_u32(api, 0x00901828u, golden_on() ? 1u : 0u); /* VisualTreatment (run 13: the PC toggle) */
-        api->guest_write_u32(api, 0x009017fcu, 1); /* OverBright */
-        return;
-    }
-    if (g_look == LOOK_XBOX) {
-        api->guest_write_u32(api, 0x00901828u, 0);
-        api->guest_write_u32(api, 0x009017fcu, 0);
-    }
+    /* Run 29 (D-163): the PC look (the PC's own treatment and OverBright bloom) is retired; mod_lighting off still
+     * brings the PC's treatment back. */
     /* One bloom: while the Xbox 360 exposure/bloom stage is on (x360_exposure, Test68), the PC
      * OverBright bloom stays off whatever mod_lighting says (owner, Development 56 session). */
-    if (setting("x360_exposure", 1)) api->guest_write_u32(api, 0x009017fcu, 0); /* OverBright */
+    api->guest_write_u32(api, 0x009017fcu, 0); /* OverBright (the stage is always on: x360_exposure retired, D-117) */
     if (!setting("mod_lighting", 1)) return;
     api->guest_write_u32(api, 0x00901828u, 0); /* VisualTreatment: the PC sepia/golden colour grade */
     api->guest_write_u32(api, 0x009017fcu, 0); /* OverBright */
     api->guest_write_u32(api, 0x009017dcu, 0); /* MotionBlur */
-}
-
-/* Once per device update: an applied appearance change takes effect here - the PC treatment/bloom flags
- * at once, the Xbox stage and light passes from the next frame (they read g_look). Resources chosen at
- * launch (look_pc_boot_off) follow at the next launch; the log says so. */
-static void look_poll(const PopModApi *api) {
-    if (g_look_boot < 0) g_look = g_look_boot = look_read();
-    const int look = look_read();
-    static int golden_seen = -1;   /* run 13: the PC look's golden toggle applies at once */
-    const int golden = look == LOOK_PC ? golden_on() : -1;
-    if (look == g_look && golden != golden_seen && g_look == LOOK_PC && golden_seen >= 0) {
-        golden_seen = golden;
-        video_mod_lighting(api);
-        api->log(api, golden ? "core.nfsmw: golden colour filter on (PC treatment)" : "core.nfsmw: golden colour filter off (PC treatment)");
-        return;
-    }
-    golden_seen = golden;
-    if (look == g_look) return;
-    static const char *const names[] = {"Definitive", "Definitive + Xbox 360 colour filter", "PC - Original"};
-    const int from = g_look;
-    g_look = look;
-    video_mod_lighting(api);
-    char line[300];
-    const int pending = (look == LOOK_PC) != (g_look_boot == LOOK_PC);
-    snprintf(line, sizeof line, "core.nfsmw: appearance %s -> %s applied (colour treatment, bloom, light passes)%s",
-             names[from], names[look],
-             pending ? look == LOOK_PC ? "; the Xbox 360 textures, sky and scenery light data loaded at launch stay until the next launch"
-                                       : "; the Xbox 360 textures, sky and scenery light data load at the next launch"
-                     : "");
-    api->log(api, line);
-}
-
-/* TEST ONLY (NFSMW_TEST_LOOK_KEY set): F3 steps Definitive -> Definitive with the Xbox 360 colour filter -> PC ->
- * Definitive, F4 the other way (the smoke runner's keys; not with the F3/F4 exposure/aux-pass test keys), through the same settings path the menu's Apply uses, so the six directed changes can be captured in one
- * run. The key is consumed. Not installed otherwise. */
-static uint32_t g_look_key_hook;
-static int32_t look_test_key(const PopModApi *api, int32_t dik, int32_t vk, int32_t down, void *user) {
-    (void)vk; (void)user;
-    if (dik != 0x3d && dik != 0x3e) return 0; /* DIK_F3 forward, DIK_F4 back */
-    if (down) {
-        const int next = (look_read() + (dik == 0x3d ? 1 : 2)) % 3;   /* 0 Definitive, 1 + filter, 2 PC */
-        char line[96];
-        snprintf(line, sizeof line, "core.nfsmw: appearance: TEST key sets %d", next);
-        api->log(api, line);
-        api->settings_set(api, "appearance", LOOK_HYBRID);
-        api->settings_set(api, "look", next == LOOK_PC ? 2 : 0);   /* run 13: the master switch carries the PC look */
-    }
-    return 1;
 }
 
 /* Anti-aliasing from the settings menu (Test73; MENU3 slice 1; Off / 2x / 4x owner 8 Oct). The game's own FSAA value

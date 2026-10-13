@@ -156,6 +156,7 @@ std::array<uint32_t, 18> run(int fps, uint8_t flags, bool corrected) {
 } // namespace
 
 MOD_TEST_SUITE(animation_real_guest_cadence) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     // Compare the shipping hook to the ORIGINAL generated animation routines
     // at the original cadence, including sprite and morph wrap rules.
     for (uint8_t flags : {uint8_t(0), uint8_t(8), uint8_t(1), uint8_t(4), uint8_t(2)}) {

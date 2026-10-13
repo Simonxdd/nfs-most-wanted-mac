@@ -160,6 +160,19 @@ typedef struct RecompDirty {
 } RecompDirty;
 extern RecompDirty g_dirty[RECOMP_DIRTY_SLOTS];
 extern uint32_t g_dirty_count;
+
+/* NFSMW run 31 (D-177; NFSMW review/run31/store-check-design.md): every store used to re-load g_watch_len and
+ * g_dirty_count after itself (the compiler cannot prove a byte store into guest memory leaves them alone): two
+ * loads, an OR and a branch per store, about 9 % of the busiest thread in a profile. g_store_hooks is the one flag
+ * the stores read, (a watch is armed) or (a dirty range is open), kept by recomp_store_hooks_update() wherever
+ * either changes. A game that never opens a dirty range (no DirectDraw Lock) can compile the stores of its
+ * translated code without the check at all: game.toml [translate] store_hooks = false makes the build define
+ * RECOMP_STORE_HOOKS=0 for the generated library only; the kit's own code keeps the check. */
+#ifndef RECOMP_STORE_HOOKS
+#define RECOMP_STORE_HOOKS 1
+#endif
+extern uint32_t g_store_hooks;
+void recomp_store_hooks_update(void);
 static inline void recomp_dirty(uint32_t a, uint32_t n) {
     for (uint32_t i = 0; i < g_dirty_count; ++i) {
         RecompDirty *d = &g_dirty[i];
@@ -184,8 +197,21 @@ RECOMP_COLD_OUTLINE void recomp_store_hooks(uint32_t a, uint32_t n, uint64_t v, 
     recomp_dirty(a, n);
 }
 static inline void recomp_watch(uint32_t a, uint32_t n, uint64_t v) {
-    if (RECOMP_UNLIKELY((g_watch_len | g_dirty_count) != 0))
+#if RECOMP_STORE_HOOKS
+    if (RECOMP_UNLIKELY(g_store_hooks != 0))
         recomp_store_hooks(a, n, v, 1);
+#else
+    (void)a, (void)n, (void)v;
+#endif
+}
+/* The float and tbyte stores never reported to the watch: the dirty ranges only. */
+static inline void recomp_dirty_store(uint32_t a, uint32_t n) {
+#if RECOMP_STORE_HOOKS
+    if (RECOMP_UNLIKELY(g_dirty_count != 0))
+        recomp_store_hooks(a, n, 0, 0);
+#else
+    (void)a, (void)n;
+#endif
 }
 
 RECOMP_HOT_INLINE void wr8(uint32_t a, uint8_t v) {
@@ -219,13 +245,11 @@ RECOMP_HOT_INLINE double rdf64(uint32_t a) {
 }
 RECOMP_HOT_INLINE void wrf32(uint32_t a, float v) {
     memcpy(g_mem + a, &v, 4);
-    if (RECOMP_UNLIKELY(g_dirty_count != 0))
-        recomp_store_hooks(a, 4, 0, 0);
+    recomp_dirty_store(a, 4);
 }
 RECOMP_HOT_INLINE void wrf64(uint32_t a, double v) {
     memcpy(g_mem + a, &v, 8);
-    if (RECOMP_UNLIKELY(g_dirty_count != 0))
-        recomp_store_hooks(a, 8, 0, 0);
+    recomp_dirty_store(a, 8);
 }
 
 /* 80-bit x87 extended precision.  x87 registers are `double` here (plan
@@ -278,8 +302,7 @@ static inline void wrbcd80(uint32_t a, double v) {
     if (!(fabs(r) < 1e18)) {
         static const uint8_t indefinite[10] = {0, 0, 0, 0, 0, 0, 0, 0xc0, 0xff, 0xff};
         memcpy(g_mem + a, indefinite, 10);
-        if (RECOMP_UNLIKELY(g_dirty_count != 0))
-            recomp_store_hooks(a, 10, 0, 0);
+        recomp_dirty_store(a, 10);
         return;
     }
     uint64_t m = (uint64_t)fabs(r);
@@ -293,8 +316,7 @@ static inline void wrbcd80(uint32_t a, double v) {
     if (r < 0 || (r == 0 && signbit(v)))
         out[9] = 0x80;
     memcpy(g_mem + a, out, 10);
-    if (RECOMP_UNLIKELY(g_dirty_count != 0))
-        recomp_store_hooks(a, 10, 0, 0);
+    recomp_dirty_store(a, 10);
 }
 
 /* ------------------------------------------------------------- cpu state */

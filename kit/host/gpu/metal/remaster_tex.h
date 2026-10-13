@@ -5,9 +5,14 @@
 //   RECOMP_REMASTER_TEXDUMP=<dir>  write each keyed texture's top level once, as <key>.dds (or .bin for formats
 //                                  DDS does not describe here), plus keys.csv with per-key draw counts;
 //   RECOMP_REMASTER_TEXSTATS=1     counters only;
-//   RECOMP_REMASTER_MODS=1         2.0.4: the player's Mods folder (remaster_mods.h), read after the pack so a mod
-//                                  wins over it; the folder is RECOMP_REMASTER_PACK_MODS or <profile>/Mods, the game
-//                                  texture list RECOMP_REMASTER_MODS_KNOWN. Works alone too.
+//   RECOMP_REMASTER_PACK_UI=<dir>  R3 run 17 (D-124): the UI pack (sharp race HUD, minimap, fonts), read after the
+//                                  world pack so its keys win; rows "albedo" join the startup warm, rows
+//                                  "albedo_ondemand" (the 17k minimap tiles) load when first bound. Works alone too.
+//   RECOMP_REMASTER_PACK_UI2=<dir> R3 run 28 (A2, D-130): the vector HUD pack (gauges and icons redrawn as SVG), read
+//                                  after the UI pack so its rows win; the textures it does not list keep their UI row.
+//   RECOMP_REMASTER_MODS=1         R3 run 19 (D-132): the player's Mods folder (remaster_mods.h), read after the UI
+//                                  pack so a mod wins over both packs; the folder is RECOMP_REMASTER_PACK_MODS or
+//                                  <profile>/Mods, the game texture list RECOMP_REMASTER_MODS_KNOWN. Works alone too.
 //                                  RECOMP_REMASTER_MODS_LOG=1 (TEST) logs each mod key the first time it is drawn.
 //   RECOMP_REMASTER_PACK=<dir>     replacement pack (step 2): <dir>/index.tsv lines "<key hex16>\t<slot>\t<file>"
 //                                  (slot "albedo"; other material slots reserved) naming DDS files with full mip
@@ -38,6 +43,9 @@ namespace remaster {
 // Remaster run 12: the synthetic key of a texture key's normal slot (key ^ kSlotNormal; real keys carry the variant,
 // 0 today, in the low 32 bits).
 constexpr uint64_t kSlotNormal = 0x4E524D31ull;
+// R3 run 18 material sets (D-131; review/run18/c-design-check.md): the ORM slot (R cavity, G perceptual roughness,
+// B metalness; BC7, linear), key ^ kSlotOrm ('ORM1').
+constexpr uint64_t kSlotOrm = 0x4F524D31ull;
 
 class TexKeys {
 public:
@@ -47,15 +55,26 @@ public:
             dir_ = d;
             ::mkdir(d, 0755);
             on_ = true;
+            count_binds_ = true;
         }
         const char *s = std::getenv("RECOMP_REMASTER_TEXSTATS");
         if (s && *s == '1')
-            on_ = true;
+            on_ = count_binds_ = true;
         const char *p = std::getenv("RECOMP_REMASTER_PACK");
         if (p && *p) {
             on_ = true;
             pack_dir_ = p;
             read_index();
+        }
+        const char *u = std::getenv("RECOMP_REMASTER_PACK_UI");
+        if (u && *u) {
+            on_ = true;
+            read_ui_index(u);
+        }
+        const char *u2 = std::getenv("RECOMP_REMASTER_PACK_UI2");
+        if (u2 && *u2) {
+            on_ = true;
+            read_ui_index(u2, "vector HUD");
         }
         const char *m = std::getenv("RECOMP_REMASTER_MODS");
         if (m && *m == '1') {
@@ -80,7 +99,8 @@ public:
     }
     // Remaster run 12 PBR step 2 pilot: the "normal" rows of <dir>/index.tsv, under key ^ kSlotNormal (absolute paths).
     // A real key (low 32 bits = the variant) that equals a synthetic one keeps its row; the slot row is dropped.
-    size_t add_slots(const std::string &dir) {
+    // R3 run 18: any slot name and xor (the material sets' "orm" rows under kSlotOrm).
+    size_t add_slots(const std::string &dir, const char *slot_name = "normal", uint64_t xorv = kSlotNormal) {
         std::FILE *f = std::fopen((dir + "/index.tsv").c_str(), "r");
         if (!f) {
             std::fprintf(stderr, "[remaster] pack: no slot index.tsv in %s\n", dir.c_str());
@@ -90,9 +110,9 @@ public:
         size_t n = 0, clash = 0;
         while (std::fgets(line, sizeof line, f)) {
             char key[32], slot[32], file[400];
-            if (line[0] == '#' || std::sscanf(line, "%31s %31s %399s", key, slot, file) != 3 || std::strcmp(slot, "normal"))
+            if (line[0] == '#' || std::sscanf(line, "%31s %31s %399s", key, slot, file) != 3 || std::strcmp(slot, slot_name))
                 continue;
-            const uint64_t k = std::strtoull(key, nullptr, 16) ^ kSlotNormal;
+            const uint64_t k = std::strtoull(key, nullptr, 16) ^ xorv;
             if (pack_.count(k)) {
                 ++clash;
                 continue;
@@ -101,20 +121,21 @@ public:
             ++n;
         }
         std::fclose(f);
-        std::fprintf(stderr, "[remaster] pack: %zu normal slot entries from %s (%zu dropped: key clash)\n", n, dir.c_str(),
-                     clash);
+        std::fprintf(stderr, "[remaster] pack: %zu %s slot entries from %s (%zu dropped: key clash)\n", n, slot_name,
+                     dir.c_str(), clash);
         return n;
     }
+    bool has(uint64_t key) const { return pack_.count(key) != 0; }   // run 18: a pack row (albedo or slot) exists
     bool swap() const { return swap_; }
-    bool has_pack() const { return !pack_dir_.empty() || !mod_keys_.empty(); }
-    // 2.0.4: a row from the player's Mods folder (read by the cache workers; fixed after construction).
+    bool has_pack() const { return !pack_dir_.empty() || ui_rows_ > 0 || !mod_keys_.empty(); }
+    // Run 19: a row from the player's Mods folder (read by the cache workers; fixed after construction).
     bool is_mod(uint64_t key) const { return !mod_keys_.empty() && mod_keys_.count(key) != 0; }
     // Run 15: every pack key with its file (albedo rows and slot rows), for the cache's startup warm.
     std::vector<std::pair<uint64_t, std::string>> pack_files() const {
         std::vector<std::pair<uint64_t, std::string>> v;
         v.reserve(pack_.size());
         for (const auto &kv : pack_)
-            if (!ondemand_.count(kv.first))   // 2.0.4: mod rows the list does not know, or over 2048 px, load when bound
+            if (!ondemand_.count(kv.first))   // run 17: the UI pack's minimap tiles stay out of the warm
                 v.emplace_back(kv.first, kv.second[0] == '/' ? kv.second : pack_dir_ + "/" + kv.second);
         return v;
     }
@@ -142,8 +163,8 @@ public:
     void dropped_rewrite() { ++dropped_rewrite_; changed_ = true; }
 
     // A DDS file's mip chain. Formats (all UNORM; sRGB variants are rejected for our packs: the game samples
-    // linear): legacy A8R8G8B8 (BGRA8), DXT1 (BC1), DXT3 (BC2, 2.0.4), DXT5 (BC3); DX10 header BGRA8 87, RGBA8 28,
-    // BC1 71, BC2 74, BC3 77, BC7 98. 2.0.4: the header is checked against the file size before anything is
+    // linear): legacy A8R8G8B8 (BGRA8), DXT1 (BC1), DXT3 (BC2, run 19), DXT5 (BC3); DX10 header BGRA8 87, RGBA8 28,
+    // BC1 71, BC2 74, BC3 77, BC7 98. Run 19: the header is checked against the file size before anything is
     // allocated (remaster_mods.h dds_probe); a player's mod file (`mod`) also takes the sRGB-tagged twins, X8 and
     // RGBA-ordered uncompressed files, at most 8192 px, and gets a box-filtered mip chain when an uncompressed file
     // has none.
@@ -229,6 +250,8 @@ public:
             ++dropped_;
     }
     void bind(uint64_t key) {
+        if (!count_binds_)   // run 29 (D-167): the per-key map only for the dump / stats (keys.csv, the report)
+            return;
         if (key) {
             ++keys_[key].binds;
             ++keyed_binds_;
@@ -287,7 +310,7 @@ private:
         bool dumped = false;
     };
 
-    // 2.0.4: a mod file without mips (uncompressed): each level the 2x2 average of the one above (an odd edge
+    // Run 19: a mod file without mips (uncompressed): each level the 2x2 average of the one above (an odd edge
     // repeats its last texel), every channel apart, so a HUD texture drawn small does not shimmer.
     static void box_mips(Image &im) {
         uint32_t w = im.w, h = im.h;
@@ -312,7 +335,7 @@ private:
         }
     }
 
-    // 2.0.4: the player's Mods folder, scanned once here; its rows win over the pack.
+    // Run 19 (ROADMAP M): the player's Mods folder, scanned once here; its rows win over both packs.
     void read_mods() {
         const char *d = std::getenv("RECOMP_REMASTER_PACK_MODS");
         std::string dir = d && *d ? d : "";
@@ -449,9 +472,42 @@ private:
         std::fprintf(stderr, "[remaster] pack: %zu albedo entries from %s\n", pack_.size(), pack_dir_.c_str());
     }
 
+    // R3 run 17 (D-124): the UI pack's rows, stored with absolute paths; a key also in the world pack takes the UI
+    // file (HUD keys are not world keys, but the A2 batch upscaled a few HUD textures with the photo model).
+    void read_ui_index(const std::string &dir, const char *what = "UI") {
+        std::FILE *f = std::fopen((dir + "/index.tsv").c_str(), "r");
+        if (!f) {
+            std::fprintf(stderr, "[remaster] pack: no UI index.tsv in %s\n", dir.c_str());
+            return;
+        }
+        char line[512];
+        size_t won = 0, lazy = 0, rows = 0;
+        while (std::fgets(line, sizeof line, f)) {
+            char key[32], slot[32], file[400];
+            if (line[0] == '#' || std::sscanf(line, "%31s %31s %399s", key, slot, file) != 3)
+                continue;
+            const bool ondemand = !std::strcmp(slot, "albedo_ondemand");
+            if (!ondemand && std::strcmp(slot, "albedo"))
+                continue;
+            const uint64_t k = std::strtoull(key, nullptr, 16);
+            won += pack_.count(k);
+            pack_[k] = dir + "/" + file;
+            if (ondemand) {
+                ondemand_.insert(k);
+                ++lazy;
+            }
+            ++ui_rows_;
+            ++rows;
+        }
+        std::fclose(f);
+        std::fprintf(stderr, "[remaster] pack: %zu %s entries from %s (%zu on demand, %zu replace earlier rows)\n",
+                     rows, what, dir.c_str(), lazy, won);
+    }
+
     bool on_ = false, changed_ = false, swap_ = true;
-    std::unordered_set<uint64_t> ondemand_;                // 2.0.4: mod rows kept out of the startup warm
-    std::unordered_set<uint64_t> mod_keys_;                // 2.0.4: rows from the Mods folder (never changed later)
+    size_t ui_rows_ = 0;
+    std::unordered_set<uint64_t> ondemand_;
+    std::unordered_set<uint64_t> mod_keys_;                // run 19: rows from the Mods folder (never changed later)
     std::unordered_map<uint64_t, uint64_t> mod_binds_;     // draw-binds of each mod key's replacement
     uint64_t mod_shown_ = 0, mod_replaced_binds_ = 0, mod_logged_ = 0;
     bool mod_log_ = false;
@@ -464,6 +520,7 @@ private:
     std::unordered_map<uint64_t, Key> keys_;
     uint64_t frames_ = 0, defined_ = 0, late_ = 0, dropped_ = 0, dumped_ = 0, keyed_binds_ = 0,
              unkeyed_binds_ = 0;
+    bool count_binds_ = false;   // RECOMP_REMASTER_TEXDUMP or _TEXSTATS (run 29: was every draw with a pack)
 };
 
 } // namespace remaster

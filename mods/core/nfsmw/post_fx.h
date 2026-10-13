@@ -321,7 +321,7 @@ static void pfx_frame(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *
 static void pfx_view_colour(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
     (void)cpu; (void)inv; (void)user;
     if (!g_pfx_enabled || g_pfx_broken) return;
-    if (setting("dof_scene_depth", 1) && get_u32(0x00925e90u) == 6) {
+    if (get_u32(0x00925e90u) == 6) {
         const uint32_t dev = get_u32(0x00982bdcu), g[] = {PFX_OUT};
         if (g_pfx_view_ds) ++g_pfx_sd_unused;
         pfx_release(&g_pfx_view_ds);

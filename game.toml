@@ -49,8 +49,11 @@ volatile_reads = []
 # real code; neither is 16-byte aligned.
 # The four above, plus pointer-referenced helpers found by scanning the image
 # (2026-09-17, docs/analysis.md).
+# Run 31 (D-177): the translated stores carry no watch / dirty-range check (NFSMW imports d3d9 only, never DirectDraw,
+# so no dirty range is ever opened; the kit refuses one if asked: review/run31/store-check-design.md).
+store_hooks = false
 # Native replacements for the renderer's hottest x87 routines and the sound mixer's two inner loops (native/).
-native = { header = "native/overrides.h", sources = ["native/culling.c", "native/usa_movies.cpp", "native/audio_mix.cpp", "native/aabb.cpp", "native/shadow_cast.cpp"] }
+native = { header = "native/overrides.h", sources = ["native/culling.c", "native/usa_movies.cpp", "native/audio_mix.cpp", "native/aabb.cpp", "native/shadow_cast.cpp", "native/ftol.cpp", "native/matcopy.cpp", "native/rotate.cpp", "native/drawitems.cpp", "native/texreplace.cpp", "native/render_entry.cpp", "native/light_material.cpp"] }
 # The engine's frame time, 1/60, is one pooled .rdata float with 17 readers.
 # The three that set the simulation rate read a slot in the section padding
 # instead, which the core.nfsmw mod fills (mods/core/nfsmw/nfsmw.c).

@@ -74,6 +74,15 @@ public:
         const uint64_t ram = physical_ram();
         if (!budget_env_)
             budget_ = default_budget(ram, pack_bytes);
+        // R3 run 29 (review/run29/presets-design.md 3): below 16 GB the budget is 768 MB and a pack that does not fit
+        // it (with the warm rule's 1/16) is not used at all: the 8 Oct owner log showed a 2.2 GB pack at 1536 MB is
+        // constant evictions and pop-in, not HD. The game's own textures are drawn; Setup's smaller pack fits.
+        if (!budget_env_ && ram < (16ull << 30) && pack_bytes + pack_bytes / 16 > budget_) {
+            std::fprintf(stderr, "[remaster] cache: HD textures OFF on this %llu GB Mac (pack %.0f MB does not fit the "
+                                 "%zu MB budget); the game's own textures are drawn\n",
+                         (unsigned long long)(ram >> 30), pack_bytes / 1048576.0, budget_ >> 20);
+            return;
+        }
         const bool warm = keys_.swap() && warm_mode_ != 0 && (warm_mode_ == 1 || pack_bytes + pack_bytes / 16 <= budget_);
         if (warm) {
             std::lock_guard<std::mutex> lock(job_mutex_);
@@ -251,14 +260,17 @@ private:
         return ::stat(f.c_str(), &st) == 0 ? (size_t)st.st_size : 0;
     }
     static uint64_t physical_ram() {
+        if (const char *o = std::getenv("RECOMP_REMASTER_RAM_GB"); o && *o)   // TEST ONLY (run 29 memory tiers)
+            return (uint64_t)std::strtoull(o, nullptr, 10) << 30;
         uint64_t m = 0;
         size_t n = sizeof m;
         return ::sysctlbyname("hw.memsize", &m, &n, nullptr, 0) == 0 ? m : 0;
     }
     // >= 16 GB: 3072 MB, or the whole pack plus 1/8 and 256 MB when that is more, at most a quarter of RAM.
+    // Run 29: below 16 GB, 768 MB (start() turns the pack off when it does not fit).
     static size_t default_budget(uint64_t ram, size_t pack) {
         if (ram < (16ull << 30))
-            return (size_t)1536 << 20;
+            return (size_t)768 << 20;
         const size_t want = std::max<size_t>((size_t)3072 << 20, pack + pack / 8 + ((size_t)256 << 20));
         return std::min<size_t>(want, std::max<size_t>((size_t)3072 << 20, (size_t)(ram / 4)));
     }
@@ -407,7 +419,7 @@ private:
         }
     }
     void load(const Job &j, Done &d) {
-        TexKeys::Image im = TexKeys::read_dds(j.file, keys_.is_mod(j.key));   // 2.0.4: a player's mod file
+        TexKeys::Image im = TexKeys::read_dds(j.file, keys_.is_mod(j.key));   // run 19: a player's mod file
         if (im.levels.empty())
             return; // LOAD_FAILED
         if ((TexKeys::block_fmt(im.fmt) && !bc_) || (j.game_w && j.game_h && !size_ok(im.w, im.h, j.game_w, j.game_h))) {

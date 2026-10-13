@@ -8,10 +8,10 @@ It runs on your Mac only. Nothing is uploaded, and nothing it makes is meant to 
 
 | | |
 |---|---|
-| **Mac** | Apple Silicon (M1 or later). Developed and tested on macOS 27 (M5 Pro); earlier macOS versions are untested. The app is built for the macOS version your Mac runs. About 10 GB free: the setup's tools and working files take about 4–5 GB, and the finished app is about the size of your game folder. |
+| **Mac** | Apple Silicon (M1 or later). Developed and tested on macOS 27 (M5 Pro); earlier macOS versions are untested. The app is built for the macOS version your Mac runs. About 10 GB free: the setup's tools and working files take about 4–5 GB, and the finished app is about the size of your game folder (about 6 GB more with the optional HD textures). |
 | **The game** | Your own **Need for Speed: Most Wanted (2005)** for PC (Black Edition), as an **installed game folder** with its own working `speed.exe` (the folder that holds `speed.exe`, `GLOBAL`, `TRACKS`, `MOVIES` and so on). Copy it to the Mac from a Windows PC where it is installed, or from a backup. The setup checks first that the exe is one it can use, and stops without changing anything if it is not. |
 | **Xcode Command Line Tools** | Apple's free developer tools. The Setup app offers to install them; in Terminal, `xcode-select --install`. |
-| **Time** | About 10 minutes the first time on an M5 Pro, including the one-time analysis of `speed.exe`, plus about 35 minutes for the shader warm-up (optional, see below); allow longer on older Macs. Updates are quicker. |
+| **Time** | About 10 minutes the first time on an M5 Pro, including the one-time analysis of `speed.exe`. The optional shader warm-up adds about 35 minutes and the optional HD textures about 1¼ hours (see below); allow longer on older Macs. Updates are quicker. |
 
 The setup downloads the free developer tools it needs into its own folder (`~/Library/NFSMW-Native-Setup`):
 **Ghidra** (the NSA's open-source disassembler, used once to map the functions in your `speed.exe`), a **Java
@@ -29,8 +29,9 @@ This project does not provide, link to, or explain how to obtain any game file. 
 3. **Choose your game folder.** The app checks your `speed.exe` straight away and changes nothing if it can't be used.
 4. If asked, **install Apple's Command Line Tools**; the app waits for them.
 5. Optional: add your copy of `XenonEffects.tpk`, of the Xbox 360 movies or of the Xbox 360 Stuff Pack download
-   (its unzipped *Easy Installation* folder), turn the shader warm-up off (it is on: it adds time but removes the
-   first-drive stutter), or choose where the game goes (Applications by default).
+   (its unzipped *Easy Installation* folder), tick *Prepare the shaders now* (about 35 minutes more; it removes the
+   first-drive stutter), tick *Make HD textures now* (about 1¼ hours, see below), or choose where the game goes
+   (Applications by default).
 6. Click **Build**. You see each step, the progress and the time; the Mac stays awake while it runs. When it finishes,
    click **Open the game**.
 
@@ -59,11 +60,31 @@ The setup prints each step and what it found:
    [companion guide](COMPANION_GUIDE.md#optional-mods).
 7. **Package:** `dist/NFS Most Wanted Native.app` is written, with your game data inside it.
 
-Before packaging, step 6 also prepares the game's shaders (2.0.4, about 35 minutes): the built game drives a few
-Quick Races offscreen, with no window, and keeps every shader it translates, so your first drive does not stutter.
-Skip it with `--no-shader-seed` (or untick *Prepare the shaders now* in the Setup app); the game then prepares them
+If you ask for it, step 6 also prepares the game's shaders (about 35 minutes): the built game drives a few Quick Races
+offscreen, with no window, and keeps every shader it translates, so your first drive does not stutter. It is off by
+default (3.0): tick *Prepare the shaders now* in the Setup app or pass `--shader-seed`. Without it the game prepares them
 while you drive, and the first minutes may hitch once at each new sight. Either way they are kept in your profile
 folder after the first time.
+
+#### HD textures (optional, 2.1)
+
+Step 6 can also make the **HD texture pack**: every world, car and front-end texture of *your* game is upscaled on
+your Mac (a CC0 upscaling model on the GPU for the world, a sharp resampling for cars, signs and the HUD), some roads,
+rock, grass, metal and wood get fine real-world grain from CC0 photos (ambientCG), and the result goes into the app,
+where the *Remaster HD textures* setting uses it. With the Xbox 360 Stuff Pack, its textures are upscaled too.
+
+- **Turn it on:** tick *Make HD textures now* in the Setup app, or pass `--hd-textures` (`--no-hd-textures` skips it).
+  It is off unless you turn it on.
+- **Time:** about 1¼ hours on an M5 Pro the first time (measured, including the one-time downloads), much longer on a
+  base M1. The Mac stays awake.
+- **Disk and downloads:** the app grows by about 2 GB, and the work folder `~/Library/NFSMW-Native-Setup/hd`
+  holds about 3.5 GB (its own Python tools with PyTorch, about 1 GB downloaded once; the 140 MB model; the photos,
+  about 140 MB; your game's textures and the pack). Every download is checked against a pinned SHA-256.
+- **Later or interrupted:** run Setup again with the option on. It carries on where it stopped and reuses everything
+  it already made; nothing is made twice. Deleting `~/Library/NFSMW-Native-Setup/hd` frees the space (the app keeps
+  its copy).
+- If it cannot finish, the setup log says `HD textures: skipped` and the app is made without it: the game's own
+  textures show, exactly as before.
 
 ### Options
 
@@ -72,6 +93,7 @@ folder after the first time.
 | `--xenon-effects FILE` | Use this `XenonEffects.tpk` for the sparks and light trails (otherwise the game folder's `scripts/XenonEffects.tpk` is used if it's there). |
 | `--x360-movies DIR` | Use your own copy of the US Xbox 360 disc's movies from this folder (otherwise an `X360-Movies` folder in the game folder is used if it's there). Only the exact original files are added. |
 | `--no-pools` | Skip building the light pools. |
+| `--hd-textures` / `--no-hd-textures` | Make (or skip) the HD texture pack (about 1¼ hours on an M5 Pro; off unless asked; see *HD textures* above). |
 | `--out DIR` | Write the app somewhere other than `dist/`. |
 | `--check-only` | Only check the game folder and its `speed.exe`, then stop. |
 
@@ -94,9 +116,13 @@ to `Save Backups/` first (see the [companion guide](COMPANION_GUIDE.md#keeping-y
 install mods or packs over your game folder: the guide lists what is safe to add and how.
 
 **From 1.0 to 2.0:** your saves and settings carry over. Anti-aliasing starts at Off once (choose 2x or 4x again),
-and the look is now *Look* (Definitive by default). A 1.0 profile keeps its own Dolby Digital choice (new profiles
+and the look is Definitive (3.0 retired the *Look* setting). A 1.0 profile keeps its own Dolby Digital choice (new profiles
 start with it on). What changed:
 [What's new in 2.0](COMPANION_GUIDE.md#whats-new-in-20).
+
+**From 2.x to 3.0:** your saves and settings carry over. The *Look* setting is retired: Definitive is the only look.
+A profile saved on the *Xbox 360* or *PC* look opens in Definitive once (from the Xbox 360 look the golden colour
+filter stays on); the features with an Xbox 360 version keep your own choice.
 
 ## Removing it
 

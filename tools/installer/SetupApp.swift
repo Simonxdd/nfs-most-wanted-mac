@@ -99,15 +99,17 @@ func prepareSource() throws {
     try version.write(to: marker, atomically: true, encoding: .utf8)
 }
 
-func setupArguments(game: URL, dest: URL, xenon: URL?, movies: URL? = nil, stuff: URL? = nil, shaderSeed: Bool = true,
-                    checkOnly: Bool) -> [String] {
+func setupArguments(game: URL, dest: URL, xenon: URL?, movies: URL? = nil, stuff: URL? = nil, shaderSeed: Bool = false,
+                    hdTextures: Bool = false, hdHud: Bool = true, checkOnly: Bool) -> [String] {
     var a = [workDir.appendingPathComponent("setup.sh").path, game.path]
     if checkOnly { return a + ["--check-only"] }
     a += ["--out", dest.path]
     if let x = xenon { a += ["--xenon-effects", x.path] }
     if let m = movies { a += ["--x360-movies", m.path] }
     if let st = stuff { a += ["--x360-stuff", st.path] }
-    if !shaderSeed { a += ["--no-shader-seed"] }
+    a += [shaderSeed ? "--shader-seed" : "--no-shader-seed"]   // 3.0 (owner D-185): off by default
+    a += [hdTextures ? "--hd-textures" : "--no-hd-textures"]   // 2.1
+    if !hdHud { a += ["--no-hd-hud"] }   // 3.0
     return a
 }
 
@@ -118,6 +120,16 @@ func failureSummary(_ lines: [String]) -> String {
         return text.contains("setup.log") ? text + "\nClick Show the log to see them." : text
     }
     return lines.suffix(6).joined(separator: "\n")
+}
+
+/// 3.0 (run 33, measured on an M5 Pro in the release test): the app about 10 minutes, the HD textures about 75, the
+/// shader warm-up about 35.
+func firstBuildEstimate(hd: Bool, shaders: Bool) -> String {
+    let minutes = 10 + (hd ? 75 : 0) + (shaders ? 35 : 0)
+    if minutes < 60 { return "\(minutes) minutes" }
+    let quarters = Int((Double(minutes) / 15).rounded())
+    let hours = quarters / 4, rest = ["", "¼", "½", "¾"][quarters % 4]
+    return "\(hours)\(rest) hour" + (hours == 1 && rest.isEmpty ? "" : "s")
 }
 
 /// The last progress the setup log shows: the compile's [done/total], or the analysis's exported functions.
@@ -141,6 +153,22 @@ func logProgress(_ text: Substring) -> (fraction: Double?, detail: String?) {
             break
         }
         if line.contains("shader warm-up: seed ready") { fraction = 1; detail = "Shaders prepared"; break }
+        // 2.1: "HD textures: N of M (model 2.1 s/tex; about 48 min left)"
+        if line.contains("min left"), let r = line.range(of: "HD textures: "),
+           let of = line.range(of: " of ", options: [], range: r.upperBound..<line.endIndex),
+           let a = Double(line[r.upperBound..<of.lowerBound]) {
+            let b = Double(line[of.upperBound...].prefix(while: { $0.isNumber })) ?? 0
+            if b > 0 { fraction = a / b }
+            var left = ""
+            if let about = line.range(of: "about ", options: [], range: of.upperBound..<line.endIndex) {
+                left = ", about " + String(line[about.upperBound...].prefix(while: { c in c != ")" }))
+            }
+            detail = "Making HD textures: \(Int(a)) of \(Int(b))\(left)"
+            break
+        }
+        if line.contains("HD textures: pack ready") { fraction = 1; detail = "HD textures made"; break }
+        if line.contains("HD textures: making the material set") { detail = "Making the road and wall materials"; break }
+        if line.contains("HD HUD: making") { detail = "Making the HD HUD"; break }   // 3.0
         if let r = line.range(of: "Exported "), line.contains("functions") {
             detail = "Analysing: " + line[r.lowerBound...].replacingOccurrences(of: ";", with: ",")
             break
@@ -179,7 +207,11 @@ final class Setup: ObservableObject {
     @Published var xenon: URL?
     @Published var movies: URL?
     @Published var stuff: URL?
-    @Published var shaderSeed = true
+    // 3.0 (owner D-185): both off, so the game is playable about 10 minutes after Build; each toggle shows its time,
+    // and running Setup again with one ticked adds it (the build is reused).
+    @Published var shaderSeed = false
+    @Published var hdTextures = false
+    @Published var hdHud = true   // 3.0 (owner D-172, D-173): on; a few minutes
     @Published var dest: URL
     @Published var tools = hasCommandLineTools()
     @Published var installingTools = false
@@ -332,7 +364,7 @@ final class Setup: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = setupArguments(game: game, dest: dest, xenon: xenon, movies: movies, stuff: stuff, shaderSeed: shaderSeed,
-                                     checkOnly: false)
+                                     hdTextures: hdTextures, hdHud: hdHud, checkOnly: false)
         p.currentDirectoryURL = workDir
         p.environment = setupEnvironment()
         let pipe = Pipe()
@@ -505,6 +537,10 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Toggle("Prepare the shaders now (about 35 minutes more; without it the first drive stutters once)",
                            isOn: $s.shaderSeed).disabled(s.busy)
+                    Toggle("Make HD textures now, with road and wall materials (about 1¼ hours on an M5 Pro, much longer on a base M1; you can run the setup again later to add them)",
+                           isOn: $s.hdTextures).disabled(s.busy)
+                    Toggle("Make the HD HUD (a few minutes: sharper gauges, minimap and fonts)",
+                           isOn: $s.hdHud).disabled(s.busy)
                     HStack {
                         Text("Put the game in:")
                         Text(s.dest.path).lineLimit(1).truncationMode(.middle)
@@ -554,7 +590,7 @@ struct ContentView: View {
                     TimelineView(.periodic(from: .now, by: 1)) { _ in Text(s.elapsedText()).monospacedDigit() }
                 }
                 if !s.detail.isEmpty { Text(s.detail).font(.caption).foregroundStyle(.secondary) }
-                Text("The first build takes about 10 minutes on a recent Mac, longer on older ones. Keep the Mac plugged in; it stays awake while this runs.")
+                Text("The first build takes about \(firstBuildEstimate(hd: s.hdTextures, shaders: s.shaderSeed)) on an M5 Pro, longer on older Macs. Keep the Mac plugged in; it stays awake while this runs.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 logView
                 HStack { Spacer(); Button("Stop") { s.cancel() } }
@@ -565,6 +601,12 @@ struct ContentView: View {
                 Text("Your saves and settings will be in ~/Library/Application Support/\(gameAppName)/. "
                      + "The first launch takes a little longer while the Mac prepares the game's shaders.")
                     .font(.caption).foregroundStyle(.secondary)
+                if !s.hdTextures || !s.shaderSeed {
+                    Text("Optional, later: run this Setup again with \(s.hdTextures ? "" : "Make HD textures")"
+                         + "\(!s.hdTextures && !s.shaderSeed ? " and " : "")\(s.shaderSeed ? "" : "Prepare the shaders")"
+                         + " ticked for sharper textures and a smooth first drive. Your build is reused; close the game first.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 HStack {
                     Button("Open the game") { s.openGame() }.keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent)
                     Button("Show in Finder") { s.showGame() }

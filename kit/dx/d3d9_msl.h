@@ -36,6 +36,8 @@ struct D9PSParams {
     float fog_color[4];
     float fog_start, fog_end, fog_density, pad1;
     int32_t bconst[4][4];
+    float fade[4];      // Remaster run 27 scenery fade-in (D-153): [0] = dither threshold 0..1, 0 = off; read only by
+                        // shaders patched at compile time (d3d9_metal.mm d9_fade_patch), others ignore the extra bytes
 };
 // Remaster run 14 lit smoke (PixelVariant.smoke): the draw's fragment buffer(5). World space (z up, metres). The host
 // fills it from the core mod's per-draw marker and the kind table (host/gpu/metal/smoke_light.h, which also holds the
@@ -49,14 +51,6 @@ struct D9SmokeParams {
     float light[4]; // flare: xyz the flare (world), w intensity x flicker (0 = none)
     float lcol[4];  // flare: rgb light colour, w radius (m)
     float nearf[4]; // near-camera fade start (m), 1 / its range (0 = none), debug view (0 off, 1 ratio, 2 kind), 0
-};
-// Remaster run 14 grass blades (kit/host/gpu/metal/grass.h): the blade draw's vertex buffer(19). grass_blade_vs_patch
-// declares the same layout in MSL.
-struct D9GrassBlade {
-    float eye[4];   // xyz: the camera in POSITION space (the WORLD VS eye constant); w: host seconds, wrapped at 1000
-    float fade[4];  // full-density radius, fade end (m), blade height (m), base width (m)
-    float wind[4];  // direction xy (unit), amplitude (x height), gust weight
-    float misc[4];  // metres per pixel at 1 m, strip segments, cell fade-in seconds, 0
 };
 
 namespace d9msl {
@@ -90,10 +84,6 @@ struct PixelVariant {
     // WORLDNORMALMAP props, stages 0 and 1), 2 = the diffuse-only form (PS_Pools: WORLD streets, stage 0). Pair it with
     // the same VertexVariant pool value. Unchanged source when 0.
     uint8_t pool = 0;
-    // Remaster run 12 step 0 (TEST ONLY, RECOMP_REMASTER_PBRPROBE=1): the sun-share probe on WORLD lighting shaders
-    // (pixel_is_pbrworld). 1 + class (bit 0: stage-0 key on the allow list, bit 1: main view): the output is unchanged;
-    // sampled fragments add the sun's share of the colour to histogram counters in buffer(3). Unchanged source when 0.
-    uint8_t pbrprobe = 0;
     // Remaster run 12 PBR step 2 pilot (MSL only; review/run12/patch-plan.md): 1 = line D (base x sun) is scaled by
     // the normal-mapped sun ratio k, with the slot normal map at texture 17 (sampled with sm0 at t[0]) and the
     // key's packed manifest values in P.pad1 (unused since the per-pixel tilt cosine keeps the mean). Pair it with VertexVariant pbr (normal, eye-relative position and
@@ -101,8 +91,23 @@ struct PixelVariant {
     uint8_t pbrworld = 0;
     // Remaster run 13 road sheen (MSL only; review/run13/road-sheen-design.md): 1 = the road effect's sun highlight
     // (line S) becomes the measured GGX sheen (pixel_is_roadsheen programs). Unchanged source when 0; pixel_source
-    // fails if the patch does not apply.
+    // fails if the patch does not apply. R3 run 18 material sets: 2 = the same with the dry roughness from the ORM map
+    // at texture 19 (G = perceptual roughness r, alpha = r^2). R3 run 22: 3 = mode 2 + cavity (ORM R as the sheen's specular
+    // occlusion, faded out when wet) + micro normals (tx0's luminance gradient at its own mip tilts the map normal;
+    // the specular AA keeps the un-tilted one); refused when the program has no plain tx0 lookup at t0.
     uint8_t roadsheen = 0;
+    // R3 run 29 facade glint (MSL only; review/run29/c-facade-design.md): 1 = a GGX sun highlight is added to the WORLD
+    // program's sun term before line C (so the shadow and the brightness constant apply to it as to the sun's diffuse):
+    // roughness = the ORM map's G and cavity its R (texture 19, sampled with sm0 at t[0]), F0 = mix(0.04, albedo,
+    // ORM B), the vertex normal tilted by tx0's luminance gradient (micro normals) in the cotangent frame of t5 and the
+    // uv, sun colour x N.L = the per-vertex d1 (iv[1]). Pair it with VertexVariant pbr. Unchanged source when 0;
+    // pixel_source fails if the patch does not apply.
+    uint8_t facadeglint = 0;
+    // R3 run 29 (D-167, review/run29/opt-design.md O1): the scenery fade-in's ordered-dither discard (run 27) as a
+    // variant: only draws whose instance is fading (private render state 243) get it, so every other draw keeps early
+    // depth on Apple GPUs (the run-27 global patch put a discard in every pixel shader). The text is run 27's. Applied
+    // last (after mipbias); a program without the anchors stays unpatched (as before).
+    uint8_t fade = 0;
     // Remaster run 13 natural glass (MSL only): 1 = the building-glass effect's reflection add (reflection x mask +
     // lit colour) becomes Schlick-weighted per pixel (N from t5, V from t6: pair it with VertexVariant glass). Unchanged
     // source when 0; pixel_source fails if the patch does not apply. 2 (Xbox 360 mode, glass_patch_x360) = the 360 window
@@ -122,15 +127,6 @@ struct PixelVariant {
     // K in P.pad1; 2 (TEST ONLY) = the same lookup, colour unchanged (must be neutral); 3 (TEST ONLY) = coordinate paint
     // (green inside the map, darker where shadowed; red outside). Outside the map: lit. Unchanged source when 0.
     uint8_t fefloor = 0;
-    // Remaster run 13 grass shells (MSL only; kit/host/gpu/metal/grass.h): 4..7 = this is a shell of a grass terrain draw:
-    // the colour is darkened toward the root and the alpha is our blade noise at the shell height (P.pad1 = shell index
-    // x 16 + shell count), masked to green-dominant base texels, from the object-space position in t<grass> (pair it
-    // with the same VertexVariant grass). Unchanged source when 0; pixel_source fails if the patch does not apply.
-    uint8_t grass = 0;
-    // Remaster run 14 grass blades (MSL only): 4..7 = this is a blade draw of a grass terrain draw: no alpha change, the
-    // colour gets the blade terms (root self-shadow, per-blade tone, dry tips) from t<grass_blade> = (t along the blade,
-    // seed) (pair it with the same VertexVariant grass_blade). Unchanged source when 0.
-    uint8_t grass_blade = 0;
     // Remaster run 13 Xbox 360 car paint (MSL only; RECOMP_REMASTER_CARENV=2, carpaint_patch): 1 = the car effect's
     // pixel shader (pixel_is_carpaint) gets the 360 paint layers the PC program lacks: a metallic flake normal (own
     // trilinear hash noise at the object position t6.xyz, falloff sat(1.2 - 0.25 d) x 0.04, d = t6.w), a hot spot
@@ -145,6 +141,11 @@ struct PixelVariant {
     // combine (pixel_is_sky programs) becomes the 360 order: in-scatter base, whispy layer lerp, cap lerp, x 2 x 0.5 x
     // vertex colour. Unchanged source when 0; pixel_source fails if the patch does not apply.
     uint8_t sky = 0;
+    // R3 run 17 Xbox 360 lens drops, our own version (MSL only; D-124, review/r3-design/visible-track.md B): 1 = the PC
+    // on-screen drop (pixel_is_raindrop programs) keeps the game's refraction offset and fade but draws a soft lens: one
+    // of four computed shapes per drop, a bright core and a darker rim, the refracted scene shaded, no x1.2 and no hard
+    // mask. Unchanged source when 0; pixel_source fails if the six PC lines are not found.
+    uint8_t raindrop = 0;
     // PLAN_R2 item 10 real HDR (MSL only; review/run14/hdr-design.md s2.2): the draw goes to the float back buffer, so
     // the output is clamped as Direct3D 9 clamps it for its 8-bit target before blending: alpha to [0,1], rgb to
     // [0, ceiling], 1 = ceiling 1.0 (opaque world, decals, HUD: overbright art clips as on PC), 2 = ceiling 64 (additive
@@ -158,19 +159,32 @@ struct PixelVariant {
     // Reads the world position in t7 (pair it with VertexVariant smoke), stage 0 at t[0] and D9SmokeParams at buffer(5).
     // Unchanged source when 0; pixel_source fails if stage 0 is not a plain 2D sampler.
     uint8_t smoke = 0;
+    // Run 15 Wave B WB1b surface attachments (MSL only; host/gpu/metal/surface.h surf_ps_patch, applied last): surf
+    // 1 = also write S0 [[color(4)]] / S1 [[color(5)]] with the depth-derivative normal, 4..7 = with the world normal
+    // in t<surf> (pair it with VertexVariant surf = the same slot); reactive 1..3 = also write S2 [[color(6)]] (1 alpha,
+    // 2 max rgb, 3 max rgb x alpha). Values per draw at buffer(6) (D9SurfParams). Unchanged source when both are 0.
+    uint8_t surf = 0;
+    uint8_t reactive = 0;
     // Run 16 smokeperf (MSL only): tyre smoke drawn with fewer particles keeps its density: the output alpha becomes
     // 1 - (1 - a)^(alphak / 16) (n layers of alpha a cover as n / k layers of that alpha), before the soft fade. The core
     // mod marks the draw (private render state 240 = k x 16, smoke.h). Unchanged source when 0.
     uint8_t alphak = 0;
+    // R3 run 22 texture mip bias under upscaling (MSL only; TEST RECOMP_REMASTER_UPSCALE_MIPBIAS): every plain
+    // tx<n>.sample(sm<n>, uv) of the program gets bias(b) (an existing bias(x) becomes bias(x + b), a texel offset
+    // gets bias(b) before it; level() and gradient lookups are left alone), b = mipbias_value(code), applied after every other patch so their text
+    // matches stay as they are. The draw side sets it only on draws into the jittered scene backing while upscaling.
+    // Unchanged source when 0.
+    uint8_t mipbias = 0;
     uint64_t key() const {
-        return (alphak ? 0x3b9aca07d1b54a33ull * alphak : 0) ^ (smoke ? 0x4cf5ad432745937full * smoke : 0) ^ (hdr ? 0x7c4a7d9f3e1b2c55ull * hdr : 0) ^((uint64_t)sky * 0x3956c25bb9b0e2d3ull) ^ ((uint64_t)parallax * 0x2545f4914f6cdd1dull) ^ ((uint64_t)carpaint * 0x8cb92ba72f3d8dd7ull) ^ ((uint64_t)alpha_mask << 48 | (uint64_t)depth_mask << 32 | (uint64_t)cube_mask << 16 |
+        return (mipbias ? 0x6f4a3c2b1d0e9f87ull * mipbias : 0) ^ (raindrop ? 0x5851f42d4c957f2dull * raindrop : 0) ^ (alphak ? 0x3b9aca07d1b54a33ull * alphak : 0) ^ (surf ? 0x7f4a7c159e3779b9ull * surf : 0) ^ (reactive ? 0x2c1b3c6d58f1a3e5ull * reactive : 0) ^
+               (smoke ? 0x4cf5ad432745937full * smoke : 0) ^ (hdr ? 0x7c4a7d9f3e1b2c55ull * hdr : 0) ^((uint64_t)sky * 0x3956c25bb9b0e2d3ull) ^ ((uint64_t)parallax * 0x2545f4914f6cdd1dull) ^ ((uint64_t)carpaint * 0x8cb92ba72f3d8dd7ull) ^ ((uint64_t)alpha_mask << 48 | (uint64_t)depth_mask << 32 | (uint64_t)cube_mask << 16 |
                 projected_mask) ^
                ((uint64_t)a2c * 0x9e3779b97f4a7c15ull) ^ ((uint64_t)soft * 0xc2b2ae3d27d4eb4full) ^
                ((uint64_t)wetroad * 0x165667b19e3779f9ull) ^ ((uint64_t)shadowpcf * 0x27d4eb2f165667c5ull) ^
-               ((uint64_t)pool * 0x85ebca77c2b2ae63ull) ^ ((uint64_t)pbrprobe * 0x94d049bb133111ebull) ^
-               ((uint64_t)pbrworld * 0xd6e8feb86659fd93ull) ^ ((uint64_t)roadsheen * 0xa0761d6478bd642full) ^ ((uint64_t)glass * 0xe7037ed1a0b428dbull) ^
-               ((uint64_t)water * 0x1d8e4e27c47d124full) ^ ((uint64_t)fefloor * 0x510e527fade682d1ull) ^
-               ((uint64_t)grass * 0x5be0cd19137e2179ull) ^ ((uint64_t)grass_blade * 0x6c62272e07bb0142ull);
+               ((uint64_t)pool * 0x85ebca77c2b2ae63ull) ^
+               ((uint64_t)pbrworld * 0xd6e8feb86659fd93ull) ^ ((uint64_t)roadsheen * 0xa0761d6478bd642full) ^
+               ((uint64_t)facadeglint * 0x9fb21c651e98df25ull) ^ ((uint64_t)fade * 0x7a5b9c3e2d1f4e6bull) ^ ((uint64_t)glass * 0xe7037ed1a0b428dbull) ^
+               ((uint64_t)water * 0x1d8e4e27c47d124full) ^ ((uint64_t)fefloor * 0x510e527fade682d1ull);
     }
 };
 // Remaster run 10: also write the pool varyings (object-space position, normal, uv, tangent: the raw POSITION0,
@@ -191,28 +205,28 @@ struct VertexVariant {
     // Remaster run 13 front-end floor shadows: also write t7 = Mclip x the D3D clip position (before the half-pixel
     // fixup), Mclip = 4 rows at vertex buffer(18): the shadow-map coordinate. vertex_source fails if t7 is written.
     uint8_t fefloor = 0;
-    // Remaster run 13 grass shells: 4..7 = POSITION0 moves along NORMAL0 by P.halfpix.z before the body, and t<grass> =
-    // the unmoved position (the blade noise coordinate). vertex_source fails if the body writes t<grass>.
-    uint8_t grass = 0;
-    // Remaster run 14 grass blades: 4..7 = the instanced blade draw (grass_blade_vs_patch: root inputs per instance,
-    // vertex_id = strip vertex, D9GrassBlade at buffer(19), stage 0 at texture/sampler(0)); t<grass_blade> = (t, seed).
-    uint8_t grass_blade = 0;
     // Remaster run 13 Xbox 360 sky (ours): 1 = the sky in-scatter uses the 360 horizon distance (vertex_is_sky).
     uint8_t sky = 0;
     // Remaster run 14 lit smoke: 1 = also write t7 = the raw POSITION0 input (particle quads are built in world space,
     // 006c1160). vertex_source fails if the body writes t7 or POSITION0 is not declared.
     uint8_t smoke = 0;
+    // Run 15 Wave B WB1b surface attachments: 4..7 = also write t<surf> = the NORMAL0 input x the object -> world rows
+    // at vertex buffer(20) (three float4, surface.h normal_rows). vertex_source fails if t<surf> is written or there is
+    // no NORMAL0 input. Unchanged source when 0.
+    uint8_t surf = 0;
     uint64_t key() const {
-        return (smoke ? 0x8f1bbcdcbfa53e0bull : 0) ^ (sky ? 0x59f111f1923f82a4ull : 0) ^(pool ? 0x6a09e667f3bcc908ull + pool : 0) ^ (pbr ? 0xbb67ae8584caa73bull : 0) ^
+        return (surf ? 0x3a8f05c5d1b2e4a7ull * surf : 0) ^ (smoke ? 0x8f1bbcdcbfa53e0bull : 0) ^ (sky ? 0x59f111f1923f82a4ull : 0) ^(pool ? 0x6a09e667f3bcc908ull + pool : 0) ^ (pbr ? 0xbb67ae8584caa73bull : 0) ^
                (carenv ? 0x3c6ef372fe94f82bull : 0) ^ (carenv == 2 ? 0x5be0cd19137e2179ull : 0) ^ (glass ? 0xa54ff53a5f1d36f1ull : 0) ^ (glass == 2 ? 0x1f83d9abfb41bd6bull : 0) ^
-               (fefloor ? 0x9b05688c2b3e6c1full : 0) ^ (grass ? 0x1f83d9abfb41bd6bull + grass : 0) ^
-               (grass_blade ? 0x2b992ddfa23249d6ull + grass_blade : 0);
+               (fefloor ? 0x9b05688c2b3e6c1full : 0);
     }
 };
 
 // False, with the reason, for a program the translator does not handle.
 bool vertex_source(const d9sh::Program &p, std::string *out, std::string *why);
 bool vertex_source(const d9sh::Program &p, const VertexVariant &v, std::string *out, std::string *why);
+// Run 15 Wave B WB1b: the varying slot (7 down to 4) a surface normal can use for this program pair with these other
+// variants (not written by the vertex program or variant, not read by the pixel program or variant), or -1.
+int surf_slot(const d9sh::Program &vs, const d9sh::Program &ps, const VertexVariant &vv, const PixelVariant &pv);
 // Remaster R2: true when the default translation of `p` contains the road effect's reflection lines (wet roads).
 bool pixel_is_wetroad(const d9sh::Program &p);
 // Remaster run 13 front-end floor shadows: true when the default translation of vertex shader `p` writes the clip
@@ -257,14 +271,21 @@ bool pixel_is_glass1(const d9sh::Program &p);
 // distance sky_vs_patch replaces.
 bool pixel_is_sky(const d9sh::Program &p);
 bool vertex_is_sky(const d9sh::Program &p);
-// Remaster run 13 grass shells: the texture-coordinate slot (4..7) the shell variants can use for (vs, ps), or 0 when
-// the pair cannot take shells (no POSITION0/NORMAL0 input, every slot written by vs or read by ps, or the stage-0
-// lookup of ps is not a plain tx0 sample of interpolants). The two text patches, exposed for offline tests.
-// Run 14 blades (blade = true): POSITION0, NORMAL0 and TEXCOORD0 inputs and a slot neither written by vs nor read by ps.
-uint8_t grass_slot(const d9sh::Program &vs, const d9sh::Program &ps, bool blade = false);
-bool grass_vs_patch(std::string *s, uint32_t position, uint32_t normal, uint32_t slot);
-bool grass_ps_patch(std::string *s, uint32_t slot, bool blade = false);
-bool grass_blade_vs_patch(std::string *s, uint32_t position, uint32_t normal, uint32_t texcoord, uint32_t slot);
+// R3 run 17 Xbox 360 lens drops (ours): true when the default translation of `p` is the PC on-screen drop (the
+// displacement map at tx1 from t0, the two refraction MADs on c0, the fade w x c1.x, the scene at tx0, x c2.x) that
+// raindrop_patch rewrites. raindrop_patch is exposed for offline tests.
+bool pixel_is_raindrop(const d9sh::Program &p);
+bool raindrop_patch(std::string *s);
+// R3 run 22 (TEST): the PixelVariant mipbias code of a bias b (clamped to [-2, 2), 1/64 steps; 0 = off) and back.
+// mipbias_patch adds b to every plain tx<n>.sample of an MSL source (see PixelVariant::mipbias); false only when a
+// lookup's parentheses do not close (the source is left as it was). *count (optional) = the lookups biased. Exposed for
+// offline tests.
+inline uint8_t mipbias_code(float b) {
+    const int c = 128 + (int)(b * 64.0f + (b < 0.0f ? -0.5f : 0.5f));
+    return (uint8_t)(c < 1 ? 1 : c > 255 ? 255 : c);
+}
+inline float mipbias_value(uint8_t c) { return c ? ((int)c - 128) / 64.0f : 0.0f; }
+bool mipbias_patch(std::string *s, uint8_t code, uint32_t *count = nullptr);
 // Remaster run 12 (PBR step 2, challenge 1 and 9): true when the default translation of `p` is a WORLD lighting pixel
 // shader: line D (base x d1) and line C (sun x shadow + base x d0) exactly once, the brightness-plus-in-scatter line
 // after C, a stage-1 lookup (the shadow map: the host also requires a depth texture there), and no read of t[4..6]
@@ -284,10 +305,6 @@ struct SunFlow {
     uint32_t normal = 0, position = 0, eye = 0, light = 0;
 };
 SunFlow vertex_sun_flow(const d9sh::Program &p);
-// The histogram layout of the probe's buffer(3): [metric 2][class 4][subset 3][bin 16] uint counters.
-// metric 0: sun share of the final colour (after brightness and in-scatter), 1: sun share of the lit colour (sun /
-// (sun + radiosity)). subset 0: every sampled fragment, 1: shadow >= 0.5, 2: shadow >= 0.5 and max(d1) >= 0.05.
-constexpr uint32_t kPbrProbeCounters = 2 * 4 * 3 * 16;
 // The pilot's debug counters (RECOMP_REMASTER_PBRWORLD_DEBUG, buffer(3)), uint each:
 // [0,16) k histogram (sunfacing; 16 bins over 0..2), [16,32) dY/Y histogram of the final colour (sunfacing; 16 bins
 // over -0.4..0.4, clamped), 32 sunfacing count, 33/34 dY/Y positive/negative sums x256 (sunfacing), 35 k sum x64

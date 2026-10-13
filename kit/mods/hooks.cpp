@@ -25,8 +25,11 @@
 #include "../runtime/mods_seam.h"
 #include "../runtime/imports.h"
 #include "../runtime/win32.h"
+#include "../platform/ab_phase.h"
 
+#include <atomic>
 #include <deque>
+#include <memory>
 #include <stdio.h>
 #include <string.h>
 #include <vector>
@@ -100,9 +103,18 @@ uint32_t cpu_bound_for(uint32_t owner) {
     return s;
 }
 
+// R3 run 31 O2: each entry's published chain snapshot (below), recomp_func_count slots made once with entries().
+struct ChainSnap;
+std::atomic<const ChainSnap *> *g_snaps = nullptr;
+
 Entry &entry_for(int32_t index) {
-    if (entries().size() < (size_t)recomp_func_count)
+    if (entries().size() < (size_t)recomp_func_count) {
         entries().resize(recomp_func_count);
+        // The snapshot slots, once and at full size: dispatch reads them without the lock, so
+        // they never move (recomp_func_count is fixed for the process).
+        if (!g_snaps)
+            g_snaps = new std::atomic<const ChainSnap *>[recomp_func_count]();
+    }
     return entries()[index];
 }
 
@@ -122,12 +134,14 @@ struct HookRef {
 struct PopHookInvocation {
     uint32_t index, addr, esp_at_entry;
     X86 *cpu;
-    HookRef before[MODS_MAX_CHAIN];
-    uint32_t n_before;
-    HookRef after[MODS_MAX_CHAIN];
-    uint32_t n_after;
-    HookRef replace[MODS_MAX_CHAIN];
-    uint32_t n_replace;
+    // The three chains this invocation runs. They point either into the
+    // entry's published snapshot (immutable, never freed) or, when a hook is
+    // filtered by caller, into the filtered copies below.
+    const HookRef *before, *after, *replace;
+    uint32_t n_before, n_after, n_replace;
+    HookRef before_buf[MODS_MAX_CHAIN];
+    HookRef after_buf[MODS_MAX_CHAIN];
+    HookRef replace_buf[MODS_MAX_CHAIN];
     uint32_t replace_pos;
     uint32_t cur_bound; // the running callback's transfer bound
     // The callback running in THIS frame, so an unwind that drops the frames
@@ -361,6 +375,55 @@ void copy_chain(const std::vector<Hook> &src, HookRef *dst, uint32_t *n, uint32_
     }
 }
 
+// R3 run 31 O2 (review/run29/opt-design.md; A/B switch hookfast, kill RECOMP_OPT_HOOKFAST=0): each entry's
+// chains as an immutable snapshot, rebuilt by publish() under the registry lock and handed to dispatch with a
+// release store, so a hooked call reads one pointer instead of taking the scheduler's mutex and copying three
+// chains. A snapshot is never changed and never freed (a dispatch that loaded it may still be running it,
+// nested or unwound), the same never-free rule the interned descriptions follow; the registry changes at load
+// and shutdown, so the pool stays small.
+struct ChainSnap {
+    std::vector<HookRef> ref;        // before, then after, then replace; bound = the owner's declared size
+    std::vector<uint32_t> return_pc; // per ref; 0 = every caller
+    uint32_t n[3] = {0, 0, 0};
+    bool filtered = false;           // a hook is limited to one caller: dispatch filters a copy
+};
+std::deque<std::unique_ptr<ChainSnap>> &snap_pool() {
+    static std::deque<std::unique_ptr<ChainSnap>> d;
+    return d;
+}
+
+bool hookfast_on() {
+    static const bool on = [] {
+        const char *e = getenv("RECOMP_OPT_HOOKFAST");
+        return !(e && e[0] == '0');
+    }();
+    return on && !recomp_ab::old(recomp_ab::HOOKFAST);
+}
+
+// The snapshot's bounds are the owners' declared sizes. Outside the test seam transfer_bound() leaves those
+// unchanged (cpu_bound_for already caps at the host layout, which is the buffer's size), so dispatch can run
+// the snapshot's refs as they are; with the seam's substituted buffer it filters a copy, which re-bounds.
+bool snap_direct_ok() {
+#ifdef POPM_TESTING
+    if (g_test_cpu)
+        return false;
+#endif
+    return true;
+}
+
+void filter_snap(const ChainSnap *s, int k, uint32_t first, HookRef *dst, uint32_t *n, uint32_t return_pc) {
+    *n = 0;
+    for (uint32_t i = first; i < first + s->n[k]; ++i) {
+        if (s->return_pc[i] && s->return_pc[i] != return_pc)
+            continue;
+        if (*n >= MODS_MAX_CHAIN)
+            break;
+        dst[*n] = s->ref[i];
+        dst[*n].bound = transfer_bound(dst[*n].bound);
+        ++*n;
+    }
+}
+
 } // namespace
 
 // ------------------------------------------------------------- attribution
@@ -414,6 +477,9 @@ static void mods_hook_dispatch(X86 *c, uint32_t index) {
     PopHookInvocation *inv = &t_stack.frames[t_stack.depth++];
     // Only the scalars: the three chains are 2 KB and copy_chain fills each
     // up to its count, which is all anything reads.
+    inv->before = inv->before_buf;
+    inv->after = inv->after_buf;
+    inv->replace = inv->replace_buf;
     inv->n_before = inv->n_after = inv->n_replace = 0;
     inv->replace_pos = inv->cur_bound = inv->phase = 0;
     inv->active_desc = nullptr;
@@ -423,16 +489,35 @@ static void mods_hook_dispatch(X86 *c, uint32_t index) {
     inv->cpu = c;
     inv->esp_at_entry = c->r[R_ESP];
     inv->view_depth = mods_view_depth(); // snapshots that are not ours
-    {
+    if (g_snaps && hookfast_on()) {
+        // The chain is the snapshot published last, loaded ONCE: installing or
+        // removing during a callback publishes a new snapshot for the next
+        // invocation and leaves this one's untouched.
+        const ChainSnap *s = g_snaps[index].load(std::memory_order_acquire);
+        if (s && !s->filtered && snap_direct_ok()) {
+            const HookRef *r = s->ref.data();
+            inv->before = r;
+            inv->after = r + s->n[0];
+            inv->replace = r + s->n[0] + s->n[1];
+            inv->n_before = s->n[0] < MODS_MAX_CHAIN ? s->n[0] : MODS_MAX_CHAIN;
+            inv->n_after = s->n[1] < MODS_MAX_CHAIN ? s->n[1] : MODS_MAX_CHAIN;
+            inv->n_replace = s->n[2] < MODS_MAX_CHAIN ? s->n[2] : MODS_MAX_CHAIN;
+        } else if (s) {
+            const uint32_t return_pc = gm_valid(inv->esp_at_entry, 4) ? rd32(inv->esp_at_entry) : 0;
+            filter_snap(s, 0, 0, inv->before_buf, &inv->n_before, return_pc);
+            filter_snap(s, 1, s->n[0], inv->after_buf, &inv->n_after, return_pc);
+            filter_snap(s, 2, s->n[0] + s->n[1], inv->replace_buf, &inv->n_replace, return_pc);
+        }
+    } else {
         // The chain is captured ONCE, under the scheduler lock, and never
         // re-read: installing or removing during a callback changes the next
         // invocation, never this one.
         sched_registry_lock();
         Entry &e = entry_for((int32_t)index);
         const uint32_t return_pc = gm_valid(inv->esp_at_entry, 4) ? rd32(inv->esp_at_entry) : 0;
-        copy_chain(e.before, inv->before, &inv->n_before, return_pc);
-        copy_chain(e.after, inv->after, &inv->n_after, return_pc);
-        copy_chain(e.replace, inv->replace, &inv->n_replace, return_pc);
+        copy_chain(e.before, inv->before_buf, &inv->n_before, return_pc);
+        copy_chain(e.after, inv->after_buf, &inv->n_after, return_pc);
+        copy_chain(e.replace, inv->replace_buf, &inv->n_replace, return_pc);
         sched_registry_unlock();
     }
 
@@ -532,9 +617,33 @@ void apply_pending_locked();
 }
 namespace {
 
+// The entry's snapshot for dispatch (O2). Caller holds the registry lock.
+void publish_snapshot(int32_t index, const Entry &e, bool any) {
+    if (!g_snaps)
+        return;
+    if (!any) {
+        g_snaps[index].store(nullptr, std::memory_order_release);
+        return;
+    }
+    std::unique_ptr<ChainSnap> s(new ChainSnap);
+    const std::vector<Hook> *chains[3] = {&e.before, &e.after, &e.replace};
+    for (int k = 0; k < 3; ++k) {
+        for (const Hook &h : *chains[k]) {
+            s->ref.push_back({h.fn, h.user, h.owner, cpu_bound_for(h.owner), h.desc, h.flags});
+            s->return_pc.push_back(h.return_pc);
+            if (h.return_pc)
+                s->filtered = true;
+        }
+        s->n[k] = (uint32_t)chains[k]->size();
+    }
+    g_snaps[index].store(s.get(), std::memory_order_release);
+    snap_pool().push_back(std::move(s));
+}
+
 void publish(int32_t index) {
     Entry &e = entries()[index];
     bool any = !e.before.empty() || !e.after.empty() || !e.replace.empty();
+    publish_snapshot(index, e, any);
     if (any) {
         // Pointer first, then the flag, both with release: a call site that
         // sees the flag is guaranteed to see the pointer.
@@ -715,8 +824,11 @@ void apply_reset_tables() {
     mods_options_reset();
     for (size_t i = 0; i < entries().size(); ++i) {
         entries()[i] = Entry();
-        if (i < (size_t)recomp_func_count)
+        if (i < (size_t)recomp_func_count) {
             __atomic_store_n(&recomp_hooked[i], (uint8_t)0, __ATOMIC_RELEASE);
+            if (g_snaps)
+                g_snaps[i].store(nullptr, std::memory_order_release);
+        }
     }
     pending().clear();
     order_of_owner().clear();
@@ -1020,6 +1132,21 @@ void mods_hooks_set_cpu_size(uint32_t owner, uint32_t cpu_size) {
     if (cpu_size_of_owner().size() <= owner)
         cpu_size_of_owner().resize(owner + 1, 0);
     cpu_size_of_owner()[owner] = cpu_size;
+    // The snapshots carry each owner's bound (O2): a size declared after the owner's hooks were
+    // published republishes those entries, as the copy at every call used to pick it up.
+    sched_registry_lock();
+    for (size_t i = 0; i < entries().size(); ++i) {
+        const Entry &e = entries()[i];
+        auto mine = [&](const std::vector<Hook> &v) {
+            for (const Hook &h : v)
+                if (h.owner == owner)
+                    return true;
+            return false;
+        };
+        if (mine(e.before) || mine(e.after) || mine(e.replace))
+            publish_snapshot((int32_t)i, e, true);
+    }
+    sched_registry_unlock();
 }
 
 uint32_t mods_hooks_installed_count() {

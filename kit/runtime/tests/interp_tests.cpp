@@ -24,6 +24,8 @@ uint8_t *g_mem;
 RecompDirty g_dirty[RECOMP_DIRTY_SLOTS];
 uint32_t g_dirty_count;
 uint32_t g_watch_base, g_watch_len; // the memory watch, never armed here
+uint32_t g_store_hooks; // x86.h's one flag (run 31, D-177): the dirty list above keeps it
+extern "C" void recomp_store_hooks_update(void) { g_store_hooks = (g_watch_len != 0 || g_dirty_count != 0); }
 extern "C" void recomp_watch_hit(uint32_t, uint32_t, uint64_t) {}
 
 // The interpreter tests link neither cpu.cpp nor a guest with handlers, so a

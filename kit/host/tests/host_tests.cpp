@@ -1,3 +1,5 @@
+#include "../gpu/metal/label_class.h"
+#include <map>
 #include "game_config.h"
 #include "../texture_pack.h"
 #include "../../runtime/display_seam.h"
@@ -550,6 +552,88 @@ static void test_mouse_move_reaches_the_guest() {
 
 // A smoke script that is wrong should say so before a game is booted, not
 // after one has run for a minute and pressed the wrong things.
+// Run 33 (D-183): keyuntil and the fe: claim. A synthetic front end in a fake guest memory: the right screen found
+// behind an overlay that has no input, a name matched case-insensitively and in part, the wrong screen refused, no
+// screen with input = 0, a claim that is not fe: = -1 (the other metrics answer it).
+static std::map<uint32_t, uint8_t> g_fake_fe;
+static uint32_t fake_fe_u32(uint32_t a) {
+    uint32_t v = 0;
+    for (int i = 0; i < 4; ++i) {
+        auto it = g_fake_fe.find(a + i);
+        v |= uint32_t(it == g_fake_fe.end() ? 0 : it->second) << (8 * i);
+    }
+    return v;
+}
+static void fake_fe_put(uint32_t a, uint32_t v) {
+    for (int i = 0; i < 4; ++i)
+        g_fake_fe[a + i] = uint8_t(v >> (8 * i));
+}
+static void test_script_keyuntil_and_fe_screen() {
+    HostScriptStep steps[8];
+    char err[256];
+    CHECK_EQ(host_script_parse("keyuntil RETURN fe:MC_Main.fng>0 every 3000 within 90000\n", steps, 8, err, sizeof err),
+             1);
+    CHECK_EQ(steps[0].op, (int)HOST_SCRIPT_KEYUNTIL);
+    CHECK_EQ(steps[0].dik, (uint8_t)0x1c);
+    CHECK(!strcmp(steps[0].name, "fe:MC_Main.fng"));
+    CHECK_EQ(steps[0].press_ms, 3000u);
+    CHECK_EQ(steps[0].timeout_ms, 90000u);
+    CHECK_EQ(host_script_parse("keyuntil RIGHT fe:X>=1\n", steps, 8, err, sizeof err), 1);
+    CHECK(steps[0].at_least && steps[0].press_ms == 2500u && steps[0].timeout_ms == 60000u);
+    struct Bad { const char *text, *fragment; };
+    const Bad bad[] = {
+        {"keyuntil\n", "needs a key"},
+        {"keyuntil RETURN\n", "needs a key"},
+        {"keyuntil NOKEY fe:X>0\n", "no such key"},
+        {"keyuntil RETURN fe:X\n", "metric>value"},
+        {"keyuntil RETURN fe:X>0 every 100\n", "every 400 ms"},
+        {"keyuntil RETURN fe:X>0 soon 100\n", "`every` or `within`"},
+        {"keyuntil RETURN fe:X>0 every 5000 within 4000\n", "before its second press"},
+    };
+    for (const auto &b : bad) {
+        err[0] = 0;
+        CHECK_EQ(host_script_parse(b.text, steps, 8, err, sizeof err), -1);
+        CHECK(strstr(err, b.fragment) != nullptr);
+    }
+    // A key goes up only after the game read its input twice since the press and 160 ms passed; 3 s at most.
+    CHECK(!host_script_key_release_ready(1000, 50, 1100, 60));   // too soon
+    CHECK(!host_script_key_release_ready(1000, 50, 2200, 51));   // a frozen frame: one read since the press
+    CHECK(host_script_key_release_ready(1000, 50, 1160, 52));
+    CHECK(host_script_key_release_ready(1000, 50, 4000, 50));    // the game never read: released at 3 s
+    CHECK(host_script_key_release_ready(0xffffff00u, 0xfffffffeu, 0x000000a0u, 0));   // both counters wrap
+#ifdef RECOMP_GLOBAL_FE_ROOT_ADDR
+    g_fake_fe.clear();
+    const uint32_t root = 0x01000000u, engine = 0x01000100u, menu = 0x01000200u, overlay = 0x01000300u;
+    fake_fe_put(RECOMP_GLOBAL_FE_ROOT_ADDR, root);
+    fake_fe_put(root, engine);
+    fake_fe_put(engine + 0xe4, overlay);        // the last package: an overlay without input
+    fake_fe_put(overlay + 0x20, 0);
+    fake_fe_put(overlay + 0x08, menu);
+    fake_fe_put(overlay + 0x0c, 0x01000400u);
+    fake_fe_put(menu + 0x20, 0xffu);            // the one with the input
+    fake_fe_put(menu + 0x08, 0);
+    fake_fe_put(menu + 0x0c, 0x01000500u);
+    const char *over = "PauseOverlay.fng", *name = "MainMenu.fng";
+    for (size_t i = 0; i <= strlen(over); ++i) g_fake_fe[0x01000400u + i] = uint8_t(over[i]);
+    for (size_t i = 0; i <= strlen(name); ++i) g_fake_fe[0x01000500u + i] = uint8_t(name[i]);
+    char screen[64];
+    CHECK_EQ(host_script_fe_screen(fake_fe_u32, screen, sizeof screen), 1);
+    CHECK(!strcmp(screen, "MainMenu.fng"));
+    CHECK_EQ(host_script_fe_metric("fe:mainmenu.fng", fake_fe_u32), 1.0);
+    CHECK_EQ(host_script_fe_metric("fe:MainMenu", fake_fe_u32), 1.0);
+    CHECK_EQ(host_script_fe_metric("fe:Track_Select.fng", fake_fe_u32), 0.0);   // control: the wrong screen
+    CHECK_EQ(host_script_fe_metric("fe:PauseOverlay", fake_fe_u32), 0.0);       // control: no input there
+    CHECK_EQ(host_script_fe_metric("turn", fake_fe_u32), -1.0);
+    fake_fe_put(menu + 0x20, 0);                  // no screen has the input
+    CHECK_EQ(host_script_fe_screen(fake_fe_u32, screen, sizeof screen), 0);
+    CHECK(screen[0] == 0);
+    CHECK_EQ(host_script_fe_metric("fe:MainMenu", fake_fe_u32), 0.0);
+    fake_fe_put(RECOMP_GLOBAL_FE_ROOT_ADDR, 0);   // no front end yet
+    CHECK_EQ(host_script_fe_screen(fake_fe_u32, screen, sizeof screen), 0);
+    g_fake_fe.clear();
+#endif
+}
+
 static void test_script_parsing() {
     HostScriptStep steps[64];
     char err[256];
@@ -9551,6 +9635,58 @@ static void test_t9_pointer_closed_loop() {
     host_input_reset();
 }
 
+// R3 run 17 (D-119): after the window is resized to another aspect ratio the picture sits inside bars (here a 4:3 mode
+// in a 16:9 drawable: Classic fits 960x720 at x 160, a menu frame the integer 640x480 at 320,120), and the cursor must land
+// where the pointer is ON THE PICTURE. The DirectInput correction used to span the whole drawable: the pointer at
+// x 280 (Classic guest 80) drove the cursor to 140, at x 400 (menu guest 80) to 200.
+static void test_t9_pointer_letterbox() {
+    constexpr uint32_t base = RECOMP_HOOK_MOUSE_DEVICE_PTR;
+    uint8_t saved[0x48];
+    memcpy(saved, gm_ptr(base), sizeof saved);
+    for (bool classic : {false, true}) {
+        host_gate_reset();
+        host_input_reset();
+        memset(gm_ptr(base), 0, 0x48);
+        wr32(base, RECOMP_HOOK_MOUSE_VTABLE);
+        wr32(base + 0x40, 639);
+        wr32(base + 0x44, 479);
+        wr32(base + 0x20, 100);
+        wr32(base + 0x24, 100);
+        auto in = t9_layout(nullptr);
+        in.cls = classic ? HOST_SCREEN_GAMEPLAY : HOST_SCREEN_MENU;
+        in.classic = classic;
+        in.drawable_w = 1280;
+        in.drawable_h = 720;
+        host_gate_set_layout(&in);
+        HitResult hit;
+        CHECK(host_gate_window_motion(classic ? 280 : 400, 360, 0, 0, &hit));
+        CHECK_EQ(hit.gx, 80);
+        CHECK_EQ(hit.gy, 240);
+        HostInputState state{};
+        host_input_state(&state);
+        wr32(base + 0x20, rd32(base + 0x20) + state.mouse_dx);
+        wr32(base + 0x24, rd32(base + 0x24) + state.mouse_dy);
+        int idle = 0;
+        for (int steps = 0; steps < 30; ++steps) {
+            int32_t dx = 0, dy = 0;
+            host_input_pointer_correction(&dx, &dy);
+            if (!dx && !dy) {
+                if (++idle >= 2)
+                    break;
+                continue;
+            }
+            idle = 0;
+            wr32(base + 0x20, rd32(base + 0x20) + dx);
+            wr32(base + 0x24, rd32(base + 0x24) + dy);
+        }
+        CHECK(near(rd32(base + 0x20), 80u));
+        CHECK(near(rd32(base + 0x24), 240u));
+    }
+    memcpy(gm_ptr(base), saved, sizeof saved);
+    host_gate_reset();
+    host_input_reset();
+}
+
 static void test_t9_window_motion_round1() {
     // The exact production mapping/filter/DirectInput path used by main.mm.
     // Repeat at 1x/2x backing and multiple composed sizes, over menu elements,
@@ -11187,6 +11323,28 @@ static void test_d3d9_gpu_renderer() {
 // Deterministic transient failures in submitted work: the ten-frame history
 // must retain bad frames together with their recovered neighbors. No game,
 // profiles or visible window are involved; Python checks the emitted artifact.
+// R3 run 31 O6: label_class::of answers every prefix exactly as the strncmp it replaced, near misses included.
+static void test_label_class_matches_strncmp() {
+    const char *labels[] = {nullptr, "", "IDI", "IDI_", "IDI_W", "IDI_WORLD", "IDI_WORLD_FX", "IDI_WORLD_FX/",
+                            "IDI_WORLD_FX/p0", "IDI_WORLDX", "IDI_WORLDNORMALMAP_FX", "IDI_WORLDNORMALMAP_FX/a",
+                            "IDI_WORLDREFLECT_FX/", "IDI_PARTICLES_FX/", "IDI_PARTICLES_FX", "IDI_PARTICLE_FX/",
+                            "IDI_GLOSSYWINDOW_FX/t", "IDI_GLOSSYWINDOW", "IDI_SKYBOX_FX/", "IDI_SKY_FX/",
+                            "IDI_RAIN_DROP_FX/", "IDI_RAIN_FX/", "IDI_CAR_FX/x", "IDI_CARS_FX/", "IDI_CAR_FX",
+                            "idi_world_fx/", "XIDI_WORLD_FX/", "IDI_WORLD_FX/IDI_CAR_FX/"};
+    const uint32_t bits[] = {label_class::WORLD, label_class::WORLD_FX, label_class::WORLDNORMALMAP,
+                             label_class::PARTICLES, label_class::GLOSSYWINDOW, label_class::SKYBOX,
+                             label_class::RAIN_DROP, label_class::CAR};
+    int hits = 0;
+    for (const char *l : labels)
+        for (uint32_t b : bits) {
+            const char *p = label_class::prefix(b);
+            const bool want = l && !strncmp(l, p, strlen(p));
+            CHECK(((label_class::of(l) & b) != 0) == want);
+            hits += want;
+        }
+    CHECK(hits == 18); // WORLD 9, WORLD_FX 3, one each for the other six
+}
+
 static void test_d3d9_trace_capture() {
     const uint32_t rt_id = 91601, depth_id = 91602, vb_id = 91603, ib_id = 91604;
     HostD9TextureDesc rt{rt_id, HOST_D9_TEX_2D, 8, 8, 1, 21, HOST_D9_USAGE_RENDERTARGET};
@@ -11436,6 +11594,7 @@ int main(int argc, char **argv) {
     mem_init();
     test_fullscreen_edge_presentation();
     test_native_frame_metrics();
+    test_label_class_matches_strncmp();
     test_wide_cursor_bound();
     test_pointer_reaches_scrolling_edges();
     test_native_overlay_pixels();
@@ -11444,6 +11603,7 @@ int main(int argc, char **argv) {
     // services. The default suite still runs every test and reports failures.
     if (argc == 2 && !strcmp(argv[1], "--script-only")) {
         test_script_parsing();
+        test_script_keyuntil_and_fe_screen();
         test_reference_dump_serialization();
         test_entity_click_wait();
         test_entity_completed_present_freshness();
@@ -11460,6 +11620,7 @@ int main(int argc, char **argv) {
         test_t9_snapshot_capture_edges_cursor();
         test_t9_relative_crossing_and_layout_mailbox();
         test_t9_pointer_closed_loop();
+        test_t9_pointer_letterbox();
         test_t9_pointer_loop_gives_up_when_unanswered();
         test_t9_pointer_survives_layout_rescale();
         test_t9_window_motion_round1();
@@ -11514,6 +11675,7 @@ int main(int argc, char **argv) {
         {"input announcements", test_input_announces_changes},
         {"idle wait early out", test_idle_wait_early_return},
         {"smoke script", test_script_parsing},
+        {"script keyuntil, fe screen", test_script_keyuntil_and_fe_screen},
         {"mouse move path", test_mouse_move_reaches_the_guest},
         {"point to guest", test_point_to_guest},
         {"audio arithmetic", test_audio_maths},

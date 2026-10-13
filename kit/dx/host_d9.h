@@ -147,10 +147,6 @@ typedef struct HostD9Draw {
     // Nonzero: the three state tables above are unchanged for as long as this
     // is, so a host may reuse its copy from an earlier draw with the same value.
     uint64_t state_version;
-    // Remaster A4-lite step 1: the pipeline's dirty-entry masks (8 words, host/gpu/state_delta.h), cleared by the queue
-    // when it puts the tables; null when the tables are not the pipeline's own. pipeline_id: the device they belong to.
-    uint64_t *state_dirty;
-    uint32_t pipeline_id;
     const char *label; // what bound the shaders, for diagnostics; may be null
     // Test133: nonzero when stage 0 samples the texture a mod named in private render state 251 as part of the
     // scene (NFSMW: the rear-view mirror target): after the HDR scene marker it keeps the HDR highlight expansion.

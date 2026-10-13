@@ -68,6 +68,7 @@ void enter_level_end() {
 } // namespace
 
 MOD_TEST_SUITE(events_are_installed_on_hookable_entries) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
     MOD_CHECK_EQ(mods_symbol_event("on_turn"), 0x004ec6f0u);
     MOD_CHECK_EQ(mods_symbol_event("on_frame"), 0x004a5590u);
@@ -87,6 +88,7 @@ MOD_TEST_SUITE(events_are_installed_on_hookable_entries) {
 }
 
 MOD_TEST_SUITE(events_fire_before_and_after) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
     uint32_t id = 0;
     MOD_CHECK_EQ(mods_on_turn(
@@ -139,6 +141,7 @@ MOD_TEST_SUITE(events_fire_before_and_after) {
 }
 
 MOD_TEST_SUITE(events_level_load_needs_a_real_success) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     setup();
     uint32_t id = 0;
     MOD_CHECK_EQ(mods_on_level_load(

@@ -455,7 +455,7 @@ static int clean_chain_mode(void) {
     int m = 0;
     /* Without the TEST switch, the setting clean_effects (on by default) runs the chain in the Definitive look. If
      * clean-chain.fx/.txt are missing or fail to load, the frame stays the plain picture and the log says why. */
-    if (g_cc_env == 0 && g_cc_state >= 0 && g_look != LOOK_PC && setting("clean_effects", 1)) m = g_pfx_live ? 1 : 2;
+    if (g_cc_env == 0 && g_cc_state >= 0 && setting("clean_effects", 1)) m = g_pfx_live ? 1 : 2;
     if (g_cc_env == 1) m = g_pfx_live ? 1 : 2;
     if (m != 1) g_cc_stale = 1;   /* a frame without the clean chain: its history is stale when it comes back */
     return m;
@@ -525,7 +525,7 @@ static void cc_e_inputs(const PopModApi *api, uint32_t dev, unsigned out_w, unsi
         if (pfx_target(dev, &g_cc_depth_tex, &g_cc_depth_surf, &g_cc_depth_w, &g_cc_depth_h, out_w, out_h, 114)) {
             uint32_t ds = 0;
             int borrowed = 0;
-            if (g_pfx_view_ds && setting("dof_scene_depth", 1)) { ds = g_pfx_view_ds; borrowed = 1; }
+            if (g_pfx_view_ds) { ds = g_pfx_view_ds; borrowed = 1; }
             else { const uint32_t g[] = {CC_OUT}; if (pfx_call(dev, 0xa0, g, 1) == 0) ds = get_u32(CC_OUT); }   /* GetDepthStencilSurface */
             if (ds) {
                 const uint32_t d[] = {CC_OUT + 8u};

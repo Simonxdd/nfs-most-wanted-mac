@@ -149,6 +149,7 @@ MOD_TEST_SUITE(hook_guest_call_import_preserves_registers) {
 
 extern "C" uint64_t mods_view_test_push_count();
 MOD_TEST_SUITE(hook_callsite_filter_snapshot_and_entry_identity) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     constexpr uint32_t target = 0x401000, match = 0x517613, other = 0x5176d7;
     uint32_t ids[3]{};
@@ -213,6 +214,7 @@ MOD_TEST_SUITE(hook_callsite_filter_snapshot_and_entry_identity) {
 }
 
 MOD_TEST_SUITE(hook_explicit_no_view_preserves_nested_snapshots) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     mods_view_reset();
     MOD_CHECK(mods_symbols_load(nullptr));
@@ -279,6 +281,7 @@ MOD_TEST_SUITE(hook_explicit_no_view_preserves_nested_snapshots) {
 }
 
 MOD_TEST_SUITE(hook_install_eligibility) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0;
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) {};
@@ -331,6 +334,7 @@ MOD_TEST_SUITE(hook_install_eligibility) {
 }
 
 MOD_TEST_SUITE(hook_replace_conflict_and_wrap) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t a = 0, b = 0, w = 0;
     auto ret0 = [](const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *, void *) {
@@ -342,6 +346,7 @@ MOD_TEST_SUITE(hook_replace_conflict_and_wrap) {
 }
 
 MOD_TEST_SUITE(hook_before_order_cancel_and_registers) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     // Load order decides, not registration order: mod 1 registers first and
     // would still run second. Mod 0's hook cancels, so mod 1's never runs at
@@ -411,6 +416,7 @@ MOD_TEST_SUITE(hook_before_order_cancel_and_registers) {
 }
 
 MOD_TEST_SUITE(hook_a_handle_belongs_to_the_mod_that_made_it) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) {};
     const uint32_t A = MODS_OWNER_FIRST_MOD, B = MODS_OWNER_FIRST_MOD + 1;
@@ -457,6 +463,7 @@ MOD_TEST_SUITE(hook_a_handle_belongs_to_the_mod_that_made_it) {
 }
 
 MOD_TEST_SUITE(hook_every_field_comes_back_after_delegation) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0;
     // A replace hook that delegates and then edits registers the old
@@ -496,6 +503,7 @@ MOD_TEST_SUITE(hook_every_field_comes_back_after_delegation) {
 }
 
 MOD_TEST_SUITE(hook_replace_delegates_and_refuses_reentry) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0;
     MOD_CHECK_EQ(mods_hook_install(
@@ -525,6 +533,7 @@ MOD_TEST_SUITE(hook_replace_delegates_and_refuses_reentry) {
 }
 
 MOD_TEST_SUITE(hook_wrap_chain_reaches_the_base_once) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0;
     auto outer = [](const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *) {
@@ -551,6 +560,7 @@ MOD_TEST_SUITE(hook_wrap_chain_reaches_the_base_once) {
 }
 
 MOD_TEST_SUITE(hook_non_delegating_replace_still_returns) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0;
     // A replace hook that neither delegates nor returns is a mod bug. The
@@ -569,6 +579,7 @@ MOD_TEST_SUITE(hook_non_delegating_replace_still_returns) {
 }
 
 MOD_TEST_SUITE(hook_mid_callback_install_takes_effect_next_time) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     static uint32_t added = 0;
     uint32_t id = 0;
@@ -594,6 +605,7 @@ MOD_TEST_SUITE(hook_mid_callback_install_takes_effect_next_time) {
 }
 
 MOD_TEST_SUITE(hook_unwind_abandons_only_the_frames_above_it) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     static uint32_t esp_seen = 0;
     uint32_t id = 0;
@@ -699,6 +711,7 @@ MOD_TEST_SUITE(hook_unwind_abandons_only_the_frames_above_it) {
 }
 
 MOD_TEST_SUITE(hook_bounds_every_cpu_transfer) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     // A plugin built against an older, shorter pop_cpu_v1. The host serves only
     // the fields it compiled against and never writes past them; the buffer is
@@ -760,6 +773,7 @@ MOD_TEST_SUITE(hook_bounds_every_cpu_transfer) {
 }
 
 MOD_TEST_SUITE(hook_attribution_and_rollback) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0;
     MOD_CHECK_EQ(mods_hook_install(
@@ -790,6 +804,7 @@ MOD_TEST_SUITE(hook_attribution_and_rollback) {
 }
 
 MOD_TEST_SUITE(hook_mutation_off_the_baton_is_validated_then_queued) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0, replaced = 0, extra = 0;
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) { note("queued"); };
@@ -827,6 +842,7 @@ MOD_TEST_SUITE(hook_mutation_off_the_baton_is_validated_then_queued) {
 }
 
 MOD_TEST_SUITE(hook_wrap_wraps_an_existing_replacement) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0;
     auto inner = [](const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *, void *) {
@@ -856,6 +872,7 @@ MOD_TEST_SUITE(hook_wrap_wraps_an_existing_replacement) {
 // now and a failure discovered at the pump is a lie the caller cannot act on.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(hook_queued_installs_are_registry_state) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) {};
     uint32_t a = 0, b = 0;
@@ -899,6 +916,7 @@ MOD_TEST_SUITE(hook_queued_installs_are_registry_state) {
 // it anyway is the worst of both answers.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(hook_removing_a_queued_install_cancels_it) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) {};
     uint32_t id = 0;
@@ -924,6 +942,7 @@ MOD_TEST_SUITE(hook_removing_a_queued_install_cancels_it) {
 // baton in exactly the same way.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(hook_bulk_mutations_wait_for_the_baton) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) {};
     uint32_t id = 0;
@@ -954,6 +973,7 @@ MOD_TEST_SUITE(hook_bulk_mutations_wait_for_the_baton) {
 // after hooks. Delegation is not a one-way door.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(hook_inner_results_reach_the_outer_view) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0;
     auto inner = [](const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *, void *) {
@@ -990,6 +1010,7 @@ MOD_TEST_SUITE(hook_inner_results_reach_the_outer_view) {
 // one that vanished.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(hook_unwind_through_a_wrap_stops_every_later_phase) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     uint32_t id = 0;
     auto inner = [](const PopModApi *, pop_cpu_v1 *cpu, PopHookInvocation *, void *) {
@@ -1030,6 +1051,7 @@ MOD_TEST_SUITE(hook_unwind_through_a_wrap_stops_every_later_phase) {
 // somebody to the wrong mod.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(hook_attribution_survives_a_partial_unwind) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     static std::string seen_in_unwind;
     static bool inner_ran = false;
@@ -1082,6 +1104,7 @@ MOD_TEST_SUITE(hook_attribution_survives_a_partial_unwind) {
 // a registry the queue has not reached yet.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(hook_inline_and_queued_agree_in_both_orders) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) {};
 
     // Queued REPLACE, then inline WRAP. Both are legal - a wrap may wrap an
@@ -1139,6 +1162,7 @@ MOD_TEST_SUITE(hook_inline_and_queued_agree_in_both_orders) {
 // effect of doing something unrelated.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(hook_validation_sees_queued_removals_too) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) {};
 
     // A committed replacement with its removal already queued is not a
@@ -1204,6 +1228,7 @@ MOD_TEST_SUITE(hook_validation_sees_queued_removals_too) {
 }
 
 MOD_TEST_SUITE(hook_an_inline_call_never_publishes_the_queue) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) {};
 
     // A queued reset must not erase an inline install that was made before it,
@@ -1283,6 +1308,7 @@ static void hd_drain() {
 }
 
 MOD_TEST_SUITE(hook_queued_input_waits_for_the_callback_to_return) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     g_hd_queued = 0;
     g_hd_drained = 0;
@@ -1336,6 +1362,7 @@ MOD_TEST_SUITE(hook_queued_input_waits_for_the_callback_to_return) {
 #include "../display_settings.h"
 #include "../../dx/host_api.h"
 MOD_TEST_SUITE(wide_view_keeps_resolution_callbacks_active) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     reset_world();
     mods_host_set_main_thread();
     mods_display_reset();

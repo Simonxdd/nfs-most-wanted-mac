@@ -261,6 +261,27 @@ class SdlSink final : public AudioSink {
         if (!frames)
             return;
         const double now = double(SDL_GetTicksNS()) * 1e-6;
+        // TEST ONLY (NFSMW issue 8, run 32): RECOMP_TEST_AUDIO_STALL=<start ms>:<length ms>, from the first pull: the
+        // device stops pulling for that window (nothing rendered, the mixer's played counters stand still), as an
+        // external display's audio does while CoreAudio settles it. Read once; never set by Launch.
+        static const struct Stall { double start = -1, len = 0; } stall = [] {
+            Stall st;
+            if (const char *e = getenv("RECOMP_TEST_AUDIO_STALL")) {
+                double a = 0, b = 0;
+                if (sscanf(e, "%lf:%lf", &a, &b) == 2 && a >= 0 && b > 0) {
+                    st.start = a, st.len = b;
+                    fprintf(stderr, "[host] audio TEST: the output stalls %.0f ms from %.0f ms after the first pull\n", b, a);
+                }
+            }
+            return st;
+        }();
+        if (stall.start >= 0) {
+            if (self->first_pull_ms_ == 0)
+                self->first_pull_ms_ = now;
+            const double t = now - self->first_pull_ms_;
+            if (t >= stall.start && t < stall.start + stall.len)
+                return;
+        }
         if (self->last_pull_ms_ > 0) {
             const double gap = now - self->last_pull_ms_;
             if (gap > self->max_gap_ms_)
@@ -311,7 +332,7 @@ class SdlSink final : public AudioSink {
     SDL_AudioStream *stream_ = nullptr;
     audio::OutputMap present_map_;
     bool folded_device_ = false;
-    double period_ms_ = 0, last_pull_ms_ = 0, max_gap_ms_ = 0, max_render_ms_ = 0;
+    double period_ms_ = 0, last_pull_ms_ = 0, max_gap_ms_ = 0, max_render_ms_ = 0, first_pull_ms_ = 0;
     uint64_t pulls_ = 0, late_ = 0, starved_ = 0;
     uint32_t ahead_frames_ = 2048;
     double report_ms_ = 0;

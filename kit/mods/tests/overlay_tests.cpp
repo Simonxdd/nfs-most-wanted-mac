@@ -51,6 +51,34 @@ std::string read_file(const std::string &path) {
     return std::string(buf, n);
 }
 
+// A small file the game's own folder really has, as the guest would name it
+// ("dir\\file"), picked at run time. These suites were written against the
+// stub game's levels\\levl2001.dat, which no other game ships; any small file
+// one folder down tests the same rule (the game folder is the last tier and is
+// never written). Empty when the game folder has none.
+std::string game_file() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path game = win32_game_dir();
+    std::string best;
+    uintmax_t best_size = 0;
+    for (fs::directory_iterator top(game, ec), end; !ec && top != end; top.increment(ec)) {
+        if (!top->is_directory(ec))
+            continue;
+        for (fs::directory_iterator it(top->path(), ec); !ec && it != end; it.increment(ec)) {
+            if (!it->is_regular_file(ec))
+                continue;
+            const uintmax_t size = it->file_size(ec);
+            if (ec || size == 0 || size > (1u << 20) || (!best.empty() && size >= best_size))
+                continue;
+            best = top->path().filename().string() + "\\" + it->path().filename().string();
+            best_size = size;
+        }
+        ec.clear();
+    }
+    return best;
+}
+
 void layers() {
     ROOT = mod_test_dir("overlay");
     mem_init();
@@ -89,7 +117,12 @@ MOD_TEST_SUITE(overlay_read_precedence) {
     MOD_CHECK(read_file(win32_host_path_op("DATA\\FROMA.TXT", WIN32_FILE_READ)) == "a");
     MOD_CHECK(read_file(win32_host_path_op("data\\fromb.txt", WIN32_FILE_READ)) == "b");
     // The GOG folder is last but reachable.
-    std::string level = win32_host_path_op("levels\\levl2001.dat", WIN32_FILE_READ);
+    const std::string gog = game_file();
+    if (gog.empty()) {
+        mod_test_skip("the game folder has no small file one folder down");
+        return;
+    }
+    std::string level = win32_host_path_op(gog.c_str(), WIN32_FILE_READ);
     MOD_CHECK(level.find(win32_game_dir()) == 0);
 }
 
@@ -110,7 +143,12 @@ MOD_TEST_SUITE(overlay_never_mutates_a_lower_tier) {
     MOD_CHECK(read_file(std::string(ROOT) + "/moda/data/froma.txt") == "a");
 
     // The same for a GOG file: the original is never opened for writing.
-    std::string gog = win32_host_path_op("levels\\levl2001.dat", WIN32_FILE_WRITE);
+    const std::string gog_file = game_file();
+    if (gog_file.empty()) {
+        mod_test_skip("the game folder has no small file one folder down");
+        return;
+    }
+    std::string gog = win32_host_path_op(gog_file.c_str(), WIN32_FILE_WRITE);
     MOD_CHECK(gog.find(mods_overlay_profile_dir()) == 0);
     MOD_CHECK(gog.find(win32_game_dir()) != 0);
 
@@ -124,13 +162,12 @@ MOD_TEST_SUITE(overlay_never_mutates_a_lower_tier) {
         fclose(f);
 
     // And the same through the guest's own API, which is what actually matters.
-    uint32_t name = mod_test_put_str("levels\\levl2001.dat");
+    uint32_t name = mod_test_put_str(gog_file.c_str());
     uint32_t h =
         mod_test_call_import(c, "KERNEL32.dll", "CreateFileA", {name, 0x40000000u, 0, 0, 3, 0, 0});
     MOD_CHECK(h != 0xffffffffu);
     // Whatever handle it got, it is not the GOG file.
-    MOD_CHECK(win32_host_path_op("levels\\levl2001.dat", WIN32_FILE_WRITE).find(win32_game_dir()) !=
-              0);
+    MOD_CHECK(win32_host_path_op(gog_file.c_str(), WIN32_FILE_WRITE).find(win32_game_dir()) != 0);
     mod_test_call_import(c, "KERNEL32.dll", "CloseHandle", {h});
 }
 
@@ -142,7 +179,11 @@ MOD_TEST_SUITE(overlay_deletes_reach_the_profile_only) {
     // A file only a mod has: nothing in the profile to delete, and v1 has no
     // tombstones, so it cannot be hidden either.
     MOD_CHECK(win32_host_path_op("data\\fromb.txt", WIN32_FILE_DELETE).empty());
-    MOD_CHECK(win32_host_path_op("levels\\levl2001.dat", WIN32_FILE_DELETE).empty());
+    // Nor a file only the game folder has (one it really has, picked at run time).
+    const std::string gog = game_file();
+    MOD_CHECK(win32_host_path_op(gog.empty() ? "levels\\levl2001.dat" : gog.c_str(),
+                                 WIN32_FILE_DELETE)
+                  .empty());
     MOD_CHECK(read_file(win32_host_path_op("data\\fromb.txt", WIN32_FILE_READ)) == "b");
     // A file the profile does have deletes from there, and the mod's copy is
     // then what a read finds.
@@ -306,4 +347,34 @@ MOD_TEST_SUITE(overlay_root_and_failure_paths) {
     mods_overlay_end_init();
     mods_overlay_remove_all(8);
     MOD_CHECK_EQ(mods_overlay_layer_count(), 2u);
+}
+
+// Remaster run 29 (NFSMW modding stage 1): a layer never serves, lists or copies up a program file; the profile and
+// ordinary layer files are unaffected.
+MOD_TEST_SUITE(overlay_layer_refuses_program_files) {
+    layers();
+    const std::string base = ROOT;
+    write_file(base + "/moda/data/evil.exe", "x");
+    write_file(base + "/moda/data/Plugin.ASI", "x");
+    write_file(base + "/profile/data/own.exe", "p");
+    win32_invalidate_dir_cache();
+    MOD_CHECK(win32_host_path_op("data\\evil.exe", WIN32_FILE_READ).find(base + "/moda") == std::string::npos);
+    MOD_CHECK(win32_host_path_op("data\\plugin.asi", WIN32_FILE_READ).find(base + "/moda") == std::string::npos);
+    MOD_CHECK(read_file(win32_host_path_op("data\\own.exe", WIN32_FILE_READ)) == "p");   // the profile is not filtered
+    MOD_CHECK(read_file(win32_host_path_op("data\\froma.txt", WIN32_FILE_READ)) == "a");
+    std::vector<std::pair<std::string, std::string>> listing;
+    mods_cpp_overlay_list("data", &listing);
+    bool evil = false, froma = false;
+    for (const auto &e : listing) {
+        evil |= e.second.find("evil.exe") != std::string::npos || e.second.find("Plugin.ASI") != std::string::npos;
+        froma |= e.first == "froma.txt";
+    }
+    MOD_CHECK(!evil);
+    MOD_CHECK(froma);
+    MOD_CHECK(mods_overlay_layer_name_refused("GLOBAL/x.DLL"));
+    MOD_CHECK(mods_overlay_layer_name_refused("speed.exe"));
+    MOD_CHECK(mods_overlay_layer_name_refused("a\\b\\c.lnk"));
+    MOD_CHECK(!mods_overlay_layer_name_refused("GLOBAL/attributes.bin"));
+    MOD_CHECK(!mods_overlay_layer_name_refused("a.exe.txt"));
+    MOD_CHECK(!mods_overlay_layer_name_refused("exe"));
 }

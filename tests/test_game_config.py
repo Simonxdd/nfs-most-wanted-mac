@@ -55,7 +55,12 @@ class NfsmwConfigTests(unittest.TestCase):
         addresses = [self.cfg["translate"]["animation_counter"]]
         for value in self.cfg["hooks"].values():
             addresses += value if isinstance(value, list) else [value]
-        addresses += [entry["addr"] for entry in self.cfg["globals"].values()]
+        # Run 33: fe_root is identified (the front end's root object, read only by the scripted runners); every
+        # other global is still a placeholder in the padding.
+        identified = {"fe_root": 0x0091CADC}
+        for name, address in identified.items():
+            self.assertEqual(self.cfg["globals"][name]["addr"], address)
+        addresses += [e["addr"] for n, e in self.cfg["globals"].items() if n not in identified]
         for address in addresses:
             self.assertTrue(SENTINEL_LOW <= address < SENTINEL_HIGH, hex(address))
         self.assertEqual(self.cfg["translate"]["volatile_reads"], [])

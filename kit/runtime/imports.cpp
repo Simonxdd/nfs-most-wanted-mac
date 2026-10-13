@@ -448,18 +448,6 @@ bool imports_dispatch(X86 *c, uint32_t target) {
         log_msg(2, "-> %s (esp=%08x ret=%08x)", label(), c->r[R_ESP], ret_addr);
         recomp_seh_validate_chain(c, "import enter", label());
     }
-    // TEST ONLY: the earlier phase of an in-run A/B (RECOMP_AB_PERIOD, platform/ab_phase.h)
-    // repeats the per-call work this replaced - the label copy, the level reads and the
-    // chain-check calls - so the two can be compared on the same scene.
-    char ab_desc[512];
-    const bool ab_old = recomp_ab::old(recomp_ab::IMPORTS);
-    if (RECOMP_UNLIKELY(ab_old)) {
-        const size_t n = std::min(tramps()[idx].desc.size(), sizeof ab_desc - 1);
-        memcpy(ab_desc, tramps()[idx].desc.data(), n);
-        ab_desc[n] = '\0';
-        LOGV("-> %s (esp=%08x ret=%08x)", ab_desc, c->r[R_ESP], ret_addr);
-        recomp_seh_validate_chain(c, "import enter", ab_desc);
-    }
 
     // The arguments as they are NOW, before the shim runs: a stdcall shim pops
     // them, so after the call they are gone and this is the only point they
@@ -493,8 +481,6 @@ bool imports_dispatch(X86 *c, uint32_t target) {
         g_return_observer(label(), c->r[R_EAX]);
     if (trace)
         log_msg(2, "<- %s (eax=%08x)", label(), c->r[R_EAX]);
-    if (RECOMP_UNLIKELY(ab_old))
-        LOGV("<- %s (eax=%08x)", ab_desc, c->r[R_EAX]);
 
     uint32_t pop = 4;
     if (argc == ARGC_CDECL) {
@@ -514,8 +500,6 @@ bool imports_dispatch(X86 *c, uint32_t target) {
     c->eip = ret_addr;
     if (trace)
         recomp_seh_validate_chain(c, "import leave", label());
-    if (RECOMP_UNLIKELY(ab_old))
-        recomp_seh_validate_chain(c, "import leave", ab_desc);
     return true;
 }
 

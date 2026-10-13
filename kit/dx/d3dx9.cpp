@@ -380,6 +380,10 @@ struct FxPass {
     uint32_t guest_name = 0, guest_vs = 0, guest_ps = 0;
     std::vector<uint32_t> annotations;
     std::string label; // effect/technique/pass, for diagnostics
+    // R3 run 31 O4(b): the pass's direct texture binds (stage, parameter index), resolved once per parameter count:
+    // the states and the objects' parameter names are fixed when the effect loads, the parameter list only grows.
+    std::vector<std::pair<uint32_t, int32_t>> tex_binds;
+    size_t tex_binds_n = SIZE_MAX;
 };
 struct FxTechnique {
     std::string name;
@@ -938,7 +942,7 @@ static uint32_t sampler_texture(FxEffect &fx, FxParam &sampler) {
         const char *e = recomp_env("FX_SAMPLER_CACHE");
         return !(e && !strcmp(e, "0"));
     }();
-    if (!cache || recomp_ab::old(recomp_ab::SAMPLER) || sampler.sampler_tex == -2 || sampler.sampler_tex_n != fx.params.size() ||
+    if (!cache || sampler.sampler_tex == -2 || sampler.sampler_tex_n != fx.params.size() ||
         sampler.sampler_tex_stamp != sampler.stamp) {
         int32_t found = -1;
         for (const FxState &s : sampler.sampler)
@@ -980,7 +984,7 @@ static uint32_t bind_constants(FxEffect &fx, const std::vector<uint8_t> &code, f
     if (!key)
         key = d9sh::code_key(code.data(), code.size());
     const bool incremental = binder && binder->fx == fx.self && fx.self && binder->key == key &&
-                             binder->stamp && !recomp_ab::old(recomp_ab::CONSTS);
+                             binder->stamp;
     const uint64_t since = incremental ? binder->stamp : 0;
     if (rprof::on())
         ++(incremental ? rprof::cur.inc_binds : rprof::cur.full_binds)[rprof::kind];
@@ -1026,10 +1030,9 @@ static uint32_t bind_constants_impl(FxEffect &fx, const std::vector<uint8_t> &co
                                     int32_t *booleans, uint64_t since) {
     uint32_t bound = 0;
     FxEffect::CtabLast *hit = nullptr;
-    if (!recomp_ab::old(recomp_ab::CONSTS))
-        for (FxEffect::CtabLast &e : fx.ctab_last)
-            if (e.key == key && e.table)
-                hit = &e;
+    for (FxEffect::CtabLast &e : fx.ctab_last)
+        if (e.key == key && e.table)
+            hit = &e;
     if (!hit) {
         FxEffect::CtabLast fresh{key, &ctab_of(code, key), &fx.ctab_params[key]};
         fx.ctab_last[1] = fx.ctab_last[0];
@@ -1079,6 +1082,29 @@ static uint32_t bind_constants_impl(FxEffect &fx, const std::vector<uint8_t> &co
             continue;
         }
         ++bound;
+        // R3 run 29 O4 (review/run29/opt-design.md; A/B switch fxmat, kill RECOMP_OPT_FXMAT=0): a float 4x4 matrix
+        // (the per-draw world and view matrices) goes in register by register, without the per-element getter: the
+        // values are the generic path's exactly (same elements, same order; bounds checked once for the whole run).
+        static const bool fxmat_on = [] { const char *e = getenv("RECOMP_OPT_FXMAT"); return !(e && e[0] == '0'); }();
+        if (fxmat_on && p->t.type == FXT_FLOAT && (c.cls == FXC_MATRIX_ROWS || c.cls == FXC_MATRIX_COLUMNS) &&
+            p->t.rows == 4 && p->t.cols == 4 && (c.cls == FXC_MATRIX_ROWS ? (c.rows ? c.rows : 4) : (c.cols ? c.cols : 4)) == 4 &&
+            !recomp_ab::old(recomp_ab::FXMAT)) {
+            const uint32_t n = c.index + c.count <= limit ? c.count : (limit > c.index ? limit - c.index : 0);
+            const uint32_t slots = param_slots(*p);
+            if ((n + 3) / 4 * 16 <= slots) {   // every element the run reads exists
+                const uint8_t *v = p->value.data();
+                for (uint32_t r = 0; r < n; ++r) {
+                    const uint8_t *m = v + (r / 4) * 64;
+                    const uint32_t line = r % 4;
+                    if (c.cls == FXC_MATRIX_ROWS)
+                        memcpy(reg[c.index + r], m + line * 16, 16);
+                    else
+                        for (uint32_t k = 0; k < 4; ++k)
+                            memcpy(&reg[c.index + r][k], m + (k * 4 + line) * 4, 4);
+                }
+                continue;
+            }
+        }
         if (c.cls == FXC_MATRIX_ROWS || c.cls == FXC_MATRIX_COLUMNS) {
             uint32_t pr = p->t.rows ? p->t.rows : 1, pc = p->t.cols ? p->t.cols : 1;
             for (uint32_t r = 0; r < c.count && c.index + r < limit; ++r) {
@@ -1284,7 +1310,7 @@ static bool state_preshader(FxEffect &fx, D9Pipeline &pl, const FxState &s, floa
         s.preshader_key = d9sh::code_key(s.preshader.data(), s.preshader.size());
     if (s.pres_effect == fx.self && s.pres_stamp) {
         const std::vector<int32_t> *inputs = s.pres_inputs;
-        if (!inputs || recomp_ab::old(recomp_ab::PRESHADER)) {
+        if (!inputs) {
             auto it = fx.ctab_params.find(s.preshader_key);
             inputs = it != fx.ctab_params.end() ? &it->second : nullptr;
         }
@@ -1429,7 +1455,7 @@ static void pool_fuse_update(FxEffect &fx, D9Pipeline &pl) {
 // parameters (a preshader); static states were applied at BeginPass and, as in D3DX, are not applied again.
 // Shaders, sampler textures and constants are still resolved, because parameters can change them.
 // RECOMP_AB switch "commit" keeps the earlier full re-apply in old periods (and RECOMP_AB_FORCE_OLD=1 always).
-static void apply_pass(FxEffect &fx, bool commit = false) {
+static void apply_pass(FxEffect &fx) {
     // Remaster A4 gate (TEST ONLY): switch nullfx skips the pass in OLD periods (with nulldraw, which skips the draws
     // in d3d9.cpp, the A/B bounds all the work A4 would move; each alone splits it). Opt-in only.
     if (recomp_ab::old(recomp_ab::NULLFX))
@@ -1465,21 +1491,42 @@ static void apply_pass(FxEffect &fx, bool commit = false) {
         pass.label = fx.resource + "/" + tech.name + "/" + pass.name;
     pl.label = pass.label.c_str();
     uint64_t prof_t = rprof::start();
-    for (const FxState &s : pass.states)
-        if (!commit || !s.preshader.empty()) {
-            apply_state(fx, pl, s, 0xffffffffu);
-            if (rprof::on())
-                ++rprof::cur.states[rprof::kind];
-        }
+    for (const FxState &s : pass.states) {
+        apply_state(fx, pl, s, 0xffffffffu);
+        if (rprof::on())
+            ++rprof::cur.states[rprof::kind];
+    }
     prof_t = rprof::klap(rprof::PASS_STATES, prof_t);
     // A pass may also bind a texture to a stage directly.
-    for (const FxState &s : pass.states)
-        if (s.op == FXS_SAMPLER_TEXTURE && s.index < 16) {
-            auto it = fx.objects.find(s.object());
-            if (it != fx.objects.end() && !it->second.param.empty())
-                if (FxParam *tex = param_named(fx, it->second.param))
-                    pl.sampler_tex[s.index] = tex->texture;
+    // R3 run 31 O4(b) (A/B fxmat, kill RECOMP_OPT_FXMAT=0): through the pass's resolved list (FxPass::tex_binds), not
+    // an object lookup and a parameter name lookup per state on every commit; the same stages get the same textures
+    // in the same order.
+    static const bool texbind_cache = [] { const char *e = getenv("RECOMP_OPT_FXMAT"); return !(e && e[0] == '0'); }();
+    if (texbind_cache && !recomp_ab::old(recomp_ab::FXMAT)) {
+        if (pass.tex_binds_n != fx.params.size()) {
+            pass.tex_binds.clear();
+            for (const FxState &s : pass.states)
+                if (s.op == FXS_SAMPLER_TEXTURE && s.index < 16) {
+                    auto it = fx.objects.find(s.object());
+                    if (it != fx.objects.end() && !it->second.param.empty()) {
+                        const int32_t i = param_index_of(fx, it->second.param);
+                        if (i >= 0)
+                            pass.tex_binds.push_back({s.index, i});
+                    }
+                }
+            pass.tex_binds_n = fx.params.size();
         }
+        for (const auto &b : pass.tex_binds)
+            pl.sampler_tex[b.first] = fx.params[(size_t)b.second].texture;
+    } else {
+        for (const FxState &s : pass.states)
+            if (s.op == FXS_SAMPLER_TEXTURE && s.index < 16) {
+                auto it = fx.objects.find(s.object());
+                if (it != fx.objects.end() && !it->second.param.empty())
+                    if (FxParam *tex = param_named(fx, it->second.param))
+                        pl.sampler_tex[s.index] = tex->texture;
+            }
+    }
     prof_t = rprof::klap(rprof::PASS_TEXTURES, prof_t);
     uint32_t missing = 0;
     uint32_t bound =
@@ -2081,11 +2128,6 @@ void Fx_BeginPass(X86 *c) {
         apply_pass(*fx);
     com_ret(c, D3D_OKX);
 }
-// Remaster C1 is off until its W4 identity check passes: RECOMP_REMASTER_COMMIT_DELTA=1 turns it on.
-static bool commit_delta_on() {
-    static const bool on = [] { const char *e = getenv("RECOMP_REMASTER_COMMIT_DELTA"); return e && *e == '1'; }();
-    return on;
-}
 // Remaster run 9 item C (TEST ONLY): RECOMP_REMASTER_FXPARAM_LOG=<substring> logs, at a CommitChanges of an effect whose
 // resource name contains the substring, every float parameter up to 16 values (name, semantic, values) with the
 // technique/pass, once per effect and then every 20,000 commits. For the reflection-energy calibration (car env map,
@@ -2124,10 +2166,10 @@ void Fx_CommitChanges(X86 *c) {
         const bool pool = p1_pool_pass(*fx, c);
         rprof::kind = pool ? rprof::K_PCC : rprof::K_CC;
         const uint64_t t0 = os_monotonic_ns();
-        apply_pass(*fx, commit_delta_on() && !recomp_ab::old(recomp_ab::COMMIT));
+        apply_pass(*fx);
         p1_after_apply(*fx, pool, t0);
     } else if (fx)
-        apply_pass(*fx, commit_delta_on() && !recomp_ab::old(recomp_ab::COMMIT));
+        apply_pass(*fx);
     com_ret(c, D3D_OKX);
 }
 void Fx_EndPass(X86 *c) {

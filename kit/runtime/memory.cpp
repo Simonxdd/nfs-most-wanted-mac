@@ -31,10 +31,18 @@ uint32_t g_watch_base = 0;
 uint32_t g_watch_len = 0;
 RecompDirty g_dirty[RECOMP_DIRTY_SLOTS];
 uint32_t g_dirty_count = 0;
+uint32_t g_store_hooks = 0;   // x86.h: (a watch is armed) or (a dirty range is open)
+
+extern "C" void recomp_store_hooks_update(void) {
+    g_store_hooks = (g_watch_len != 0 || g_dirty_count != 0) ? 1u : 0u;
+}
 
 namespace {
 struct WatchArm {
     WatchArm() {
+#if defined(RECOMP_GAME_STORE_HOOKS) && !RECOMP_GAME_STORE_HOOKS
+        fprintf(stderr, "[recomp] translated stores: no watch / dirty-range check (game.toml store_hooks = false)\n");
+#endif
         recomp_frame_watch = recomp_env("WATCH_FRAME") ? 1u : 0u;
         const char *s = recomp_env("WATCH");
         if (!s || !*s)
@@ -53,6 +61,13 @@ struct WatchArm {
             len = GUEST_SIZE - base;
         g_watch_base = (uint32_t)base;
         g_watch_len = (uint32_t)len;
+        recomp_store_hooks_update();
+#if defined(RECOMP_GAME_STORE_HOOKS) && !RECOMP_GAME_STORE_HOOKS
+        // D-177: this game's translated stores carry no check (game.toml store_hooks = false), so only the kit's
+        // own stores could report; say so rather than watch silently.
+        fprintf(stderr, "[recomp] RECOMP_WATCH: not available in this build (store_hooks = false): the game's own "
+                        "stores are not checked\n");
+#endif
     }
 };
 WatchArm g_watch_arm;

@@ -9,7 +9,7 @@ add_custom_target(core_mods
 
 add_custom_target(plugins DEPENDS core_mods)
 
-# Movie colour conversion checks (synthetic frames). No game data or device output in CTest.
+# Private movie colour diagnostics. No game data or device output in CTest.
 if(NOT IOS AND NOT ANDROID)
   add_executable(usa_movie_color_tests
     ${RECOMP_GAME_DIR}/native/tests/usa_movie_color_tests.cpp
@@ -21,6 +21,11 @@ if(NOT IOS AND NOT ANDROID)
   pop_test_binary(usa_movie_color_tests)
   add_test(NAME usa_movie_color_tests COMMAND usa_movie_color_tests)
   set_tests_properties(usa_movie_color_tests PROPERTIES LABELS nogame)
+endif()
+
+# Bounded Xenos research tool: absent from ordinary builds and app packaging.
+if(DEFINED ENV{NFSMW_XENIA_SOURCE_DIR} AND NOT "$ENV{NFSMW_XENIA_SOURCE_DIR}" STREQUAL "")
+  add_subdirectory(${RECOMP_GAME_DIR}/tools/xenia_research ${CMAKE_BINARY_DIR}/xenia-research)
 endif()
 
 # Read-only retail vehicle admission observer: synthetic branch/ABI checks.

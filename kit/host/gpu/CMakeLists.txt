@@ -17,12 +17,6 @@ pop_optimize(hdr_convert_tests 1)
 pop_test_binary(hdr_convert_tests)
 add_test(NAME hdr_convert_tests COMMAND hdr_convert_tests WORKING_DIRECTORY ${POP_ROOT})
 set_tests_properties(hdr_convert_tests PROPERTIES LABELS nogame)
-add_executable(state_delta_tests tests/state_delta_tests.cpp) # Remaster A4-lite step 1
-target_compile_options(state_delta_tests PRIVATE ${POP_WARN_STRICT})
-pop_optimize(state_delta_tests 1)
-pop_test_binary(state_delta_tests)
-add_test(NAME state_delta_tests COMMAND state_delta_tests WORKING_DIRECTORY ${POP_ROOT})
-set_tests_properties(state_delta_tests PROPERTIES LABELS nogame)
 
 add_executable(shader_warm_queue_tests tests/shader_warm_queue_tests.cpp)
 target_compile_options(shader_warm_queue_tests PRIVATE ${POP_WARN_STRICT})

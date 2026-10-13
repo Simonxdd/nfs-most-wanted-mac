@@ -63,7 +63,8 @@ std::atomic<bool> g_main_waiting{false};
 bool g_force_enabled = false;
 #endif
 // Short names, so seven fit the tab bar (settings_menu_draw.cpp also shrinks them to fit).
-const char *const kTabs[] = {"Graphics", "Display", "Audio", "Xbox 360", "PC", "Mods", "Controls"};
+// NFSMW run 30 (owner D-174): pages named by what a player wants to change; the enum names stay.
+const char *const kTabs[] = {"Graphics", "Display", "Audio", "Interface", "Gameplay", "Mods", "Controls"};
 constexpr int kTabCount = MENU_TAB_COUNT;
 static_assert(sizeof kTabs / sizeof kTabs[0] == MENU_TAB_COUNT, "a name for every page");
 
@@ -107,7 +108,7 @@ bool main_graphics_setting(const Setting &s) {
     return !strcmp(s.group, "graphics");
 }
 // What "Restore graphics defaults" covers: World filtering, and every picture setting (a section marked `picture`
-// below, on the Graphics, Display, Xbox 360 and PC pages) that applies now or at Apply. Not the display rows
+// below, on the Graphics and Display pages; since NFSMW run 30 not Interface or Gameplay) that applies now or at Apply. Not the display rows
 // (window, frame limit, overlay) and not settings that need a restart (resolution, widescreen): those are the
 // player's setup, not graphics quality. Rumble, audio and the Mods page have their own section restores.
 bool restorable(const Setting &s) {
@@ -126,13 +127,15 @@ struct Section {
 };
 const Section kSections[] = {
     {"graphics", "Picture", MENU_TAB_GRAPHICS, true, false},
-    // The Graphics page's Advanced section, in this order.
-    {"graphics.remaster", "Remaster features (follow Look)", MENU_TAB_GRAPHICS, true, false},
-    {"graphics.effects", "Effects", MENU_TAB_GRAPHICS, true, false},
-    {"graphics.cycle", "Day and weather cycle", MENU_TAB_GRAPHICS, true, false},
-    {"graphics.mirror", "Mirror", MENU_TAB_GRAPHICS, true, false},
-    {"graphics.rain", "Rain", MENU_TAB_GRAPHICS, true, false},
-    {"graphics.engine", "Engine and experiments", MENU_TAB_GRAPHICS, true, false},
+    // The Graphics page's Advanced section, in this order (NFSMW run 30, owner D-174: sections by effect, each
+    // strength slider beside its switch; review/run30/settings-ia-design.md).
+    {"graphics.lighting", "Lighting and shadows", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.surfaces", "Textures, surfaces and reflections", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.camera", "Camera and colour effects", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.weather", "Sky, weather and rain", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.particles", "Smoke and sparks", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.mirror", "Rear-view mirror", MENU_TAB_GRAPHICS, true, false},
+    {"graphics.engine", "Detail limits and engine", MENU_TAB_GRAPHICS, true, false},
     {"", "Other", MENU_TAB_GRAPHICS, true, false},
     // Display: the window, frame limit and overlay rows open "Screen"; World filtering opens "Sharpness".
     {"display", "Screen", MENU_TAB_DISPLAY, true, false},
@@ -140,20 +143,20 @@ const Section kSections[] = {
     {"display.hdr", "HDR", MENU_TAB_DISPLAY, true, false},
     {"", "Other", MENU_TAB_DISPLAY, true, false},
     {"audio", "Audio", MENU_TAB_AUDIO, false, true},
-    {"xbox360", "Xbox 360 looks", MENU_TAB_XBOX360, true, false},
-    {"xbox360.particles", "Sparks and smoke", MENU_TAB_XBOX360, true, false},
-    {"xbox360.pools", "Light pools", MENU_TAB_XBOX360, true, false},
-    {"", "Other", MENU_TAB_XBOX360, true, false},
-    {"pc", "Extra Options", MENU_TAB_PC, true, false},
-    {"pc.keys", "Keys, camera and HUD", MENU_TAB_PC, true, false},
-    {"", "Other", MENU_TAB_PC, true, false},
-    {"visual", "Screen and camera extras", MENU_TAB_MODS, false, true},
-    {"career", "Career and customization", MENU_TAB_MODS, false, true},
-    {"fixes", "Verified fixes and compatibility", MENU_TAB_MODS, false, true},
+    {"ui", "HUD and minimap", MENU_TAB_XBOX360, false, true},
+    {"ui.menus", "Menus, movies and subtitles", MENU_TAB_XBOX360, false, true},
+    {"", "Other", MENU_TAB_XBOX360, false, true},
+    {"game", "Career and rewards", MENU_TAB_PC, false, true},
+    {"game.police", "Police and heat", MENU_TAB_PC, false, true},
+    {"game.unlocks", "Unlocks and shortcuts", MENU_TAB_PC, false, true},
+    {"game.fixes", "Fixes (leave on)", MENU_TAB_PC, false, true},
+    {"", "Other", MENU_TAB_PC, false, true},
+    {"mods", "Your mods", MENU_TAB_MODS, false, true},
     {"", "Other", MENU_TAB_MODS, false, true},
     {"diagnostics", "Diagnostics", MENU_TAB_MODS, false, true},
     {"controls", "Controller", MENU_TAB_CONTROLS, false, false},
     {"feedback", "Controller rumble", MENU_TAB_CONTROLS, false, true}, // owner 9 Oct: rumble on Controls
+    {"controls.keys", "Keyboard keys", MENU_TAB_CONTROLS, false, false},
 };
 constexpr size_t kSectionCount = sizeof kSections / sizeof kSections[0];
 // The page a group family belongs to when no section names the group itself.
@@ -165,7 +168,9 @@ int family_tab(const char *g) {
     static const Family kFamilies[] = {{"graphics", MENU_TAB_GRAPHICS},
                                        {"display", MENU_TAB_DISPLAY},
                                        {"audio", MENU_TAB_AUDIO},
-                                       {"xbox360", MENU_TAB_XBOX360},
+                                       {"ui", MENU_TAB_XBOX360},
+                                       {"game", MENU_TAB_PC},
+                                       {"xbox360", MENU_TAB_XBOX360},   // run 30: older groups still find a page
                                        {"pc", MENU_TAB_PC},
                                        {"controls", MENU_TAB_CONTROLS}};
     for (const Family &f : kFamilies) {

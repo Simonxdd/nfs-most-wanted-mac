@@ -1,7 +1,7 @@
 /* MetalFX upscaling, v1 spatial (Remaster run 13; review/run13/metalfx-design.md). Included by nfsmw.c after
- * post_fx.h (it uses get_u32, setting, g_look, install_at and g_api from there).
+ * post_fx.h (it uses get_u32, setting, install_at and g_api from there).
  *
- * The setting `upscale` (0 Off, 1 Quality 1.5x, 2 Performance 2x; a player setting, it does not follow Look) is read
+ * The setting `upscale` (0 Off, 1 Quality 1.5x, 2 Performance 2x; a player setting) is read
  * once at launch and handed to the kit as RECOMP_REMASTER_UPSCALE; `upscale_temporal` as
  * RECOMP_REMASTER_UPSCALE_TEMPORAL (the kit says when temporal is not built yet). With Off nothing here installs.
  *
@@ -19,13 +19,19 @@
  * the scene window without a smaller backing), and at each begin the camera goes to the kit as the private
  * SetTransform states 0x200 (eView 1 camera +0x00..+0x3c, world -> view, row vectors, y down) and 0x201 (FOV, near,
  * far, cut flag, mover type, game frame; kit dx/host_d9.h HOST_D9_TS_SCENE_*). Unset: nothing here changes (no
- * markers without upscaling, no SetTransform). The PC look sends no markers: the foundation is off there too. */
+ * markers without upscaling, no SetTransform). The PC look sends no markers: the foundation is off there too.
+ *
+ * Run 15 Wave B (review/run15/waveb-plan.md P0): the foundation also runs for its consumers, `upscale_temporal` (with
+ * upscaling on) and `ssr` (Look-followed; RECOMP_REMASTER_SSR / _SSR_STRENGTH): the markers then go out also with
+ * upscaling Off, and the camera with them. All off: nothing here changes. */
 
 #define UPSCALE_SLOT_BEGIN 156
 #define UPSCALE_SLOT_END 157
 
 static int g_up_mode;            /* the `upscale` setting at launch */
-static int g_up_fnd;             /* run 14 foundation F1/F2: RECOMP_REMASTER_FOUNDATION=1 (TEST ONLY) */
+static int g_up_fnd;             /* the foundation's markers + camera: TEST env, temporal or ssr (run 15 Wave B) */
+static int g_up_ssr;             /* run 15 Wave B: `ssr` (Look-followed) or RECOMP_REMASTER_SSR=1 at launch */
+static int g_up_temporal;        /* run 15 Wave B: `upscale_temporal` with upscaling on */
 static uint32_t g_up_cam_mem;    /* guest memory for the two SetTransform matrices (0x80 bytes) */
 static uint64_t g_up_cams;
 static int g_up_open;            /* a begin went out this frame */
@@ -41,8 +47,9 @@ static void up_marker(uint32_t dev, uint32_t state) {
 static void up_log_state(const PopModApi *api, int state) {
     if (state == g_up_logged) return;
     g_up_logged = state;
-    if (!g_up_mode) {   /* run 14 foundation only */
-        api->log(api, state == 1 ? "core.nfsmw: foundation: scene window markers and camera on (TEST)"
+    if (!g_up_mode) {   /* run 14 foundation only (TEST env, or run 15 ssr without upscaling) */
+        api->log(api, state == 1 ? (g_up_ssr ? "core.nfsmw: foundation: scene window markers and camera on (ssr)"
+                                             : "core.nfsmw: foundation: scene window markers and camera on (TEST)")
                                  : "core.nfsmw: foundation: the PC look is on; no scene window");
         return;
     }
@@ -82,7 +89,7 @@ static void up_send_camera(uint32_t dev) {
 static void up_scene_begin(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
     (void)cpu; (void)inv; (void)user;
     if (get_u32(0x00925e90u) != 6) return;                                        /* the world only */
-    if (g_look == LOOK_PC || get_u32(0x009017fcu) || get_u32(0x00901828u)) {      /* the PC look: native */
+    if (get_u32(0x009017fcu) || get_u32(0x00901828u)) {      /* the PC colour treatment: native */
         ++g_up_aside;
         up_log_state(api, 2);
         return;
@@ -110,26 +117,38 @@ static void upscale_init(const PopModApi *api) {
     { const char *e = getenv("RECOMP_REMASTER_FOUNDATION"); g_up_fnd = e && *e == '1'; }   /* run 14 F1/F2 (TEST) */
     g_up_mode = (int)setting("upscale", 0);
     if (g_up_mode < 1 || g_up_mode > 2) g_up_mode = 0;
+    /* Run 15 Wave B (review/run15/waveb-plan.md P0): the foundation's consumers. `ssr` follows Look (Xbox 360 and PC
+     * read 0); the kit gets RECOMP_REMASTER_SSR / _SSR_STRENGTH, as RECOMP_REMASTER_UPSCALE_TEMPORAL. Either one
+     * sends the markers and the camera (with upscale Off the window opens at scale 1, as FOUNDATION=1 does). */
+    if (setting("ssr", 0) && !getenv("RECOMP_REMASTER_SSR")) {
+        char v[16];
+        int64_t st = setting("ssr_strength", 100);
+        snprintf(v, sizeof v, "%d", (int)(st < 0 ? 0 : st > 200 ? 200 : st));
+        setenv("RECOMP_REMASTER_SSR", "1", 0);
+        setenv("RECOMP_REMASTER_SSR_STRENGTH", v, 0);
+    }
+    { const char *e = getenv("RECOMP_REMASTER_SSR"); g_up_ssr = e && *e == '1'; }
+    { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL"); g_up_temporal = g_up_mode && e && *e == '1'; }
+    if (g_up_ssr || g_up_temporal) g_up_fnd = 1;
     if (!g_up_mode && !g_up_fnd) return;
     if (g_up_mode && !getenv("RECOMP_REMASTER_UPSCALE")) setenv("RECOMP_REMASTER_UPSCALE", g_up_mode == 1 ? "1.5" : "2", 0);
-    if (g_up_mode && setting("upscale_temporal", 0) && !getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL"))
-        setenv("RECOMP_REMASTER_UPSCALE_TEMPORAL", "1", 0);
     const int ok = install_at(0x006de210u, 0x006ded21u, up_scene_begin, POP_HOOK_BEFORE, UPSCALE_SLOT_BEGIN) == POP_OK &&
                    install_at(0x006c3870u, 0x006e75a6u, up_scene_end, POP_HOOK_BEFORE, UPSCALE_SLOT_END) == POP_OK;
     char line[200];
     if (g_up_mode)
-        snprintf(line, sizeof line, "core.nfsmw: upscaling %s at launch (%s)%s%s", ok ? "on" : "UNAVAILABLE (hook)",
+        snprintf(line, sizeof line, "core.nfsmw: upscaling %s at launch (%s)%s%s%s", ok ? "on" : "UNAVAILABLE (hook)",
                  g_up_mode == 1 ? "Quality, 1.5x" : "Performance, 2x",
-                 setting("upscale_temporal", 0) ? "; temporal asked for" : "", g_up_fnd ? "; foundation markers (TEST)" : "");
+                 g_up_temporal ? "; temporal asked for" : "", g_up_ssr ? "; ssr" : "",
+                 g_up_fnd ? "; foundation markers" : "");
     else
-        snprintf(line, sizeof line, "core.nfsmw: foundation scene window %s at launch (TEST, RECOMP_REMASTER_FOUNDATION=1)",
-                 ok ? "on" : "UNAVAILABLE (hook)");
+        snprintf(line, sizeof line, "core.nfsmw: foundation scene window %s at launch (%s)", ok ? "on" : "UNAVAILABLE (hook)",
+                 g_up_ssr ? "ssr" : "TEST, RECOMP_REMASTER_FOUNDATION=1");
     api->log(api, line);
     if (!ok) {   /* without both markers the scene stays native: take back whichever went in */
         for (int s = UPSCALE_SLOT_BEGIN; s <= UPSCALE_SLOT_END; ++s)
             if (g_hooks[s]) { api->hook_remove(api, g_hooks[s]); g_hooks[s] = 0; }
         g_up_mode = 0;
-        g_up_fnd = 0;
+        g_up_fnd = g_up_ssr = g_up_temporal = 0;
     }
 }
 /* TEST ONLY evidence at exit: begins and ends must match (one each per world frame); aside counts PC-look frames. */

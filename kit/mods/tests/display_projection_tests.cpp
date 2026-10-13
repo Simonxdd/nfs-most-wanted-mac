@@ -103,6 +103,7 @@ PopModApi fake_api() {
 } // namespace
 
 MOD_TEST_SUITE(display_projection_fixture) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     // Compiled as C by the same toolchain as all loader fixtures, then loaded
     // through its public ABI; this exercises the shipping hook callbacks.
     void *lib = os_dlopen((mods_test_build_path("recomp/mods-fixtures/display_projection") +
@@ -455,6 +456,7 @@ extern "C" uint32_t host_sprite_texture_revision(uint32_t h) {
     return h == evidence_handle ? evidence_revision : 0;
 }
 MOD_TEST_SUITE(display_projection_fixture_attributes_deferred_entity_sprite) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     sched_set_guest_thread(true);
     mods_hooks_reset();
     mods_set_context_provider(nullptr);
@@ -629,6 +631,7 @@ MOD_TEST_SUITE(display_projection_fixture_attributes_deferred_entity_sprite) {
 
 #include "../../host/fixture_view.h"
 MOD_TEST_SUITE(display_fixture_measured_camera_original_projection) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE();
     sched_set_guest_thread(true);
     mods_hooks_reset();
     mem_init();

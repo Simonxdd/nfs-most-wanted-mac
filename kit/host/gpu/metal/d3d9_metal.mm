@@ -20,12 +20,14 @@
 #include "../../../dx/d3d9_msaa.h"
 #include "../../../platform/os.h"
 #include "../../../platform/ab_phase.h"
+#include "label_class.h"
 #include "../../../runtime/guest.h"
 #include "../../../runtime/display_seam.h"
 #include "../../d3d_render.h"
 #include "metal_device.h"
 #include "shader_warm_queue.h"
 #include "pipeline_warm_spec.h"
+#include "sharpen_msl.h"   // R3 run 22 (TEST): the sharpen on the MetalFX temporal output
 #include "../../present.h"
 #include "../../gpu_time.h"
 #include "../d3d9_backend.h"
@@ -35,10 +37,12 @@
 #include "../d3d9_capture.h"
 #include "remaster_tex.h"
 #include "remaster_cache.h"
-#include "grass.h"
 #include "foundation.h"   // Remaster run 14 foundation F1/F3 (pure C++)
+#include "surface.h"   // Run 15 Wave B WB1b surface attachments
 #include "smoke_light.h"  // Remaster run 14 lit smoke (pure C++: kinds, the lighting twin, the parameter block)
 #include "atmosphere.h"   // Remaster run 14 B1 height fog (pure C++ and its Metal source)
+#include "temporal.h"     // Run 15 Wave B WB2 MetalFX temporal (pure C++ policy)
+#include "ssr.h"          // Run 15 Wave B WB3 screen-space reflections (pure C++ and its Metal source)
 #include <future>
 
 #include <atomic>
@@ -145,6 +149,7 @@ struct Tex {
     // pack's replacement for its key (the per-key cache, remaster_cache.h, holds the replacements).
     uint32_t top_uploads = 0;
     bool no_replace = false;
+    uint64_t label_key = 0;   // run 20 RECOMP_GPU_LABELS: the key + 1 the Metal label was made for (0 = none yet)
     // Remaster run 13 MetalFX upscaling: the back buffer and the scene depth have a second backing, made at the
     // first scene marker (never while upscaling is off). Between the markers the scene backing is the one in
     // `texture`/`msaa`/`scale`/`samples` (aliased); the other one waits here. Swapping the backing is the id alias.
@@ -362,6 +367,24 @@ fragment float4 copy_fs(QuadOut i [[stage_in]], texture2d<float> t [[texture(0)]
 fragment float4 clear_fs(QuadOut i [[stage_in]], constant QuadIn &q [[buffer(0)]]) {
     return q.color;
 }
+// R3 run 23 W2-synth (TEST, review/run23/w2-synth-design.md): the MetalFX bench's detail pattern (mfx_bench.mm
+// detail_tex): bilinear between per-OUTPUT-pixel hash values in [0.2, 0.8]; so.xy = the output size in pixels.
+static uint synth_hash(uint x) {
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+static float synth_r(int i, int j) {
+    return 0.2 + 0.6 * (float(synth_hash((uint(i) * 73856093u) ^ (uint(j) * 19349663u) ^ 0x9e3779b9u)) / 4294967295.0);
+}
+fragment float4 synth_fs(QuadOut i [[stage_in]], constant float4 &so [[buffer(1)]]) {
+    const float2 u = i.uv * so.xy - 0.5;
+    const float2 f0 = floor(u);
+    const int2 k = int2(f0);
+    const float2 fr = u - f0;
+    const float v = mix(mix(synth_r(k.x, k.y), synth_r(k.x + 1, k.y), fr.x),
+                        mix(synth_r(k.x, k.y + 1), synth_r(k.x + 1, k.y + 1), fr.x), fr.y);
+    return float4(v, v, v, 1.0);
+}
 // Test121: a depth buffer copied into a colour target (StretchRect from a depth surface), the
 // stored depth as written; a multisampled depth buffer gives the nearest of its samples (the
 // smallest depth), so a foreground edge keeps its own depth (Metal's MIN resolve choice;
@@ -419,6 +442,34 @@ fragment UpscaleOut upscale_compose_ms_fs(QuadOut i [[stage_in]], texture2d<floa
     o.depth = d;
     return o;
 }
+)MSL" REMASTER_SHARPEN_MSL R"MSL(
+// R3 run 22 (TEST RECOMP_REMASTER_UPSCALE_TEMPORAL_SHARPEN): the compose pass with the sharpen (sharpen_msl.h) on the
+// MetalFX temporal output (same size as the target: exact texels by read()).
+fragment float4 upscale_sharp_fs(QuadOut i [[stage_in]], texture2d<float> t [[texture(0)]],
+                                 constant SharpParams &sp [[buffer(1)]]) {
+    uint2 size = uint2(t.get_width(), t.get_height());
+    return rcas5(t, min(uint2(i.uv * float2(size)), size - uint2(1)), sp.stops, sp.hdr > 0.5);
+}
+fragment UpscaleOut upscale_sharp_z_fs(QuadOut i [[stage_in]], texture2d<float> t [[texture(0)]],
+                                       depth2d<float> z [[texture(1)]], constant SharpParams &sp [[buffer(1)]]) {
+    uint2 size = uint2(t.get_width(), t.get_height()), zs = uint2(z.get_width(), z.get_height());
+    UpscaleOut o;
+    o.color = rcas5(t, min(uint2(i.uv * float2(size)), size - uint2(1)), sp.stops, sp.hdr > 0.5);
+    o.depth = z.read(min(uint2(i.uv * float2(zs)), zs - uint2(1)));
+    return o;
+}
+fragment UpscaleOut upscale_sharp_zms_fs(QuadOut i [[stage_in]], texture2d<float> t [[texture(0)]],
+                                         depth2d_ms<float> z [[texture(1)]], constant SharpParams &sp [[buffer(1)]]) {
+    uint2 size = uint2(t.get_width(), t.get_height()), zs = uint2(z.get_width(), z.get_height());
+    uint2 p = min(uint2(i.uv * float2(zs)), zs - uint2(1));
+    float d = z.read(p, 0);
+    for (uint k = 1; k < z.get_num_samples(); ++k)
+        d = min(d, z.read(p, k));
+    UpscaleOut o;
+    o.color = rcas5(t, min(uint2(i.uv * float2(size)), size - uint2(1)), sp.stops, sp.hdr > 0.5);
+    o.depth = d;
+    return o;
+}
 )MSL";
 
 // Remaster run 14 foundation F3 (review/run14/foundation-design.md 3; TEST ONLY, RECOMP_REMASTER_FOUNDATION=1): camera
@@ -436,34 +487,88 @@ struct FndMv {
     float2 size, h;     // render pixels; the unjittered halfpix (NDC)
     float2 jc, jp;      // jitter this frame / the previous frame (render pixels, x right, y down)
     float zn, zf;       // near / far (linear depth for the error)
-    uint flags, pad;    // 1 the previous depth is valid, 2 debug motion, 4 debug reprojection error, 8 TEST counters
+    uint flags, pad;    // 1 the previous depth is valid, 2 debug motion, 4 debug reprojection error, 8 TEST counters,
+                        // 16 MSAA depth sample 0, 32 TEST colour gate (cc/pc), 64 reactive fallback out (ro), 128 keep
+                        // this depth (nz), 256 S1 tags bound (tg), 512 / 1024 TEST H-lag R2 / RG formed
+    float4x4 R2, RG;    // Wave B WB1a H-lag candidates (foundation.h lag_candidates)
 };
 // q (32 words): 0 pixels, 1 sky, 2 behind the previous camera, 3/4 sum |mv| lo/hi (1/65536 px), 5 max |mv|,
 // 6..12 reprojected depth error < 0.1 / 0.25 / 0.5 / 1 / 2 / 5 / >= 5 %, 13 disoccluded, 14 off screen, 15 edge,
-// 16 moves with the camera (COMB14B).
+// 16 moves with the camera (COMB14B). Wave B WB1a: 17 / 18 / 19 R2 / RG / R error < 0.5 % (any class), 20 the pixels
+// those three were scored on, 21 colour-gate pixels, 22/23 sum |prev(p + mv) - cur| lo/hi, 24/25 sum |prev(p) - cur|
+// lo/hi (luma, 1/65536), 26 reactive pixels written 1.
 static void fnd_add(device atomic_uint *q, uint i, uint v) {
     if (v)
         atomic_fetch_add_explicit(&q[i], v, memory_order_relaxed);
+}
+static void fnd_add64(device atomic_uint *q, uint i, float s) {   // s: a simdgroup sum (<= 2^31)
+    const uint add = uint(min(s, 4.0e9));
+    if (add) {
+        const uint old = atomic_fetch_add_explicit(&q[i], add, memory_order_relaxed);
+        if (old + add < old)
+            atomic_fetch_add_explicit(&q[i + 1], 1u, memory_order_relaxed);
+    }
 }
 static float fnd_lin(float d, float zn, float zf) { return zn * zf / max(zf - d * (zf - zn), 1e-6); }
 static float3 fnd_hue(float a) {
     float3 k = clamp(abs(fract(float3(a, a + 2.0 / 3.0, a + 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
     return k;
 }
-static void fnd_body(uint2 p, bool in, float d, constant FndMv &u, texture2d<float, access::write> mv,
-                     texture2d<float, access::read> pz, texture2d<float, access::write> nz,
-                     texture2d<float, access::write> dbg, device atomic_uint *q) {
+// The jitter-compensated surface position nj reprojected with M into the previous frame: 0 behind the previous camera,
+// 1 off screen, 2 scored (pp the previous render-pixel position, got / want the bilinear previous / expected linear
+// depth, lo / hi the 2x2 linear depth range).
+static int fnd_reproj(float2 nj, float d, float4x4 M, constant FndMv &u, texture2d<float, access::read> pz,
+                      thread float2 &pp, thread float &got, thread float &want, thread float &lo, thread float &hi) {
+    const float4 r = float4(nj, d, 1.0) * M;
+    if (!(r.w > 1e-6))
+        return 0;
+    const float2 pn = r.xy / r.w;
+    pp = float2((pn.x + u.h.x + 1.0) * 0.5 * u.size.x, (1.0 - pn.y - u.h.y) * 0.5 * u.size.y) + u.jp;
+    want = fnd_lin(r.z / r.w, u.zn, u.zf);
+    const float2 b = pp - 0.5;
+    const int2 i0 = int2(floor(b));
+    const float2 f = b - float2(i0);
+    if (i0.x < 0 || i0.y < 0 || i0.x + 1 >= int(u.size.x) || i0.y + 1 >= int(u.size.y))
+        return 1;
+    const float z00 = fnd_lin(pz.read(uint2(i0)).x, u.zn, u.zf);
+    const float z10 = fnd_lin(pz.read(uint2(i0 + int2(1, 0))).x, u.zn, u.zf);
+    const float z01 = fnd_lin(pz.read(uint2(i0 + int2(0, 1))).x, u.zn, u.zf);
+    const float z11 = fnd_lin(pz.read(uint2(i0 + int2(1, 1))).x, u.zn, u.zf);
+    lo = min(min(z00, z10), min(z01, z11));
+    hi = max(max(z00, z10), max(z01, z11));
+    got = mix(mix(z00, z10, f.x), mix(z01, z11, f.x), f.y);
+    return 2;
+}
+static bool fnd_hit(float2 nj, float d, float4x4 M, constant FndMv &u, texture2d<float, access::read> pz) {
+    float2 pp;
+    float got, want, lo, hi;
+    return fnd_reproj(nj, d, M, u, pz, pp, got, want, lo, hi) == 2 && abs(got - want) < 0.005 * max(want, 1e-6);
+}
+static float fnd_luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+struct FndTex {
+    texture2d<float, access::write> mv;
+    texture2d<float, access::read> pz;
+    texture2d<float, access::write> nz;
+    texture2d<float, access::write> dbg;
+    texture2d<float, access::read> cc;   // the scene colour now (flag 32)
+    texture2d<float> pc;                 // the previous scene colour (flag 32, sampled)
+    texture2d<float, access::read> tg;   // S1 tags (flag 256)
+    texture2d<float, access::write> ro;  // reactive fallback (flag 64)
+};
+static void fnd_body(uint2 p, bool in, float d, constant FndMv &u, thread const FndTex &t, device atomic_uint *q) {
     const float2 ndc = float2(2.0 * (float(p.x) + 0.5) / u.size.x - 1.0 - u.h.x,
                               1.0 - 2.0 * (float(p.y) + 0.5) / u.size.y - u.h.y);
     const bool sky = d >= 1.0;
     const float4 o = float4(ndc, d, 1.0) * (sky ? u.Rsky : u.R);
     const bool front = o.w > 1e-6;
     float2 m = front ? (o.xy / o.w - ndc) * float2(0.5, -0.5) * u.size : float2(0.0);
-    uint c[17] = {};
+    uint c[27] = {};
+    float cm = 0.0, cz = 0.0;   // colour gate sums (luma)
+    const uint tag = in && (u.flags & 256u) ? uint(t.tg.read(p).x * 255.0 + 0.5) : 0u;
     if (in) {
-        if (u.flags & 8u)   // the previous depth: only for the counters / debug 8 (CONF14B cost)
-            nz.write(float4(d), p);
-        mv.write(float4(m, 0.0, 0.0), p);
+        if (u.flags & 128u)   // the previous depth: counters, debug 8, the reactive fallback (CONF14B cost)
+            t.nz.write(float4(d), p);
+        t.mv.write(float4(m, 0.0, 0.0), p);
         c[0] = !sky && front ? 1u : 0u;
         c[1] = sky ? 1u : 0u;
         c[2] = front ? 0u : 1u;
@@ -471,85 +576,96 @@ static void fnd_body(uint2 p, bool in, float d, constant FndMv &u, texture2d<flo
     const float am = in && front ? length(m) : 0.0;
     const float am_px = sky ? 0.0 : am;   // the counted mean / max: non-sky pixels (q[0])
     float3 col = float3(0.0);
+    bool locked = false;
     if (in && !sky && front && (u.flags & 1u)) {
         // the surface this pixel shows sits at the unjittered centre p - jc; the previous frame drew it at its
         // reprojected position + jp
         const float2 nj = ndc - float2(2.0 * u.jc.x / u.size.x, -2.0 * u.jc.y / u.size.y);
-        const float4 r = float4(nj, d, 1.0) * u.R;
-        if (r.w > 1e-6) {
-            const float2 pn = r.xy / r.w;
-            const float2 pp = float2((pn.x + u.h.x + 1.0) * 0.5 * u.size.x, (1.0 - pn.y - u.h.y) * 0.5 * u.size.y) + u.jp;
-            const float want = fnd_lin(r.z / r.w, u.zn, u.zf);
-            const float2 b = pp - 0.5;
-            const int2 i0 = int2(floor(b));
-            const float2 f = b - float2(i0);
-            if (i0.x < 0 || i0.y < 0 || i0.x + 1 >= int(u.size.x) || i0.y + 1 >= int(u.size.y)) {
-                c[14] = 1u;
+        float2 pp;
+        float got = 0.0, want = 1.0, lo = 0.0, hi = 0.0;
+        const int st = fnd_reproj(nj, d, u.R, u, t.pz, pp, got, want, lo, hi);
+        if (st == 1) {
+            c[14] = 1u;
+        } else if (st == 2) {
+            const float e = abs(got - want) / max(want, 1e-6);
+            // COMB14B: a pixel the camera-only vector misses but whose depth the previous frame had at the same
+            // pixel moves with the camera (the player's car in a chase view: a constant ~8 % of the pixels at
+            // any speed): counted apart (16), not as a static-world error, until cars are tagged (F2 S1)
+            // (only for a miss, never for a depth edge: a flat road has the same depth at the same pixel too)
+            const float zc = fnd_lin(d, u.zn, u.zf), zs = fnd_lin(t.pz.read(p).x, u.zn, u.zf);
+            const bool dis = got < want * 0.95, edge = hi > lo * 1.05;
+            if ((dis || (!edge && e >= 0.005)) && abs(zs - zc) < 0.005 * zc) {
+                c[16] = 1u;
+                locked = true;
+                col = float3(1.0, 1.0, 0.0);
+            } else if (dis) {
+                c[13] = 1u;
+                col = float3(0.0, 0.0, 1.0);
+            } else if (edge) {
+                c[15] = 1u;
+                col = float3(0.5, 0.0, 0.5);
             } else {
-                const float z00 = fnd_lin(pz.read(uint2(i0)).x, u.zn, u.zf);
-                const float z10 = fnd_lin(pz.read(uint2(i0 + int2(1, 0))).x, u.zn, u.zf);
-                const float z01 = fnd_lin(pz.read(uint2(i0 + int2(0, 1))).x, u.zn, u.zf);
-                const float z11 = fnd_lin(pz.read(uint2(i0 + int2(1, 1))).x, u.zn, u.zf);
-                const float lo = min(min(z00, z10), min(z01, z11)), hi = max(max(z00, z10), max(z01, z11));
-                const float got = mix(mix(z00, z10, f.x), mix(z01, z11, f.x), f.y);
-                const float e = abs(got - want) / max(want, 1e-6);
-                // COMB14B: a pixel the camera-only vector misses but whose depth the previous frame had at the same
-                // pixel moves with the camera (the player's car in a chase view: a constant ~8 % of the pixels at
-                // any speed): counted apart (16), not as a static-world error, until cars are tagged (F2 S1)
-                // (only for a miss, never for a depth edge: a flat road has the same depth at the same pixel too)
-                const float zc = fnd_lin(d, u.zn, u.zf), zs = fnd_lin(pz.read(p).x, u.zn, u.zf);
-                const bool dis = got < want * 0.95, edge = hi > lo * 1.05;
-                if ((dis || (!edge && e >= 0.005)) && abs(zs - zc) < 0.005 * zc) {
-                    c[16] = 1u;
-                    col = float3(1.0, 1.0, 0.0);
-                } else if (dis) {
-                    c[13] = 1u;
-                    col = float3(0.0, 0.0, 1.0);
-                } else if (edge) {
-                    c[15] = 1u;
-                    col = float3(0.5, 0.0, 0.5);
-                } else {
-                    c[e < 0.001 ? 6 : e < 0.0025 ? 7 : e < 0.005 ? 8 : e < 0.01 ? 9 : e < 0.02 ? 10 : e < 0.05 ? 11 : 12] = 1u;
-                    col = e < 0.005 ? float3(0.0, 1.0 - e / 0.005, 0.0) : float3(min(1.0, e / 0.05), 0.0, 0.0);
+                c[e < 0.001 ? 6 : e < 0.0025 ? 7 : e < 0.005 ? 8 : e < 0.01 ? 9 : e < 0.02 ? 10 : e < 0.05 ? 11 : 12] = 1u;
+                col = e < 0.005 ? float3(0.0, 1.0 - e / 0.005, 0.0) : float3(min(1.0, e / 0.05), 0.0, 0.0);
+                // WB1a colour gate (FD 5.3): a static pixel (depth reprojects within 0.5 %, not disoccluded, not an
+                // edge; with tags: ROAD / WORLD / WORLD_NM only): the previous colour at the reprojected position vs
+                // at the same pixel
+                const bool stat = e < 0.005 && (!(u.flags & 256u) || tag == 1u || tag == 7u || tag == 8u);
+                if (stat && (u.flags & 32u)) {
+                    constexpr sampler sl(filter::linear, address::clamp_to_edge, coord::normalized);
+                    const float lc = fnd_luma(t.cc.read(p).rgb);
+                    cm = abs(fnd_luma(t.pc.sample(sl, pp / u.size).rgb) - lc);
+                    cz = abs(fnd_luma(t.pc.read(p).rgb) - lc);
+                    c[21] = 1u;
                 }
             }
+            c[19] = e < 0.005 ? 1u : 0u;
+        }
+        if ((u.flags & 8u) && (u.flags & 1536u)) {   // H-lag: the same score with the two other candidates
+            c[20] = 1u;
+            c[17] = (u.flags & 512u) && fnd_hit(nj, d, u.R2, u, t.pz) ? 1u : 0u;
+            c[18] = (u.flags & 1024u) && fnd_hit(nj, d, u.RG, u, t.pz) ? 1u : 0u;
         }
     }
+    if (in && (u.flags & 64u)) {   // reactive fallback: the camera-locked car; fast foliage when tags exist
+        const bool r = locked || ((u.flags & 256u) && tag == 9u && am > 2.0);
+        t.ro.write(float4(r ? 1.0 : 0.0), p);
+        c[26] = r ? 1u : 0u;
+    }
     if (in && (u.flags & 2u))
-        dbg.write(float4(am > 1e-4 ? fnd_hue(atan2(m.y, m.x) / 6.2831853 + 0.5) * saturate(am / 8.0 + 0.1) : float3(0.0), 1.0), p);
+        t.dbg.write(float4(am > 1e-4 ? fnd_hue(atan2(m.y, m.x) / 6.2831853 + 0.5) * saturate(am / 8.0 + 0.1) : float3(0.0), 1.0), p);
     else if (in && (u.flags & 4u))
-        dbg.write(float4(col, 1.0), p);
+        t.dbg.write(float4(col, 1.0), p);
     // simdgroup reductions, then one atomic per counter per simdgroup (TEST: RECOMP_REMASTER_FOUNDATION_LOG only)
     if (!(u.flags & 8u))
         return;
     const float sm = simd_sum(min(am_px, 1024.0) * 65536.0);   // <= 2^31 per simdgroup of 32
     const uint mx = simd_max(uint(min(am_px * 65536.0, 2147483647.0)));
-    for (uint k = 0; k < 17; ++k)
+    const float scm = simd_sum(cm * 65536.0), scz = simd_sum(cz * 65536.0);
+    for (uint k = 0; k < 27; ++k)
         c[k] = simd_sum(c[k]);
     if (simd_is_first()) {
-        for (uint k = 0; k < 17; ++k)
-            if (k < 3 || k > 5)
+        for (uint k = 0; k < 27; ++k)
+            if (k < 3 || (k > 5 && k < 22) || k == 26)
                 fnd_add(q, k, c[k]);
-        const uint add = uint(min(sm, 4.0e9));
-        if (add) {
-            const uint old = atomic_fetch_add_explicit(&q[3], add, memory_order_relaxed);
-            if (old + add < old)
-                atomic_fetch_add_explicit(&q[4], 1u, memory_order_relaxed);
-        }
+        fnd_add64(q, 3, sm);
+        fnd_add64(q, 22, scm);
+        fnd_add64(q, 24, scz);
         atomic_fetch_max_explicit(&q[5], mx, memory_order_relaxed);
     }
 }
-kernel void fnd_motion_cs(depth2d<float, access::read> z [[texture(0)]], texture2d<float, access::write> mv [[texture(1)]],
-                          texture2d<float, access::read> pz [[texture(2)]], texture2d<float, access::write> nz [[texture(3)]],
-                          texture2d<float, access::write> dbg [[texture(4)]], constant FndMv &u [[buffer(0)]],
-                          device atomic_uint *q [[buffer(1)]], uint2 p [[thread_position_in_grid]]) {
+#define FND_TEX_ARGS                                                                                                     \
+    texture2d<float, access::write> mv [[texture(1)]], texture2d<float, access::read> pz [[texture(2)]],                 \
+        texture2d<float, access::write> nz [[texture(3)]], texture2d<float, access::write> dbg [[texture(4)]],           \
+        texture2d<float, access::read> cc [[texture(5)]], texture2d<float> pc [[texture(6)]],                           \
+        texture2d<float, access::read> tg [[texture(7)]], texture2d<float, access::write> ro [[texture(8)]],             \
+        constant FndMv &u [[buffer(0)]], device atomic_uint *q [[buffer(1)]], uint2 p [[thread_position_in_grid]]
+kernel void fnd_motion_cs(depth2d<float, access::read> z [[texture(0)]], FND_TEX_ARGS) {
     const bool in = p.x < uint(u.size.x) && p.y < uint(u.size.y);
-    fnd_body(p, in, in ? z.read(p) : 1.0, u, mv, pz, nz, dbg, q);
+    const FndTex t = {mv, pz, nz, dbg, cc, pc, tg, ro};
+    fnd_body(p, in, in ? z.read(p) : 1.0, u, t, q);
 }
-kernel void fnd_motion_ms_cs(depth2d_ms<float, access::read> z [[texture(0)]], texture2d<float, access::write> mv [[texture(1)]],
-                             texture2d<float, access::read> pz [[texture(2)]], texture2d<float, access::write> nz [[texture(3)]],
-                             texture2d<float, access::write> dbg [[texture(4)]], constant FndMv &u [[buffer(0)]],
-                             device atomic_uint *q [[buffer(1)]], uint2 p [[thread_position_in_grid]]) {
+kernel void fnd_motion_ms_cs(depth2d_ms<float, access::read> z [[texture(0)]], FND_TEX_ARGS) {
     const bool in = p.x < uint(u.size.x) && p.y < uint(u.size.y);
     float d = 1.0;
     if (in) {   // the nearest sample, as the scene compose takes it (flag 16: sample 0 only, the cheaper read)
@@ -557,7 +673,8 @@ kernel void fnd_motion_ms_cs(depth2d_ms<float, access::read> z [[texture(0)]], t
         for (uint k = 1; k < z.get_num_samples() && !(u.flags & 16u); ++k)
             d = min(d, z.read(p, k));
     }
-    fnd_body(p, in, d, u, mv, pz, nz, dbg, q);
+    const FndTex t = {mv, pz, nz, dbg, cc, pc, tg, ro};
+    fnd_body(p, in, d, u, t, q);
 }
 )MSL";
 struct FndMv {   // kFndSource FndMv
@@ -565,6 +682,7 @@ struct FndMv {   // kFndSource FndMv
     float size[2], h[2], jc[2], jp[2];
     float zn, zf;
     uint32_t flags, pad;
+    float R2[16], RG[16];   // Wave B WB1a H-lag candidates
 };
 
 struct QuadIn {
@@ -705,6 +823,25 @@ MTLRenderPipelineDescriptor *warm_descriptor(const PipeSpec &p, id<MTLFunction> 
     return pd;
 }
 
+// Remaster run 27 scenery fade-in (D-153; review/run27/fadein-design.md, fadein-draw-point.md). With
+// RECOMP_REMASTER_FADE=1 (the core mod's scenery_fade sets it before the device exists) a draw whose instance is fading
+// (the core mod's private render state 243 / 255; 0 = no fade) is drawn with PixelVariant.fade: one test before the
+// epilogue discards a fragment while an ordered 4x4 dither value is at or above P.fade.x (shadergen fade_patch).
+// Run 29 (D-167, review/run29/opt-design.md O1): a variant, not a patch of every pixel shader at compile time, so the
+// other draws keep early depth.
+static bool d9_fade_on() {
+    static const bool on = [] {
+        const char *e = getenv("RECOMP_REMASTER_FADE");
+        const bool v = e && *e == '1';
+        if (v)
+            fprintf(stderr, "[remaster] fade: on (scenery fade-in; the fading draws get the dither variant)\n");
+        return v;
+    }();
+    return on;
+}
+static NSString *d9_msl_source(const std::string &src) {
+    return [NSString stringWithUTF8String:src.c_str()];
+}
 class ShaderWarm {
   public:
     ShaderWarm(id<MTLDevice> dev, std::string dir, std::string seed, std::string identity)
@@ -729,7 +866,9 @@ class ShaderWarm {
     }
     ~ShaderWarm() {
         // Run 15 review (P1), run 16 seam: no new background compile may start once destruction begins ...
+        const uint64_t t0 = os_monotonic_ns();
         async_.close();
+        const size_t open = async_.outstanding();   // R3 run 18 (F7): the in-game drain's witness
         stop_.store(true);
         if (worker_.joinable())
             worker_.join();
@@ -737,6 +876,9 @@ class ShaderWarm {
         // retain a C++ object), so this waits, with no timeout, until every admitted completion has finished with
         // them (shader_warm_queue.h ShaderAsyncCompiles; tested with a fake compiler in shader_warm_queue_tests).
         async_.drain();
+        fprintf(stderr, "d3d9 metal: shader warm shutdown: %zu background compiles outstanding at close, drained in "
+                        "%.1f ms (%u started this session)\n",
+                open, (os_monotonic_ns() - t0) / 1e6, (unsigned)async_started());
     }
     static MTLCompileOptions *options() {
         MTLCompileOptions *opts = [MTLCompileOptions new];
@@ -951,7 +1093,7 @@ class ShaderWarm {
             const std::string src = read_source(d->second, k);
             if (!src.empty() && src.size() <= (1u << 20) && key(src) == k) {
                 NSError *error = nil;
-                lib = [dev_ newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:opts error:&error];
+                lib = [dev_ newLibraryWithSource:d9_msl_source(src) options:opts error:&error];
             }
         }
         libs_[k] = lib;
@@ -1037,7 +1179,7 @@ class ShaderWarm {
             @autoreleasepool {
                 const std::string key_copy = k;
                 const bool keep = !pipe_order_.empty();
-                [dev_ newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()]
+                [dev_ newLibraryWithSource:d9_msl_source(src)
                                    options:opts
                          completionHandler:^(id<MTLLibrary> lib, NSError *) {
                            queue_.finish(key_copy, lib, lib != nil);
@@ -1077,7 +1219,7 @@ class ShaderWarm {
     // the production compiler is this one Metal call; its completion hands the library (nil on failure) back.
     ShaderAsyncCompiles<id<MTLLibrary>> async_{
         queue_, [this](const std::string &src, ShaderAsyncCompiles<id<MTLLibrary>>::Done done) {
-            [dev_ newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()]
+            [dev_ newLibraryWithSource:d9_msl_source(src)
                                options:options()
                      completionHandler:^(id<MTLLibrary> l, NSError *) { done(l); }];
         }};
@@ -1112,6 +1254,7 @@ class Renderer final : public D9Backend {
 #endif
         if (pbw_active_)   // Remaster run 12 pilot: slot rows and the manifest, before the cache starts
             pbw_load();
+        orm_init();   // R3 run 18 material sets: the ORM slot rows, before the cache starts (warm)
         rcache_.start(mtl_, bc_); // Remaster A1: workers run only when a pack is configured
         NSError *error = nil;
         utility_ = [mtl_ newLibraryWithSource:[NSString stringWithUTF8String:kUtilitySource]
@@ -1362,6 +1505,10 @@ class Renderer final : public D9Backend {
                     rcache_.request(t.desc.key, t.desc.width, t.desc.height);
                     if (pbw_active_ && pbw_ecos_.count(t.desc.key))   // run 12 pilot: its normal slot (2x, same aspect)
                         rcache_.request(t.desc.key ^ remaster::kSlotNormal, t.desc.width, t.desc.height);
+                    if (orm_active_ && rtex_.has(t.desc.key ^ remaster::kSlotOrm)) {   // run 18: its ORM slot
+                        rcache_.request(t.desc.key ^ remaster::kSlotOrm, t.desc.width, t.desc.height);
+                        ++orm_requested_;
+                    }
                 }
                 else if (!t.no_replace) {
                     t.no_replace = true; // a dynamic texture (a movie): the game's own contents win
@@ -1827,7 +1974,7 @@ class Renderer final : public D9Backend {
     }
     // A WORLD draw (before the pass): its clip constant block into its target's plurality.
     void atm_capture(const HostD9Draw &d, uint64_t vs_key, const d9sh::Program &vp) {
-        if (!pass_color_id_ || !d.label || strncmp(d.label, "IDI_WORLD_FX/", 13))
+        if (!pass_color_id_ || !label_is(d, label_class::WORLD_FX, "IDI_WORLD_FX/", 13))
             return;
         AtmTarget &at = atm_plur_[pass_color_id_];
         at.t = pass_target_;
@@ -1860,6 +2007,7 @@ class Renderer final : public D9Backend {
         uint64_t key = pass_samples_ * 0x9e3779b97f4a7c15ull ^ (uint64_t)df;
         for (int i = 0; i < 4; ++i)
             key = key * 1099511628211ull ^ (uint64_t)(pass_color_[i] ? pass_color_[i].pixelFormat : MTLPixelFormatInvalid);
+        key = surf_pso_key(key, 0);   // Run 15 Wave B WB1b
         auto it = atm_psos_.find(key);
         if (it != atm_psos_.end())
             return it->second;
@@ -1884,6 +2032,7 @@ class Renderer final : public D9Backend {
                 ca.destinationAlphaBlendFactor = MTLBlendFactorOne;
             }
         }
+        surf_pso(pd, 0);   // Run 15 Wave B WB1b
         if (df != MTLPixelFormatInvalid) {
             pd.depthAttachmentPixelFormat = df;
             if (df == MTLPixelFormatDepth32Float_Stencil8)
@@ -1959,8 +2108,6 @@ class Renderer final : public D9Backend {
         if (atm_plur_.size() > 64)
             atm_plur_.clear();
     }
-    // Remaster run 12 step 0 (TEST ONLY): classify a draw for the sun-share probe and count it in the census. Sets
-    // variant.pbrprobe only for a WORLD lighting pixel shader drawn with a vertex shader whose d1 is the sun.
     // Run 13 census (TEST ONLY, RECOMP_REMASTER_CENSUS=<dir>): once per (label, vs, ps, stage-0 texture key) a log line
     // with the draw's label, program keys, stage-0..3 texture keys/sizes/kinds, target size, samples and blend; and the
     // default translations of both programs as <dir>/<key>.vs.msl / .ps.msl (labelled shader facts for the run 13
@@ -2006,110 +2153,126 @@ class Renderer final : public D9Backend {
         dump(vs_key, vp, false);
         dump(ps_key, pp, true);
     }
-    void pbr_probe(const HostD9Draw &d, uint64_t vs_key, uint64_t ps_key, const d9sh::Program &vp,
-                   const d9sh::Program &pp, const Tex *t0, d9msl::PixelVariant &variant) {
-        auto pi = pbr_ps_.find(ps_key);
-        if (pi == pbr_ps_.end())
-            pi = pbr_ps_.emplace(ps_key, d9msl::pixel_is_pbrworld(pp)).first;
-        if (!pi->second || !(variant.depth_mask & 2u))   // stage 1 must hold the shadow map (depth)
-            return;
-        auto vi = pbr_vs_.find(vs_key);
-        if (vi == pbr_vs_.end()) {
-            vi = pbr_vs_.emplace(vs_key, d9msl::vertex_sun_flow(vp)).first;
-            std::string cs;
-            for (uint32_t c : vi->second.consts)
-                cs += " c" + std::to_string(c);
-            fprintf(stderr, "[remaster] pbrprobe: vs %016llx (with ps %016llx): %s%s; d1 reads%s\n",
-                    (unsigned long long)vs_key, (unsigned long long)ps_key, vi->second.ok ? "sun in d1" : "NOT matched: ",
-                    vi->second.why.c_str(), cs.c_str());
+    // R3 run 18 material sets (D-131; review/run18/c-design-check.md): RECOMP_REMASTER_MATERIALS=1 with
+    // RECOMP_REMASTER_MATERIALS_PACK=<dir> (index.tsv rows "KEY orm FILE") on a Mac with 16 GB or more (D-131 item 3; the
+    // RAM, never the cache budget, decides; RECOMP_REMASTER_MATERIALS_RAM_GB=<n> is a TEST-ONLY override) and the road
+    // sheen on (the only consumer so far): road-sheen draws whose stage-0 key has a resident ORM take roadsheen = 2
+    // (run 22: orm_mode_, 3 by default).
+    // Run 29 (D-167): a program's class (wet road, road sheen, WORLD lighting) is computed once and kept on the
+    // program (as its sampler mask is), so the draw path makes no map lookup; the map still lists the programs seen
+    // for the periodic reports.
+    bool ps_class(int8_t &slot, std::unordered_map<uint64_t, bool> &seen, uint64_t ps_key, const d9sh::Program &pp,
+                  bool (*classify)(const d9sh::Program &)) {
+        if (slot < 0) {
+            slot = classify(pp) ? 1 : 0;
+            seen.emplace(ps_key, slot != 0);
         }
-        if (!pbr_keys_loaded_) {
-            pbr_keys_loaded_ = true;
-            if (const char *path = getenv("RECOMP_REMASTER_PBRPROBE_KEYS"))
-                if (FILE *f = fopen(path, "r")) {
-                    char line[512];
-                    while (fgets(line, sizeof line, f))
-                        if (strstr(line, "\tbuilt"))
-                            pbr_keys_.insert(strtoull(line, nullptr, 16));
-                    fclose(f);
-                }
-            fprintf(stderr, "[remaster] pbrprobe: allow list %zu keys\n", pbr_keys_.size());
-        }
-        const uint64_t key = t0 ? t0->desc.key : 0;
-        const bool allow = key && pbr_keys_.count(key);
-        const NSUInteger w = pass_color_[0] ? pass_color_[0].width : 0, h = pass_color_[0] ? pass_color_[0].height : 0;
-        pbr_main_w_ = std::max<NSUInteger>(pbr_main_w_, w);
-        const bool main = w && w == pbr_main_w_;   // the widest target seen (the scene; mirror and env maps are smaller)
-        std::string label = d.label ? d.label : "(no label)";
-        if (size_t sl = label.find('/'); sl != std::string::npos)
-            label.resize(sl + 1);
-        char buf[320];
-        snprintf(buf, sizeof buf, "ps %016llx vs %016llx %s %s %lux%lu %s", (unsigned long long)ps_key,
-                 (unsigned long long)vs_key, vi->second.ok ? "sun-d1" : "UNMATCHED-VS", label.c_str(), (unsigned long)w,
-                 (unsigned long)h, allow ? "allow" : "other");
-        ++pbr_census_[buf];
-        if (!vi->second.ok)
-            return;
-        if (allow)
-            ++pbr_key_draws_[key];
-        if (pbr_log_consts_ && allow && main && d.vconst && d.pconst) {
-            pbr_log_consts_ = false;
-            std::string cs;
-            char cb[96];
-            for (uint32_t c : vi->second.consts)
-                if (c < d.vconst_count) {
-                    snprintf(cb, sizeof cb, " c%u %.3f %.3f %.3f %.3f", c, d.vconst[4 * c], d.vconst[4 * c + 1],
-                             d.vconst[4 * c + 2], d.vconst[4 * c + 3]);
-                    cs += cb;
-                }
-            for (uint32_t c = 0; c < 4 && c < d.pconst_count; ++c) {
-                snprintf(cb, sizeof cb, " ps.c%u %.3f %.3f %.3f %.3f", c, d.pconst[4 * c], d.pconst[4 * c + 1],
-                         d.pconst[4 * c + 2], d.pconst[4 * c + 3]);
-                cs += cb;
-            }
-            fprintf(stderr, "[remaster] pbrprobe: consts key %016llx vs %016llx:%s\n", (unsigned long long)key,
-                    (unsigned long long)vs_key, cs.c_str());
-        }
-        variant.pbrprobe = (uint8_t)(1 + (allow ? 1 : 0) + (main ? 2 : 0));
-        ++pbr_draws_;
+        return slot != 0;
     }
-    void pbr_report() {
-        fprintf(stderr, "[remaster] pbrprobe: frame %llu probed draws %llu (fallback without probe %llu)\n",
-                (unsigned long long)pbr_frames_, (unsigned long long)pbr_draws_, (unsigned long long)pbr_fallback_);
-        for (const auto &kv : pbr_census_)
-            fprintf(stderr, "[remaster] pbrprobe: census %s draws %llu\n", kv.first.c_str(), (unsigned long long)kv.second);
-        std::vector<std::pair<uint64_t, uint64_t>> top;
-        for (const auto &kv : pbr_key_draws_)
-            top.push_back({kv.second, kv.first});
-        std::sort(top.rbegin(), top.rend());
-        std::string ks;
-        char kb[48];
-        for (size_t i = 0; i < top.size() && i < 40; ++i) {
-            snprintf(kb, sizeof kb, " %016llx:%llu", (unsigned long long)top[i].second, (unsigned long long)top[i].first);
-            ks += kb;
-        }
-        fprintf(stderr, "[remaster] pbrprobe: allow keys drawn %zu:%s\n", top.size(), ks.c_str());
-        if (!pbq_)
+    void orm_init() {
+        const char *e = getenv("RECOMP_REMASTER_MATERIALS");
+        if (!e || *e != '1')
             return;
-        // Windowed (reset after each report). The GPU may still be adding to the buffer: a few counts can fall either side.
-        uint32_t *q = (uint32_t *)pbq_.contents;
-        static const char *const metric[2] = {"final", "lit"}, *const sub[3] = {"all", "shadow>=0.5", "sunfacing"};
-        for (int m = 0; m < 2; ++m)
-            for (int c = 0; c < 4; ++c)
-                for (int u = 0; u < 3; ++u) {
-                    const uint32_t *b = q + ((m * 4 + c) * 3 + u) * 16;
-                    uint64_t n = 0;
-                    std::string bins;
-                    for (int i = 0; i < 16; ++i) {
-                        n += b[i];
-                        bins += " " + std::to_string(b[i]);
-                    }
-                    if (n)
-                        fprintf(stderr, "[remaster] pbrprobe: hist frame %llu %s %s %s %s n %llu bins%s\n",
-                                (unsigned long long)pbr_frames_, metric[m], c & 1 ? "allow" : "other",
-                                c & 2 ? "main" : "view", sub[u], (unsigned long long)n, bins.c_str());
+        const char *dir = getenv("RECOMP_REMASTER_MATERIALS_PACK");
+        uint64_t ram = 0;
+        size_t n = sizeof ram;
+        if (sysctlbyname("hw.memsize", &ram, &n, nullptr, 0) != 0)
+            ram = 0;
+        if (const char *o = getenv("RECOMP_REMASTER_MATERIALS_RAM_GB"); o && *o)
+            ram = (uint64_t)strtoull(o, nullptr, 10) << 30;
+        const unsigned gb = (unsigned)(ram >> 30);
+        if (!dir || !*dir) {
+            fprintf(stderr, "[remaster] materials: OFF (no RECOMP_REMASTER_MATERIALS_PACK)\n");
+            return;
+        }
+        if (ram < (16ull << 30)) {
+            fprintf(stderr, "[remaster] materials: OFF (RAM %u GB < 16 GB)\n", gb);
+            return;
+        }
+        if (!roadsheen_on_ && !fg_on_) {
+            fprintf(stderr, "[remaster] materials: OFF (road sheen and wall sheen off: no consumer)\n");
+            return;
+        }
+        orm_rows_ = rtex_.add_slots(dir, "orm", remaster::kSlotOrm);
+        orm_active_ = orm_rows_ > 0;
+        fprintf(stderr, "[remaster] materials: %s (RAM %u GB, %llu orm rows from %s)\n", orm_active_ ? "ON" : "OFF", gb,
+                (unsigned long long)orm_rows_, dir);
+        // R3 run 29 facade glint (RECOMP_REMASTER_FACADEGLINT=1; review/run29/c-facade-design.md): the keys the wall
+        // sheen may touch, <pack>/glint.tsv lines "<key hex16>\t<family>\t<metal>" (# comments); keys without an ORM
+        // row are counted and never patched.
+        if (fg_on_ && orm_active_) {
+            size_t no_row = 0;
+            if (FILE *f = fopen((std::string(dir) + "/glint.tsv").c_str(), "r")) {
+                char line[256];
+                while (fgets(line, sizeof line, f)) {
+                    if (line[0] == '#' || line[0] == '\n')
+                        continue;
+                    const uint64_t k = strtoull(line, nullptr, 16);
+                    if (!k)
+                        continue;
+                    if (rtex_.has(k ^ remaster::kSlotOrm))
+                        fg_keys_.insert(k);
+                    else
+                        ++no_row;
                 }
-        memset(q, 0, d9msl::kPbrProbeCounters * 4);
+                fclose(f);
+            }
+            fg_active_ = !fg_keys_.empty();
+            fprintf(stderr, "[remaster] facadeglint: %s (%zu keys from %s/glint.tsv, %zu without an orm row)\n",
+                    fg_active_ ? "ON" : "OFF", fg_keys_.size(), dir, no_row);
+        } else if (fg_on_)
+            fprintf(stderr, "[remaster] facadeglint: OFF (no material set)\n");
+    }
+    // R3 run 29 facade glint: the selection (design 2, host b), before the pipeline. nil = the draw stays as today.
+    // pbrworld's rules without its pilot list and normal slot: a WORLD lighting program (pixel_is_pbrworld) with a
+    // pbr-eligible vertex shader, IDI_WORLD_FX/, the main view, no alpha test, a usable stage 0 whose HD albedo and ORM
+    // are resident and whose key is in glint.tsv; exclusive with the road, wet-road, soft, a2c, water and probe variants.
+    // Under the PBRWORLD A/B switch (OLD = neither the relief nor the glint).
+    id<MTLTexture> fg_select(const HostD9Draw &d, uint64_t vs_key, uint64_t ps_key, const d9sh::Program &vp,
+                             const d9sh::Program &pp, Tex *t0, const d9msl::PixelVariant &variant) {
+        if (recomp_ab::old(recomp_ab::PBRWORLD))
+            return nil;
+        if (!t0 || !t0->desc.key || !fg_keys_.count(t0->desc.key))
+            return nil;   // not a listed key (most draws)
+        const bool pi_is = ps_class(pp.cls_pbrworld, pbr_ps_, ps_key, pp, d9msl::pixel_is_pbrworld);
+        if (!pi_is || !(variant.depth_mask & 2u) || variant.wetroad || variant.roadsheen || variant.soft || variant.a2c ||
+            variant.water) {
+            ++fg_skip_[0];
+            return nil;
+        }
+        auto vi = pbw_vs_.find(vs_key);
+        if (vi == pbw_vs_.end()) {
+            const d9msl::SunFlow f = d9msl::vertex_sun_flow(vp);
+            vi = pbw_vs_.emplace(vs_key, f.ok && f.pbr_ok).first;
+            fprintf(stderr, "[remaster] facadeglint: vs %016llx: %s%s (normal v%u, position v%u, eye c%u, light c%u)\n",
+                    (unsigned long long)vs_key, vi->second ? "eligible" : "NOT eligible: ",
+                    vi->second ? "" : (f.ok ? f.pbr_why : f.why).c_str(), f.normal, f.position, f.eye, f.light);
+        }
+        if (!vi->second || !label_is(d, label_class::WORLD_FX, "IDI_WORLD_FX/", 13)) {
+            ++fg_skip_[0];
+            return nil;
+        }
+        const NSUInteger w = pass_color_[0] ? pass_color_[0].width : 0;
+        fg_main_w_ = std::max(fg_main_w_, w);
+        if (!w || w != fg_main_w_ || d.render_state[15]) {
+            ++fg_skip_[1];
+            return nil;
+        }
+        bool usable = t0->texture && !t0->depth && !t0->cube && t0->desc.kind == HOST_D9_TEX_2D && !t0->no_replace &&
+                      t0->texture != pass_depth_;
+        for (int i = 0; i < 4 && usable; ++i)
+            usable = t0->texture != pass_color_[i];
+        if (!usable || !rcache_.active() || !rtex_.swap() || !rcache_.bind(t0->desc.key)) {
+            ++fg_skip_[2];
+            return nil;
+        }
+        const uint64_t ok = t0->desc.key ^ remaster::kSlotOrm;
+        id<MTLTexture> o = rcache_.bind(ok);
+        if (!o) {
+            rcache_.request(ok, t0->desc.width, t0->desc.height);   // no-op unless absent from the cache
+            ++fg_missing_;
+        }
+        return o;
     }
     void pbw_load() {
         const char *dir = getenv("RECOMP_REMASTER_PBRWORLD_PACK");
@@ -2154,11 +2317,8 @@ class Renderer final : public D9Backend {
                               const d9sh::Program &pp, Tex *t0, const d9msl::PixelVariant &variant, float *ecos) {
         if (recomp_ab::old(recomp_ab::PBRWORLD))
             return nil;
-        auto pi = pbr_ps_.find(ps_key);
-        if (pi == pbr_ps_.end())
-            pi = pbr_ps_.emplace(ps_key, d9msl::pixel_is_pbrworld(pp)).first;
-        if (!pi->second || !(variant.depth_mask & 2u) || variant.wetroad || variant.roadsheen || variant.soft || variant.a2c ||
-            variant.pbrprobe)
+        const bool pi_is = ps_class(pp.cls_pbrworld, pbr_ps_, ps_key, pp, d9msl::pixel_is_pbrworld);
+        if (!pi_is || !(variant.depth_mask & 2u) || variant.wetroad || variant.roadsheen || variant.soft || variant.a2c)
             return nil;
         auto vi = pbw_vs_.find(vs_key);
         if (vi == pbw_vs_.end()) {
@@ -2168,7 +2328,7 @@ class Renderer final : public D9Backend {
                     (unsigned long long)vs_key, vi->second ? "eligible" : "NOT eligible: ",
                     vi->second ? "" : (f.ok ? f.pbr_why : f.why).c_str(), f.normal, f.position, f.eye, f.light);
         }
-        if (!vi->second || !d.label || strncmp(d.label, "IDI_WORLD_FX/", 13)) {
+        if (!vi->second || !label_is(d, label_class::WORLD_FX, "IDI_WORLD_FX/", 13)) {
             ++pbw_skip_[0];
             return nil;
         }
@@ -2219,224 +2379,13 @@ class Renderer final : public D9Backend {
         const uint32_t h = (uint32_t)(key >> 32);
         return h == 0x636c197du || (h >= 0xc9e6d6eeu && h <= 0xc9e6d6f6u) || (h >= 0xc9e6d70eu && h <= 0xc9e6d711u);
     }
-    // Remaster run 13 grass shells (grass.h; RECOMP_REMASTER_GRASS=<shells>; A/B switch grass): after an encoded
-    // main-view grass terrain draw (WORLD / WORLDNORMALMAP, stage-0 key in remaster_grass::kKeys), its shells with the
-    // draw's own buffers, constants, textures and samplers: depth test as the draw, depth write on, alpha test (or
-    // coverage in an MSAA pass) at 0.5 on the blade noise. The draw itself is never changed; a pair whose shell variant
-    // cannot be built is counted and blocked.
-    template <class Build>
-    void grass_shells(const HostD9Draw &d, const uint32_t *rs, uint64_t vs_key, uint64_t ps_key, const d9sh::Program &vp,
-                      const d9sh::Program &pp, const Tex *t0, const d9msl::PixelVariant &variant, uint64_t dkey,
-                      bool stencil, D9VSParams vparams, D9PSParams pparams, Build &&build) {
-        if (!grass_.shells || recomp_ab::old(recomp_ab::GRASS) || !d.label || !t0 || !remaster_grass::key(t0->desc.key) ||
-            (strncmp(d.label, "IDI_WORLD_FX/", 13) && strncmp(d.label, "IDI_WORLDNORMALMAP_FX/", 22)))
-            return;
-        if (!grass_.main_view(pass_color_[0] ? (unsigned long)pass_color_[0].width : 0)) {
-            ++grass_.skip[remaster_grass::OTHER_VIEW];
-            return;
-        }
-        // Opaque ground with a depth test and colour writes; no stencil, alpha test or occlusion query.
-        if (rs[27] || !rs[7] || !pass_depth_ || !(rs[168] & 7) || stencil || (rs[15] && rs[25] != 8) || query_) {
-            ++grass_.skip[remaster_grass::RENDER_STATE];
-            return;
-        }
-        const uint8_t slot = grass_.slot(vs_key, ps_key, vp, pp);
-        if (!slot) {
-            ++grass_.skip[remaster_grass::PROGRAMS];
-            return;
-        }
-        d9msl::PixelVariant gv;
-        gv.cube_mask = variant.cube_mask;
-        gv.projected_mask = variant.projected_mask;
-        gv.depth_mask = variant.depth_mask;
-        gv.shadowpcf = variant.shadowpcf;
-        gv.a2c = pass_samples_ > 1 ? (uint8_t)std::min<uint32_t>(pass_samples_, 8) : 0;
-        gv.grass = slot;
-        d9msl::VertexVariant gvv;
-        gvv.grass = slot;
-        id<MTLFunction> vf = nil, ff = nil;
-        id<MTLRenderPipelineState> pso = build(gv, gvv, &vf, &ff);
-        if (!pso) {
-            ++grass_.skip[remaster_grass::BUILD];
-            fprintf(stderr, "[remaster] grass: vs %016llx ps %016llx: shell variant not built (%s); no shells for it\n",
-                    (unsigned long long)vs_key, (unsigned long long)ps_key, !vf ? "vertex" : !ff ? "pixel" : "pipeline");
-            grass_.block(vs_key, ps_key);
-            return;
-        }
-        uint32_t srs[256];
-        memcpy(srs, rs, sizeof srs);
-        srs[14] = 1;   // depth write on (dkey bit 1)
-        id<MTLDepthStencilState> dss = depth_state(dkey | 2ull, true, srs, false);
-        if (pso != es_.pipeline) {
-            [enc_ setRenderPipelineState:pso];
-            es_.pipeline = pso;
-        }
-        if (dss != es_.depth) {
-            [enc_ setDepthStencilState:dss];
-            es_.depth = dss;
-        }
-        pparams.alpha_func = 7;   // GREATEREQUAL
-        pparams.alpha_ref = 0.5f;
-        pparams.pad0 = gv.a2c;
-        for (int i = grass_.shells; i >= 1; --i) {   // top shell first: its blades depth-reject the lower shells
-            vparams.halfpix[2] = grass_.lift(i);
-            pparams.pad1 = grass_.code(i);
-            [enc_ setVertexBytes:&vparams length:sizeof vparams atIndex:17];
-            [enc_ setFragmentBytes:&pparams length:sizeof pparams atIndex:1];
-            grass_.drawn += encode_primitives(d) == d9trace::Result::Encoded;
-        }
-        ++grass_.draws;
-    }
-    // Remaster run 14 grass blades (grass.h; RECOMP_REMASTER_GRASS_BLADES=<quality>; A/B switch grass;
-    // review/run14/grass-blades-design.md): after an encoded main-view grass terrain draw (the shells' gates), its
-    // blades: the chunk's cached roots near the camera (eye = the WORLD VS eye constant, POSITION space), one instanced
-    // 5/7-vertex strip draw per arena run (buffer 10, per instance), with the draw's constants, textures and samplers
-    // (stage 0 also to the vertex half, for the mask), depth test as the draw, depth write on, cull none (restored), no
-    // alpha test. Never instead of the draw; a pair whose blade variant cannot be built is counted and blocked.
-    template <class BuildBlade>
-    void grass_blades(const HostD9Draw &d, const uint32_t *rs, uint64_t vs_key, uint64_t ps_key, const d9sh::Program &vp,
-                      const d9sh::Program &pp, const Tex *t0, const d9msl::PixelVariant &variant, uint64_t dkey,
-                      bool stencil, D9VSParams vparams, D9PSParams pparams, BuildBlade &&build_blade) {
-        if (recomp_ab::old(recomp_ab::GRASS) || !d.label || !t0 || !remaster_grass::key(t0->desc.key) ||
-            (strncmp(d.label, "IDI_WORLD_FX/", 13) && strncmp(d.label, "IDI_WORLDNORMALMAP_FX/", 22)))
-            return;
-        uint64_t *bskip = grass_.bskip;
-        if (!grass_.main_view(pass_color_[0] ? (unsigned long)pass_color_[0].width : 0)) {
-            ++bskip[remaster_grass::OTHER_VIEW];
-            return;
-        }
-        if (rs[27] || !rs[7] || !pass_depth_ || !(rs[168] & 7) || stencil || (rs[15] && rs[25] != 8) || query_ ||
-            !es_.texture[0] || !es_.sampler[0]) {
-            ++bskip[remaster_grass::RENDER_STATE];
-            return;
-        }
-        const uint8_t slot = grass_.blade_slot(vs_key, ps_key, vp, pp);
-        if (!slot) {
-            ++bskip[remaster_grass::PROGRAMS];
-            return;
-        }
-        // COMB14 (golf course: 58,685 draws skipped "eye", one WORLD vs with no eye constant the sun flow finds): the
-        // eye (camera position, the same for every world-space draw of a frame) is remembered from this frame's
-        // other grass draws and used for a vs without one.
-        const int eye = grass_.eye(vs_key, vp);
-        float e[3];
-        if (eye >= 0 && d.vconst && (uint32_t)eye < d.vconst_count) {
-            for (int i = 0; i < 3; ++i)
-                e[i] = grass_eye_[i] = d.vconst[eye * 4 + i];
-            grass_eye_frame_ = presents_ + 1;
-        } else if (grass_eye_frame_ == presents_ + 1) {
-            for (int i = 0; i < 3; ++i)
-                e[i] = grass_eye_[i];
-        } else {
-            ++bskip[remaster_grass::EYE];
-            return;
-        }
-        if (d.inline_vertices || d.inline_indices) {
-            ++bskip[remaster_grass::INLINE];
-            return;
-        }
-        remaster_grass::Mesh m;
-        uint64_t ck = mix(mix((uint64_t)d.index_buffer << 32 | d.start, (uint64_t)d.primitive_count << 32 | d.primitive),
-                          mix((uint64_t)d.decl_id << 32 | (uint32_t)d.base_vertex, vs_key));
-        for (int i = 0; i < 8; ++i) {
-            const HostD9Stream &st = d.stream[i];
-            ck = mix(ck, (uint64_t)st.buffer << 32 | st.offset);
-            auto b = st.buffer ? buffers_.find(st.buffer) : buffers_.end();
-            if (b == buffers_.end() || b->second.shadow.size() <= st.offset)
-                continue;
-            m.vb[i] = b->second.shadow.data() + st.offset;
-            m.vb_bytes[i] = b->second.shadow.size() - st.offset;
-            m.stride[i] = st.stride;
-        }
-        if (d.index_buffer) {
-            auto b = buffers_.find(d.index_buffer);
-            if (b == buffers_.end()) {
-                ++bskip[remaster_grass::INLINE];
-                return;
-            }
-            m.ib = b->second.shadow.data();
-            m.ib_bytes = b->second.shadow.size();
-        }
-        m.index_size = d.index_size == 4 ? 4 : 2;
-        m.primitive = d.primitive;
-        m.count = d.primitive_count;
-        m.start = d.start;
-        m.base_vertex = d.base_vertex;
-        if (!grass_arena_ && !grass_.b.page.empty()) {
-            grass_arena_ = [mtl_ newBufferWithLength:grass_.b.page.size() * remaster_grass::kPage
-                                             options:MTLResourceStorageModeShared];
-            grass_.b.base = grass_arena_ ? (uint8_t *)grass_arena_.contents : nullptr;
-        }
-        remaster_grass::Skip why = remaster_grass::FORMAT;
-        if (!grass_.b.prepare(ck, m, d.decl, d.decl_size, vp, e, &grass_runs_, &why)) {
-            ++bskip[why];
-            return;
-        }
-        if (grass_runs_.empty())
-            return;
-        d9msl::PixelVariant gv;
-        gv.cube_mask = variant.cube_mask;
-        gv.projected_mask = variant.projected_mask;
-        gv.depth_mask = variant.depth_mask;
-        gv.shadowpcf = variant.shadowpcf;
-        gv.grass_blade = slot;
-        d9msl::VertexVariant gvv;
-        gvv.grass_blade = slot;
-        id<MTLFunction> vf = nil, ff = nil;
-        id<MTLRenderPipelineState> pso = build_blade(gv, gvv, grass_.b.chunks[ck].L, &vf, &ff);
-        if (!pso) {
-            ++bskip[remaster_grass::BUILD];
-            fprintf(stderr, "[remaster] grass: vs %016llx ps %016llx: blade variant not built (%s); no blades for it\n",
-                    (unsigned long long)vs_key, (unsigned long long)ps_key, !vf ? "vertex" : !ff ? "pixel" : "pipeline");
-            grass_.block_blades(vs_key, ps_key);
-            return;
-        }
-        uint32_t srs[256];
-        memcpy(srs, rs, sizeof srs);
-        srs[14] = 1;   // depth write on (dkey bit 1)
-        id<MTLDepthStencilState> dss = depth_state(dkey | 2ull, true, srs, false);
-        if (pso != es_.pipeline) {
-            [enc_ setRenderPipelineState:pso];
-            es_.pipeline = pso;
-        }
-        if (dss != es_.depth) {
-            [enc_ setDepthStencilState:dss];
-            es_.depth = dss;
-        }
-        const int cull = es_.cull;
-        if (cull != (int)MTLCullModeNone)
-            [enc_ setCullMode:MTLCullModeNone];
-        for (auto &a : vparams.ascale)   // the records hold Direct3D's values
-            for (float &x : a)
-                x = 1.0f;
-        pparams.alpha_func = 8;   // always: opaque blades
-        pparams.pad0 = 0;
-        pparams.pad1 = 0.0f;
-        // metres per pixel at 1 m: 2 tan(fov / 2) / height, fov ~70 degrees (UNV)
-        const D9GrassBlade G = grass_.b.params(pass_color_[0] ? 1.4f / (float)pass_color_[0].height : 0.0f);
-        [enc_ setVertexBytes:&vparams length:sizeof vparams atIndex:17];
-        [enc_ setFragmentBytes:&pparams length:sizeof pparams atIndex:1];
-        [enc_ setVertexBytes:&G length:sizeof G atIndex:19];
-        [enc_ setVertexTexture:es_.texture[0] atIndex:0];
-        [enc_ setVertexSamplerState:es_.sampler[0] atIndex:0];
-        for (const remaster_grass::Run &r : grass_runs_) {
-            [enc_ setVertexBuffer:grass_arena_ offset:r.offset atIndex:10];
-            [enc_ drawPrimitives:MTLPrimitiveTypeTriangleStrip
-                     vertexStart:0
-                     vertexCount:(NSUInteger)grass_.b.q.verts
-                   instanceCount:r.count];
-        }
-        if (cull != (int)MTLCullModeNone)
-            [enc_ setCullMode:(MTLCullMode)cull];
-        ++grass_.bdraws;
-    }
     bool water_select(const HostD9Draw &d, uint64_t vs_key, uint64_t ps_key, const d9sh::Program &vp,
                       const d9sh::Program &pp, const Tex *t0, const d9msl::PixelVariant &variant,
                       const d9msl::VertexVariant &vvariant) {
-        if (recomp_ab::old(recomp_ab::WATER) || !d.label || strncmp(d.label, "IDI_WORLD_FX/", 13) || !t0 ||
+        if (recomp_ab::old(recomp_ab::WATER) || !label_is(d, label_class::WORLD_FX, "IDI_WORLD_FX/", 13) || !t0 ||
             !water_key(t0->desc.key))
             return false;
-        if (variant.pbrworld || variant.wetroad || variant.roadsheen || variant.soft || variant.pbrprobe ||
+        if (variant.pbrworld || variant.wetroad || variant.roadsheen || variant.soft ||
             variant.glass || variant.pool || vvariant.pbr || vvariant.glass || vvariant.carenv || vvariant.pool) {
             ++water_skip_[0];
             return false;
@@ -2569,7 +2518,7 @@ class Renderer final : public D9Backend {
     }
     void fef_capture(const HostD9Draw &d, uint64_t vs_key, const d9sh::Program &vp, const d9sh::Program &pp,
                      Tex *const *bound, uint16_t depth_mask) {
-        if (!depth_mask || d.render_state[254] != 1 || !d.label || strncmp(d.label, "IDI_WORLD", 9) || !d.vconst)
+        if (!depth_mask || d.render_state[254] != 1 || !label_is(d, label_class::WORLD, "IDI_WORLD", 9) || !d.vconst)
             return;
         auto it = fef_recv_.find(vs_key);
         if (it == fef_recv_.end()) {
@@ -2621,7 +2570,7 @@ class Renderer final : public D9Backend {
         // Run 14 (CONF14: the floor programs drew, the gate took none): which condition refused it, counted.
         // COMB14: every floor draw had the depth test OFF (ztest 422,295 refusals), so it is no longer required (the
         // floor is the stage's ground, drawn first; the receiver pair samples the shadow map, not the depth).
-        const int why = d.render_state[254] != 1 ? 0 : !d.label || strncmp(d.label, "IDI_WORLD", 9) ? 1
+        const int why = d.render_state[254] != 1 ? 0 : !label_is(d, label_class::WORLD, "IDI_WORLD", 9) ? 1
                         : !pass_depth_ ? 3 : d.pool_fuse ? 4 : recomp_ab::old(recomp_ab::FEFLOOR) ? 5 : -1;
         if (why >= 0) {
             ++fef_gate_[why];
@@ -2664,15 +2613,25 @@ class Renderer final : public D9Backend {
         }
     }
     void draw(const HostD9Draw &d) override {
+        // R3 run 31 O6: this draw's label classes, read once (label_class.h); cleared on every way out of draw().
+        struct LabelScope {
+            Renderer *m;
+            ~LabelScope() { m->lc_draw_ = nullptr; }
+        } label_scope{this};
+        if (labelcache_on()) {
+            lc_ = label_class::of(d.label);
+            lc_label_ = d.label;
+            lc_draw_ = &d;
+        }
         ++stat_calls_;
         if (test_skip_label_ && d.label && !strncmp(d.label, test_skip_label_, strlen(test_skip_label_)))
             return;   // run 16 TEST ONLY (RECOMP_TEST_SKIP_LABEL=<label prefix>): which draws are which on screen
-        if (softfx_on_ && !soft_done_ && d.label && !strncmp(d.label, "IDI_PARTICLES_FX/", 17) && enc_ &&
+        if (softfx_on_ && !soft_done_ && label_is(d, label_class::PARTICLES, "IDI_PARTICLES_FX/", 17) && enc_ &&
             !recomp_ab::old(recomp_ab::SOFTFX)) {
             soft_done_ = true;
             soft_capture(d.target.depth.id);
             atm_pending_ = atm_on_ && atm_want(d.target.color[0].id);   // run 14 B1: the fog at this break
-        } else if (atm_on_ && !soft_done_ && enc_ && d.label && !strncmp(d.label, "IDI_PARTICLES_FX/", 17) &&
+        } else if (atm_on_ && !soft_done_ && enc_ && label_is(d, label_class::PARTICLES, "IDI_PARTICLES_FX/", 17) &&
                    atm_want(d.target.color[0].id)) {
             soft_done_ = true;   // run 14 B1 without soft particles: the same break, for the fog only
             soft_capture(d.target.depth.id);
@@ -2697,7 +2656,7 @@ class Renderer final : public D9Backend {
         // Remaster S3 step 1 (TEST ONLY, RECOMP_REMASTER_FXLOG=1): where particle draws land (target, samples, fitted
         // depth, blend), the facts a soft-particle pass break needs (study S3 and its challenge).
         static const bool fxlog = [] { const char *e = getenv("RECOMP_REMASTER_FXLOG"); return e && *e == '1'; }();
-        if (fxlog && d.label && !strncmp(d.label, "IDI_PARTICLES_FX/", 17)) {
+        if (fxlog && label_is(d, label_class::PARTICLES, "IDI_PARTICLES_FX/", 17)) {
             static uint64_t n = 0;
             if (++n <= 40 || (n & (n - 1)) == 0)
                 fprintf(stderr, "[remaster] fx draw %llu: %s target color0 %u depth %u samples %u fitted %d blend %u src %u dst %u "
@@ -2724,11 +2683,22 @@ class Renderer final : public D9Backend {
         }
         d9msl::PixelVariant variant;
         Tex *bound[16];
+        if (!pp.kinds_ready) {   // run 29 (D-167): the declarations as masks, once per program
+            for (const auto &kv : pp.samplers)
+                if (kv.first < 16) {
+                    if (kv.second != d9sh::S_2D)
+                        pp.non2d_samplers |= 1u << kv.first;
+                    if (kv.second == d9sh::S_VOLUME)
+                        pp.volume_samplers |= 1u << kv.first;
+                }
+            pp.kinds_ready = true;
+        }
+        if (d.render_state[243] && d9_fade_on())   // run 27 scenery fade-in, run 29 as a variant (O1)
+            variant.fade = 1;
         for (uint32_t s = 0; s < 16; ++s) {
             Tex *t = d.sampler_texture[s] ? tex_ptr(d.sampler_texture[s]) : nullptr;
             bound[s] = t;
-            auto decl = pp.samplers.find(s);
-            const bool declared2d = decl == pp.samplers.end() || decl->second == d9sh::S_2D;
+            const bool declared2d = !(pp.non2d_samplers >> s & 1);   // undeclared or 2D
             if (declared2d && t && t->texture && t->depth && t->desc.kind == HOST_D9_TEX_2D)
                 variant.depth_mask |= (uint16_t)(1u << s);
         }
@@ -2753,7 +2723,7 @@ class Renderer final : public D9Backend {
             variant.a2c = (uint8_t)std::min<uint32_t>(pass_samples_, 8);
             ++a2c_draws_;
         }
-        if (softfx_mode_ == 2 && soft_ok_ && d.label && !strncmp(d.label, "IDI_PARTICLES_FX/", 17) &&
+        if (softfx_mode_ == 2 && soft_ok_ && label_is(d, label_class::PARTICLES, "IDI_PARTICLES_FX/", 17) &&
             !recomp_ab::old(recomp_ab::SOFTFX) && d.render_state[27] && d.render_state[19] == 5 &&
             d.render_state[20] == 6 && pass_color_[0] && soft_depth_.width == pass_color_[0].width &&
             soft_depth_.height == pass_color_[0].height) {
@@ -2766,7 +2736,7 @@ class Renderer final : public D9Backend {
         float smk_soft = 0.0f;
         if (d.render_state[remaster_smoke::RS_KIND])
             smoke_seen_ = true;
-        if (d.render_state[remaster_smoke::RS_KIND] && d.label && !strncmp(d.label, "IDI_PARTICLES_FX/", 17) &&
+        if (d.render_state[remaster_smoke::RS_KIND] && label_is(d, label_class::PARTICLES, "IDI_PARTICLES_FX/", 17) &&
             d.render_state[27] && d.render_state[19] == 5 && d.render_state[20] == 6 &&
             d.render_state[remaster_smoke::RS_KIND] <= remaster_smoke::KIND_MAX && !recomp_ab::old(recomp_ab::LITSMOKE)) {
             const uint32_t kind = d.render_state[remaster_smoke::RS_KIND];
@@ -2805,16 +2775,14 @@ class Renderer final : public D9Backend {
         }
         // Run 16 smokeperf: tyre smoke the core mod spawns fewer of (smoke.h) gets the alpha exponent it marks (private
         // render state 240 = k x 16) on its alpha-blended particle draws, so the cloud keeps its density at less fill.
-        if (d.render_state[240] && d.label && !strncmp(d.label, "IDI_PARTICLES_FX/", 17) && d.render_state[27] &&
+        if (d.render_state[240] && label_is(d, label_class::PARTICLES, "IDI_PARTICLES_FX/", 17) && d.render_state[27] &&
             d.render_state[19] == 5 && d.render_state[20] == 6)
             variant.alphak = (uint8_t)std::min<uint32_t>(d.render_state[240], 255u);
         // Remaster R2 wet roads (TEST ONLY, RECOMP_REMASTER_WETROAD=1; A/B switch wetroad): road pixel shaders (the PC
         // road effect's reflection lines, detected once per program) get the native wet-road shading variant.
         if (wetroad_on_ && !recomp_ab::old(recomp_ab::WETROAD)) {
-            auto wr = wetroad_ps_.find(ps_key);
-            if (wr == wetroad_ps_.end())
-                wr = wetroad_ps_.emplace(ps_key, d9msl::pixel_is_wetroad(pp)).first;
-            if (wr->second) {
+            const bool wr_is = ps_class(pp.cls_wetroad, wetroad_ps_, ps_key, pp, d9msl::pixel_is_wetroad);
+            if (wr_is) {
                 variant.wetroad = wetroad_mode_;
                 ++wetroad_draws_;
                 if (wetroad_log_ && d.pconst && d.pconst_count >= 2) { // challenge C-WR1 4: what c1 holds, dry vs wet
@@ -2830,17 +2798,24 @@ class Renderer final : public D9Backend {
         }
         // Remaster run 13 road sheen (RECOMP_REMASTER_ROADSHEEN=1; A/B switch roadsheen): the road effect's sun
         // highlight becomes the measured GGX sheen, with or without the wet-road shading.
+        id<MTLTexture> orm_tex = nil;   // R3 run 18 material sets: the draw's ORM map (roadsheen 2)
         if (roadsheen_on_ && !recomp_ab::old(recomp_ab::ROADSHEEN)) {
-            auto rs = roadsheen_ps_.find(ps_key);
-            if (rs == roadsheen_ps_.end())
-                rs = roadsheen_ps_.emplace(ps_key, d9msl::pixel_is_roadsheen(pp)).first;
-            if (rs->second) {
+            const bool rs_is = ps_class(pp.cls_roadsheen, roadsheen_ps_, ps_key, pp, d9msl::pixel_is_roadsheen);
+            if (rs_is) {
                 variant.roadsheen = 1;
                 ++roadsheen_draws_;
+                const Tex *t0 = bound[0];
+                if (orm_active_ && t0 && t0->desc.key && rtex_.swap() && rtex_.has(t0->desc.key ^ remaster::kSlotOrm)) {
+                    const uint64_t ok = t0->desc.key ^ remaster::kSlotOrm;
+                    if ((orm_tex = rcache_.bind(ok))) {
+                        variant.roadsheen = orm_mode_;
+                    } else {
+                        rcache_.request(ok, t0->desc.width, t0->desc.height);   // no-op unless absent from the cache
+                        ++orm_missing_;
+                    }
+                }
             }
         }
-        if (pbrprobe_on_)   // Remaster run 12 step 0 (TEST ONLY): the sun-share probe
-            pbr_probe(d, vs_key, ps_key, vp, pp, bound[0], variant);
         // Remaster R2 softer sun shadows (RECOMP_REMASTER_SHADOWPCF=1; A/B switch shadowpcf): any draw that samples a
         // shadow map gets the 12-tap filter variant.
         if (shadowpcf_on_ && variant.depth_mask && !recomp_ab::old(recomp_ab::SHADOWPCF)) {
@@ -2894,12 +2869,30 @@ class Renderer final : public D9Backend {
         }
 
         // Vertex layout.
-        float ascale[16][4];
-        for (auto &a : ascale)
-            for (float &x : a)
-                x = 1.0f;
-        uint64_t vkey =
-            mix(mix((uint64_t)d.decl_id << 32 | d.decl_size, vs_key), fnv(d.decl, d.decl_size));
+        float ascale[16][4];   // filled by vertex_descriptor on both paths (run 29: no per-draw pre-fill)
+        // R3 run 31 O5 (A/B drawring, kill RECOMP_OPT_DRAWRING=0): the declaration's hash once per declaration, from a
+        // few remembered ones checked byte for byte (an id can come back with other bytes), not FNV over it per draw.
+        uint64_t decl_h = 0;
+        if (drawring_on() && d.decl && d.decl_size && d.decl_size <= sizeof decl_cache_[0].bytes) {
+            bool hit = false;
+            for (DeclHash &e : decl_cache_)
+                if (e.size == d.decl_size && e.id == d.decl_id && !memcmp(e.bytes, d.decl, e.size)) {
+                    decl_h = e.hash;
+                    hit = true;
+                    break;
+                }
+            if (!hit) {
+                decl_h = fnv(d.decl, d.decl_size);
+                DeclHash &e = decl_cache_[decl_next_++ % (sizeof decl_cache_ / sizeof decl_cache_[0])];
+                e.id = d.decl_id;
+                e.size = d.decl_size;
+                e.hash = decl_h;
+                memcpy(e.bytes, d.decl, d.decl_size);
+            }
+        } else {
+            decl_h = fnv(d.decl, d.decl_size);
+        }
+        uint64_t vkey = mix(mix((uint64_t)d.decl_id << 32 | d.decl_size, vs_key), decl_h);
         {
             uint64_t strides = 0;
             for (int i = 0; i < 8; ++i)
@@ -2909,13 +2902,22 @@ class Renderer final : public D9Backend {
         MTLVertexDescriptor *vdesc = vertex_descriptor(d, vp, vkey, ascale);
 
         // Pipeline state (everything but the shaders).
-        MTLPixelFormat cf[4] = {MTLPixelFormatInvalid, MTLPixelFormatInvalid, MTLPixelFormatInvalid,
-                                MTLPixelFormatInvalid};
-        for (int i = 0; i < 4; ++i)
-            if (id<MTLTexture> t = pass_color_[i])
-                cf[i] = t.pixelFormat;
+        // Run 29 (D-167): the attachments' formats from a cache held per target (strong references, so a cached
+        // address cannot be reused by another texture), not four Objective-C sends per draw.
+        MTLPixelFormat cf[4];
+        for (int i = 0; i < 4; ++i) {
+            if (pass_color_[i] != fmt_tex_[i]) {
+                fmt_tex_[i] = pass_color_[i];
+                fmt_cf_[i] = pass_color_[i] ? pass_color_[i].pixelFormat : MTLPixelFormatInvalid;
+            }
+            cf[i] = fmt_cf_[i];
+        }
         hdr_cls_ = hdr_float_ ? hdr_class(d, rs, ps_key, pp) : 0;   // PLAN_R2 item 10 (function() applies it)
-        MTLPixelFormat df = pass_depth_ ? pass_depth_.pixelFormat : MTLPixelFormatInvalid;
+        if (pass_depth_ != fmt_depth_) {
+            fmt_depth_ = pass_depth_;
+            fmt_df_ = pass_depth_ ? pass_depth_.pixelFormat : MTLPixelFormatInvalid;
+        }
+        MTLPixelFormat df = fmt_df_;
         bool blend = rs[27] != 0;
         uint32_t cw[4] = {rs[168], rs[190], rs[191], rs[192]};
         uint64_t bkey =
@@ -2926,8 +2928,10 @@ class Renderer final : public D9Backend {
         // The shaders of one variant and their pipeline (nil when either shader or the pipeline is unavailable).
         auto build = [&](const d9msl::PixelVariant &pv, const d9msl::VertexVariant &vv, id<MTLFunction> *vf,
                          id<MTLFunction> *ff) -> id<MTLRenderPipelineState> {
+            const uint64_t deferred0 = deferred_nil_;
             *vf = function(vs_key, vp, pv, false, vv);
             *ff = function(ps_key, pp, pv, true);
+            last_build_deferred_ = deferred_nil_ != deferred0;   // run 23: nil because still compiling, not refused
             if (!*vf || !*ff)
                 return nil;
             uint64_t key = mix(mix(vs_key, ps_key), pv.key());
@@ -2939,40 +2943,6 @@ class Renderer final : public D9Backend {
             key = mix(key, bkey);
             key = mix(key, (uint64_t)cw[0] | (uint64_t)cw[1] << 4 | (uint64_t)cw[2] << 8 | (uint64_t)cw[3] << 12);
             return pipeline(key, *vf, *ff, vdesc, cf, df, blend, rs, cw);
-        };
-        // Remaster run 14 grass blades: as build, with the root-record vertex layout (grass.h Layout: every input at
-        // buffer 10 per instance, float4 or half4, the seed / birth time at attribute 16).
-        auto build_blade = [&](const d9msl::PixelVariant &pv, const d9msl::VertexVariant &vv,
-                               const remaster_grass::Layout &gl, id<MTLFunction> *vf,
-                               id<MTLFunction> *ff) -> id<MTLRenderPipelineState> {
-            *vf = function(vs_key, vp, pv, false, vv);
-            *ff = function(ps_key, pp, pv, true);
-            if (!*vf || !*ff)
-                return nil;
-            MTLVertexDescriptor *bd = grass_vdescs_[gl.hash];
-            if (!bd) {
-                bd = [MTLVertexDescriptor vertexDescriptor];
-                for (int k = 0; k < gl.n; ++k) {
-                    bd.attributes[gl.in[k].reg].format = gl.in[k].wide ? MTLVertexFormatFloat4 : MTLVertexFormatHalf4;
-                    bd.attributes[gl.in[k].reg].offset = gl.in[k].field;
-                    bd.attributes[gl.in[k].reg].bufferIndex = 10;
-                }
-                bd.attributes[16].format = MTLVertexFormatFloat2;
-                bd.attributes[16].offset = gl.extra;
-                bd.attributes[16].bufferIndex = 10;
-                bd.layouts[10].stride = gl.stride;
-                bd.layouts[10].stepFunction = MTLVertexStepFunctionPerInstance;
-                bd.layouts[10].stepRate = 1;
-                grass_vdescs_[gl.hash] = bd;
-            }
-            uint64_t key = mix(mix(mix(vs_key, ps_key), pv.key()), gl.hash ^ 0x6772617373626c64ull);
-            for (int i = 0; i < 4; ++i)
-                if (cf[i] != MTLPixelFormatInvalid)
-                    key = mix(key, (uint64_t)cf[i] + 1000 * (uint64_t)i);
-            key = mix(key, df);
-            key = mix(key, bkey);
-            key = mix(key, (uint64_t)cw[0] | (uint64_t)cw[1] << 4 | (uint64_t)cw[2] << 8 | (uint64_t)cw[3] << 12);
-            return pipeline(key, *vf, *ff, bd, cf, df, blend, rs, cw);
         };
         // Remaster run 10 fused pool shader, run 11 safety (review/run11/design-A.md). The game thread fuses a
         // (programs, form) only after a probe here built it (host_d9_pool_state), within its supported set. The pool
@@ -3004,10 +2974,17 @@ class Renderer final : public D9Backend {
             variant.water = water_mode_;
             vvariant.pbr = 1;
         }
+        // R3 run 29 facade glint (RECOMP_REMASTER_FACADEGLINT=1 with the material set): both halves or neither; with
+        // or without the pilot relief on the same draw.
+        id<MTLTexture> fg_tex = nil;
+        if (fg_active_ && (fg_tex = fg_select(d, vs_key, ps_key, vp, pp, bound[0], variant))) {
+            variant.facadeglint = 1;
+            vvariant.pbr = 1;
+        }
         // Remaster run 13 wall parallax (RECOMP_REMASTER_PARALLAX=1; A/B switch parallax): WORLDNORMALMAP draws whose
         // pixel shader has the t[0] samples and tangent-space V (pixel_parallax_stage) and whose bound normal map stores
         // alpha (DXT3, DXT5, A8R8G8B8: a DXT1 or X8 map would read a constant height and slide the texture).
-        if (parallax_on_ && d.label && !strncmp(d.label, "IDI_WORLDNORMALMAP_FX/", 22) &&
+        if (parallax_on_ && label_is(d, label_class::WORLDNORMALMAP, "IDI_WORLDNORMALMAP_FX/", 22) &&
             !recomp_ab::old(recomp_ab::PARALLAX) && !variant.pbrworld && !variant.pool) {
             auto px = parallax_ps_.find(ps_key);
             if (px == parallax_ps_.end())
@@ -3023,7 +3000,7 @@ class Renderer final : public D9Backend {
         }
         // Remaster run 13 natural glass (RECOMP_REMASTER_GLASS=1; A/B switch glass): building-glass draws whose pixel
         // shader has the reflection add and whose vertex shader has one NORMAL input and one eye term.
-        if (glass_on_ && d.label && !strncmp(d.label, "IDI_GLOSSYWINDOW_FX/", 20) && !recomp_ab::old(recomp_ab::GLASS)) {
+        if (glass_on_ && label_is(d, label_class::GLOSSYWINDOW, "IDI_GLOSSYWINDOW_FX/", 20) && !recomp_ab::old(recomp_ab::GLASS)) {
             auto gp = glass_ps_.find(ps_key);
             if (gp == glass_ps_.end())
                 gp = glass_ps_.emplace(ps_key, [&] {
@@ -3049,7 +3026,7 @@ class Renderer final : public D9Backend {
         }
         // Remaster run 13 Xbox 360 sky, ours (RECOMP_REMASTER_SKY=1; A/B switch sky): IDI_SKYBOX_FX draws whose pixel
         // shader is the PC pass 0 combine and/or whose vertex shader is the in-scatter (once per program each).
-        if (sky_on_ && d.label && !strncmp(d.label, "IDI_SKYBOX_FX/", 14)) {
+        if (sky_on_ && label_is(d, label_class::SKYBOX, "IDI_SKYBOX_FX/", 14)) {
             ++sky_all_;
             if (!recomp_ab::old(recomp_ab::SKY)) {
                 auto sp = sky_ps_.find(ps_key);
@@ -3068,9 +3045,22 @@ class Renderer final : public D9Backend {
                 }
             }
         }
+        // R3 run 17 Xbox 360 lens drops, ours (RECOMP_REMASTER_RAINDROP=1, D-124): IDI_RAIN_DROP_FX draws whose pixel
+        // shader is the PC drop (pixel_is_raindrop, once per program). TEST RECOMP_REMASTER_RAINDROP_FORCEFAIL=1 makes
+        // the patch fail on purpose (the fallback gate's positive control).
+        if (raindrop_on_ && label_is(d, label_class::RAIN_DROP, "IDI_RAIN_DROP_FX/", 17)) {
+            ++raindrop_all_;
+            auto rp = raindrop_ps_.find(ps_key);
+            if (rp == raindrop_ps_.end())
+                rp = raindrop_ps_.emplace(ps_key, d9msl::pixel_is_raindrop(pp)).first;
+            if (rp->second) {
+                variant.raindrop = raindrop_forcefail_ ? 2 : 1;
+                ++raindrop_draws_;
+            }
+        }
         // Remaster run 13 car reflections (RECOMP_REMASTER_CARENV=1; A/B switch carenv): car effect vertex shaders
         // with the environment strength lines (vertex_is_carenv, once per program).
-        if (carenv_on_ && d.label && !strncmp(d.label, "IDI_CAR_FX/", 11) && !recomp_ab::old(recomp_ab::CARENV)) {
+        if (carenv_on_ && label_is(d, label_class::CAR, "IDI_CAR_FX/", 11) && !recomp_ab::old(recomp_ab::CARENV)) {
             auto ce = carenv_vs_.find(vs_key);
             if (ce == carenv_vs_.end())
                 ce = carenv_vs_.emplace(vs_key, d9msl::vertex_is_carenv(vp)).first;
@@ -3113,16 +3103,23 @@ class Renderer final : public D9Backend {
             if (minimal) {
                 pv.a2c = 0;
                 pv.shadowpcf = 0;
-                pv.pbrprobe = 0;
                 pv.pbrworld = 0;
                 pv.water = 0;   // run 13 natural water: the minimal form is the probe's (built without it)
+                pv.facadeglint = 0;
             }
             pv.pool = (uint8_t)form;
             vv = d9msl::VertexVariant{};
             vv.pool = (uint8_t)form;
-            vv.pbr = pv.pbrworld || pv.water;   // run 12/13: the pilot's (or water's) vertex half goes with its pixel half
+            vv.pbr = pv.pbrworld || pv.water || pv.facadeglint;   // run 12/13/29: the vertex half goes with its pixel half
             return true;
         };
+        // R3 run 22 (TEST RECOMP_REMASTER_UPSCALE_MIPBIAS=<b>): the texture mip bias on draws into the upscaled scene
+        // backing only (shadow maps, mirror, reflections, front end, post chain and HUD keep their own LOD).
+        if (mipbias_code_ && up_.open && pass_color_id_ && pass_color_id_ == up_.bb && pass_scale_ < 0.999f) {
+            variant.mipbias = mipbias_code_;
+            ++mipbias_draws_;
+        }
+        surf_select(d, rs, vs_key, ps_key, vp, pp, variant, vvariant);   // Run 15 Wave B WB1b
         id<MTLFunction> vfn = nil, ffn = nil;
         id<MTLRenderPipelineState> pso = nil;
         if (d.pool_fuse && d.pool_block) {
@@ -3132,6 +3129,12 @@ class Renderer final : public D9Backend {
             d9msl::VertexVariant pvv;
             if (force != POOL_FORCE_LATE && force != POOL_FORCE_LATEALL && pool_variant(d.pool_fuse, false, pv, pvv))
                 pso = build(pv, pvv, &vfn, &ffn);
+            if (!pso && variant.facadeglint && force == POOL_FORCE_NONE) {   // run 29: full without the glint first
+                ++(last_build_deferred_ ? fg_deferred_ : fg_fallback_);
+                variant.facadeglint = 0;
+                if (pool_variant(d.pool_fuse, false, pv, pvv))
+                    pso = build(pv, pvv, &vfn, &ffn);
+            }
             if (!pso && variant.pbrworld && force == POOL_FORCE_NONE) {   // run 12: full without the pilot before minimal
                 ++pbw_fallback_;
                 variant.pbrworld = 0;
@@ -3166,11 +3169,6 @@ class Renderer final : public D9Backend {
         if (!pso) {
             defer_ok_ = true;   // run 15 (hitch): the chain below draws a not-yet-compiled variant plain
             pso = build(variant, vvariant, &vfn, &ffn);
-            if ((!vfn || !ffn || !pso) && variant.pbrprobe) {   // run 12 probe (TEST ONLY): never lose the draw
-                ++pbr_fallback_;
-                variant.pbrprobe = 0;
-                pso = build(variant, vvariant, &vfn, &ffn);
-            }
             if ((!vfn || !ffn || !pso) && variant.smoke) {   // run 14 lit smoke: drawn as today, both halves dropped
                 if (++smoke_fallback_ <= 4)
                     fprintf(stderr, "[remaster] lit smoke: vs %016llx ps %016llx kind %u: variant failed, drawn plain\n",
@@ -3196,6 +3194,11 @@ class Renderer final : public D9Backend {
                 vvariant.sky = 0;
                 pso = build(variant, vvariant, &vfn, &ffn);
             }
+            if ((!vfn || !ffn || !pso) && variant.raindrop) {   // run 17 lens drops (ours): drawn as the PC drop
+                ++raindrop_fallback_;
+                variant.raindrop = 0;
+                pso = build(variant, vvariant, &vfn, &ffn);
+            }
             if ((!vfn || !ffn || !pso) && vvariant.carenv) {   // run 13 car reflections: drawn as today
                 ++carenv_fallback_;
                 vvariant.carenv = 0;
@@ -3211,6 +3214,21 @@ class Renderer final : public D9Backend {
                     variant.shadowpcf = 0;
                 pso = build(variant, vvariant, &vfn, &ffn);
             }
+            if ((!vfn || !ffn || !pso) && variant.roadsheen == 3) {   // run 22: without cavity + micro normals
+                // Run 23 (G-M6): a mode-3 program still compiling in the background (not in the warm seed) is drawn as
+                // mode 2 meanwhile; counted apart from a real refusal (run 22's 2845 "fallbacks" were all this).
+                if (last_build_deferred_)
+                    ++mode3_deferred_;
+                else
+                    ++mode3_fallback_;
+                variant.roadsheen = 2;
+                pso = build(variant, vvariant, &vfn, &ffn);
+            }
+            if ((!vfn || !ffn || !pso) && variant.roadsheen == 2) {   // run 18: without the ORM (today's sheen)
+                ++orm_fallback_;
+                variant.roadsheen = 1;
+                pso = build(variant, vvariant, &vfn, &ffn);
+            }
             if ((!vfn || !ffn || !pso) && variant.roadsheen) {   // run 13 road sheen: drawn as today
                 ++roadsheen_fallback_;
                 variant.roadsheen = 0;
@@ -3220,6 +3238,13 @@ class Renderer final : public D9Backend {
                 ++water_fallback_;
                 variant.water = 0;
                 vvariant.pbr = 0;
+                pso = build(variant, vvariant, &vfn, &ffn);
+            }
+            if ((!vfn || !ffn || !pso) && variant.facadeglint) {   // run 29 facade glint: drawn as today
+                // a program still compiling in the background (first sight, not in the warm seed) is counted apart
+                ++(last_build_deferred_ ? fg_deferred_ : fg_fallback_);
+                variant.facadeglint = 0;
+                vvariant.pbr = variant.pbrworld || variant.water;
                 pso = build(variant, vvariant, &vfn, &ffn);
             }
             if ((!vfn || !ffn || !pso) && variant.pbrworld) {   // run 12 pilot: drawn as today, both halves dropped
@@ -3250,17 +3275,13 @@ class Renderer final : public D9Backend {
                     int fail = force >= POOL_FORCE_REFUSE && force <= POOL_FORCE_PSO ? force : 0;
                     // A wet-road program never fuses (the pool would replace its wet shading), whatever the A/B phase.
                     if (!fail && wetroad_on_) {
-                        auto wr = wetroad_ps_.find(ps_key);
-                        if (wr == wetroad_ps_.end())
-                            wr = wetroad_ps_.emplace(ps_key, d9msl::pixel_is_wetroad(pp)).first;
-                        if (wr->second)
+                        const bool wr_is = ps_class(pp.cls_wetroad, wetroad_ps_, ps_key, pp, d9msl::pixel_is_wetroad);
+                        if (wr_is)
                             fail = POOL_FORCE_REFUSE;
                     }
                     if (!fail && roadsheen_on_) {   // run 13: nor does a sheen road program
-                        auto rs = roadsheen_ps_.find(ps_key);
-                        if (rs == roadsheen_ps_.end())
-                            rs = roadsheen_ps_.emplace(ps_key, d9msl::pixel_is_roadsheen(pp)).first;
-                        if (rs->second)
+                        const bool rs_is = ps_class(pp.cls_roadsheen, roadsheen_ps_, ps_key, pp, d9msl::pixel_is_roadsheen);
+                        if (rs_is)
                             fail = POOL_FORCE_REFUSE;
                     }
                     for (int m = 0; m < 2 && !fail; ++m) {
@@ -3362,11 +3383,15 @@ class Renderer final : public D9Backend {
         // Wine does, so an edge never lands exactly on a pixel centre.
         // Remaster run 13 MetalFX: in the scene backing (below the game's size) half a rendered pixel; 1 elsewhere,
         // which leaves every other pass exactly as it was.
-        const float hs = upscale_factor_ > 0.0f ? upscale_draw() : 1.0f;
+        float hs = upscale_factor_ > 0.0f ? upscale_draw() : 1.0f;
+        if (up_halfpix_native_)   // R3 run 25 TEST: half a NATIVE pixel in the backing too (the native picture's place)
+            hs = 1.0f;
         vparams.halfpix[0] = d.viewport[2] ? (63.0f / 64.0f) / (d.viewport[2] * hs) : 0.0f;
         vparams.halfpix[1] = d.viewport[3] ? -(63.0f / 64.0f) / (d.viewport[3] * hs) : 0.0f;
         if (fnd_on_ && fnd_.open)   // run 14 foundation F3: the scene passes' jitter (RECOMP_REMASTER_FOUNDATION_JITTER)
             fnd_halfpix(d, vparams.halfpix);
+        if (tmp_resample_log_ && fnd_on_ && fnd_.open && pass_color_id_ && pass_color_id_ == fnd_.bb)
+            resample_census(d, bound, ps_key);   // run 23 TEST (W2 branch A): draws into the backing that sample an RT
         memcpy(vparams.ascale, ascale, sizeof ascale);
         [enc_ setVertexBytes:&vparams length:sizeof vparams atIndex:17];
         set_constants(true, d.vconst, d.vconst_count, vp);
@@ -3375,6 +3400,10 @@ class Renderer final : public D9Backend {
         pparams.alpha_func = rs[15] ? (int32_t)rs[25] : 8;
         pparams.alpha_ref = (rs[24] & 0xff) / 255.0f;
         pparams.pad0 = variant.a2c;
+        if (rs[243] && d9_fade_on()) {   // run 27 scenery fade-in: the core mod's per-instance fade (1..255)
+            pparams.fade[0] = (float)std::min<uint32_t>(rs[243], 255u) / 255.0f;
+            ++fade_draws_;
+        }
         if (!variant.pbrworld)   // run 12 pilot: dropped by a fallback (or never chosen)
             pbw_tex = nil;
         else
@@ -3414,6 +3443,13 @@ class Renderer final : public D9Backend {
             [enc_ setFragmentTexture:fef_map_ atIndex:18];
             ++fef_shadowed_;
         }
+        if (variant.roadsheen >= 2) {   // R3 run 18 material sets: the ORM map (index 19 is not in the state cache)
+            [enc_ setFragmentTexture:orm_tex atIndex:19];
+            ++orm_draws_;
+        } else if (variant.facadeglint) {   // R3 run 29 facade glint: the wall's ORM map, same slot
+            [enc_ setFragmentTexture:fg_tex atIndex:19];
+            ++fg_draws_;
+        }
         if (variant.pbrworld) {   // Remaster run 12 pilot: the slot normal map (index 17 is not in the state cache)
             [enc_ setFragmentTexture:pbw_tex atIndex:17];
             ++pbw_draws_;
@@ -3424,13 +3460,6 @@ class Renderer final : public D9Backend {
                 }
                 [enc_ setFragmentBuffer:pwq_ offset:0 atIndex:3];
             }
-        }
-        if (variant.pbrprobe) {   // Remaster run 12 step 0 (TEST ONLY): the probe's histogram counters
-            if (!pbq_) {
-                pbq_ = [mtl_ newBufferWithLength:d9msl::kPbrProbeCounters * 4 options:MTLResourceStorageModeShared];
-                memset(pbq_.contents, 0, d9msl::kPbrProbeCounters * 4);
-            }
-            [enc_ setFragmentBuffer:pbq_ offset:0 atIndex:3];
         }
 
         // Textures and samplers.
@@ -3457,9 +3486,7 @@ class Renderer final : public D9Backend {
             if (tr && !tex)
                 tr->missing_textures |= 1u << s;
             bool cube = pp.major >= 2 ? (pp.cube_samplers >> s & 1) : (variant.cube_mask >> s & 1);
-            auto declaration = pp.samplers.find(s);
-            const bool volume = pp.major >= 2 && declaration != pp.samplers.end() &&
-                                declaration->second == d9sh::S_VOLUME;
+            const bool volume = pp.major >= 2 && (pp.volume_samplers >> s & 1);   // run 29: the mask, not a lookup
             if (tex && (t->cube != cube || (t->desc.kind == HOST_D9_TEX_VOLUME) != volume)) {
                 if (tr)
                     tr->incompatible_textures |= 1u << s;
@@ -3497,6 +3524,8 @@ class Renderer final : public D9Backend {
             id<MTLTexture> use = tex     ? tex
                                  : depth ? placeholder_depth()
                                          : placeholder(cube, volume);
+            if (gpu_labels_ && t && tex)
+                gpu_label_tex(t, d.sampler_texture[s], use);
             if (use != es_.texture[s]) {
                 [enc_ setFragmentTexture:use atIndex:s];
                 es_.texture[s] = use;
@@ -3533,11 +3562,11 @@ class Renderer final : public D9Backend {
         }
         if (vdesc_needs_zero_)
             [enc_ setVertexBuffer:zero_ offset:0 atIndex:8];
+        if (gpu_labels_)
+            gpu_label_draw(d, vs_key, ps_key, variant, bound, used);
         const d9trace::Result encoded = encode_primitives(d);
-        if (grass_.blades_on() && encoded == d9trace::Result::Encoded)   // run 14 grass blades: after the draw, never instead
-            grass_blades(d, rs, vs_key, ps_key, vp, pp, bound[0], variant, dkey, stencil, vparams, pparams, build_blade);
-        if (grass_.on() && encoded == d9trace::Result::Encoded)   // run 13 grass shells: after the draw, never instead
-            grass_shells(d, rs, vs_key, ps_key, vp, pp, bound[0], variant, dkey, stencil, vparams, pparams, build);
+        if (gpu_labels_)
+            [enc_ popDebugGroup];
         if (tr)
             tr->result = encoded;
         if (trace_ && encoded == d9trace::Result::Encoded) {
@@ -4319,6 +4348,10 @@ class Renderer final : public D9Backend {
             fnd_present(); // Remaster run 14 foundation: before the upscale's (the motion pass runs at the scene size)
         if (upscale_factor_ > 0.0f)
             upscale_present(); // Remaster run 13: closes a scene left open; the periodic report
+        if (surf_.dbg_pending) {   // R3 #1 (run 20): the TEST surface view over the finished frame
+            surf_.dbg_pending = false;
+            surf_debug_view(backbuffer);
+        }
         if (rtex_.on())
             rtex_.frame();
         rcache_.present();
@@ -4354,7 +4387,9 @@ class Renderer final : public D9Backend {
         if (shadowpcf_on_ && ++shadowpcf_frames_ % 600 == 0)
             fprintf(stderr, "[remaster] shadowpcf: frame %llu filtered shadow draws %llu\n",
                     (unsigned long long)shadowpcf_frames_, (unsigned long long)shadowpcf_draws_);
-        grass_.frame();   // run 13 grass shells (grass.h)
+        if (d9_fade_on() && ++fade_frames_ % 600 == 0)   // run 27 scenery fade-in
+            fprintf(stderr, "[remaster] fade: frame %llu faded draws %llu\n", (unsigned long long)fade_frames_,
+                    (unsigned long long)fade_draws_);
         if (water_on_ && ++water_frames_ % 600 == 0) {   // run 13 natural water
             size_t n = 0;
             for (const auto &kv : water_ps_)
@@ -4390,6 +4425,14 @@ class Renderer final : public D9Backend {
                     (unsigned long long)sky_frames_, (unsigned long long)sky_draws_, (unsigned long long)sky_fallback_,
                     (unsigned long long)sky_vs_draws_, (unsigned long long)sky_all_, np, sky_ps_.size(), nv, sky_vs_.size());
         }
+        if (raindrop_on_ && ++raindrop_frames_ % 600 == 0) {
+            size_t np = 0;
+            for (const auto &kv : raindrop_ps_)
+                np += kv.second;
+            fprintf(stderr, "[remaster] raindrop: frame %llu draws %llu fallback %llu (drop-label draws %llu; drop programs %zu of %zu)\n",
+                    (unsigned long long)raindrop_frames_, (unsigned long long)raindrop_draws_,
+                    (unsigned long long)raindrop_fallback_, (unsigned long long)raindrop_all_, np, raindrop_ps_.size());
+        }
         if (carenv_on_ && ++carenv_frames_ % 600 == 0) {
             size_t n = 0;
             for (const auto &kv : carenv_vs_)
@@ -4406,7 +4449,20 @@ class Renderer final : public D9Backend {
                             "fallbacks %llu\n",
                     (unsigned long long)roadsheen_frames_, (unsigned long long)roadsheen_draws_, n, roadsheen_ps_.size(),
                     (unsigned long long)roadsheen_fallback_);
+            if (orm_active_)   // run 18 material sets (G-C2)
+                fprintf(stderr, "[remaster] materials: frame %llu orm rows %llu requested %llu draws %llu missing %llu "
+                                "fallbacks %llu mode %u mode3_fallbacks %llu mode3_deferred %llu\n",
+                        (unsigned long long)roadsheen_frames_, (unsigned long long)orm_rows_,
+                        (unsigned long long)orm_requested_, (unsigned long long)orm_draws_,
+                        (unsigned long long)orm_missing_, (unsigned long long)orm_fallback_, (unsigned)orm_mode_,
+                        (unsigned long long)mode3_fallback_, (unsigned long long)mode3_deferred_);
         }
+        if (fg_active_ && ++fg_frames_ % 600 == 0)   // R3 run 29 facade glint (design 2, host d)
+            fprintf(stderr, "[remaster] facadeglint: frame %llu keys %zu draws %llu missing %llu fallback %llu deferred "
+                            "%llu skips %llu/%llu/%llu\n",
+                    (unsigned long long)fg_frames_, fg_keys_.size(), (unsigned long long)fg_draws_,
+                    (unsigned long long)fg_missing_, (unsigned long long)fg_fallback_, (unsigned long long)fg_deferred_,
+                    (unsigned long long)fg_skip_[0], (unsigned long long)fg_skip_[1], (unsigned long long)fg_skip_[2]);
         if (fef_on_)   // run 13 front-end floor shadows: frame count and the periodic report
             fef_present();
         if (wetroad_on_ && ++wetroad_frames_ % 600 == 0) {
@@ -4418,8 +4474,6 @@ class Renderer final : public D9Backend {
                     (unsigned long long)wetroad_frames_, (unsigned long long)wetroad_draws_, n, wetroad_ps_.size(),
                     wetroad_mode_ == 2 ? " mode 2" : "");
         }
-        if (pbrprobe_on_ && ++pbr_frames_ % 600 == 0)
-            pbr_report();
         if (pbw_active_ && ++pbw_frames_ % 600 == 0)
             pbw_report();
         if (a2c_on_ && ++a2c_frames_ % 600 == 0)
@@ -4532,7 +4586,6 @@ class Renderer final : public D9Backend {
             if (atm_on_)   // run 14 B1 height fog: the same (in-run A/B pairs, pbw_report.py --switch heightfog)
                 fprintf(stderr, "[remaster] heightfog: dump present_%05u fog passes %llu\n", (unsigned)(presents_ + 1),
                         (unsigned long long)(atm_passes_ - atm_passes_at_present_));
-            grass_.dump((unsigned)(presents_ + 1));   // run 13 grass shells: the same (in-run A/B pairs)
         }
         if (t.promoted && hdr_dump_every_ && (presents_ + 1) % hdr_dump_every_ == 0 && hdr_dump_in_window())   // item 10: RECOMP_DUMP_FLOAT_FRAMES
             hdr_dump_float(t, w, h);
@@ -4542,7 +4595,6 @@ class Renderer final : public D9Backend {
         parallax_draws_at_present_ = parallax_draws_;
         smoke_draws_at_present_ = smoke_draws_;
         atm_passes_at_present_ = atm_passes_;
-        grass_.mark();
         carenv_draws_at_present_ = carenv_draws_;
         glass_draws_at_present_ = glass_draws_;
         glass1_draws_at_present_ = glass1_draws_;
@@ -4560,6 +4612,7 @@ class Renderer final : public D9Backend {
         }
         ++presents_;
         g_host_game_gpu_frames.fetch_add(1, std::memory_order_relaxed);
+        capture_scope_frame();   // run 20: one capture scope per game frame (MTL_CAPTURE_ENABLED=1 only)
         hdr_latch(backbuffer);   // PLAN_R2 item 10: the next frame's format
         if (presents_ % 300 == 1)
             report();
@@ -4745,6 +4798,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         uint64_t key = (uint64_t)split << 63 | (uint64_t)samples << 48 | (uint64_t)df << 32;
         for (int i = 0; i < 4; ++i)
             key = mix(key, (uint64_t)cf[i] + 1000 * (uint64_t)i);
+        key = surf_pso_key(key, 0);   // Run 15 Wave B WB1b
         auto it = hdr_psos_.find(key);
         if (it != hdr_psos_.end())
             return it->second;
@@ -4757,6 +4811,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                 pd.colorAttachments[i].pixelFormat = cf[i];
                 pd.colorAttachments[i].writeMask = i ? MTLColorWriteMaskNone : MTLColorWriteMaskAll;
             }
+        surf_pso(pd, 0);   // Run 15 Wave B WB1b
         if (df != MTLPixelFormatInvalid) {
             pd.depthAttachmentPixelFormat = df;
             if (df == MTLPixelFormatDepth32Float_Stencil8)
@@ -5106,9 +5161,13 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                 upscale_begin(bb, ds);
             if (fnd_on_)
                 fnd_begin(bb, ds);
-        } else if (phase == HOST_D9_SCENE_END) {
+        } else if (phase == HOST_D9_SCENE_END) {   // Wave B order: fnd_end(); ssr_apply(); upscale_end(true);
+            if (tmp_synth_ && up_.open)   // R3 run 23 TEST W2-synth: before fnd_end, so the kernel and encode read it
+                synth_scene();
             if (fnd_on_)
                 fnd_end();
+            if (ssr_on_)
+                ssr_apply();
             if (upscale_factor_ > 0.0f)
                 upscale_end(true);
         }
@@ -5124,7 +5183,9 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         fprintf(stderr, "[remaster] upscale: MetalFX spatial %s, factor %.2f (%s)%s\n",
                 up_.supported ? "available" : "NOT available: the scene stays native", upscale_factor_,
                 upscale_factor_ <= 1.5f ? "Quality" : "Performance",
-                upscale_temporal_ ? "; temporal asked for but not in this build (v1 spatial)" : "");
+                temporal_on_ ? "; temporal asked for (Wave B WB2: the temporal line follows)" : "");
+        if (temporal_on_ && up_.supported)
+            temporal_available();   // Wave B WB2: the temporal class, device and input scale range
         return up_.supported;
     }
     static void swap_backing(Tex &t) {
@@ -5139,7 +5200,13 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
     bool ensure_backing(Tex &t, float s) {
         const NSUInteger w = (NSUInteger)std::max<long>(1, std::lround(t.desc.width * s)),
                          h = (NSUInteger)std::max<long>(1, std::lround(t.desc.height * s));
-        if (t.alt_texture && t.alt_texture.width == w && t.alt_texture.height == h && (!t.msaa || t.alt_msaa))
+        const bool ms = t.msaa && !temporal_on_;   // Wave B WB2: MetalFX temporal replaces MSAA in the scene (samples 1)
+        if (t.msaa && temporal_on_ && !tmp_.logged_msaa) {
+            tmp_.logged_msaa = true;
+            fprintf(stderr, "[remaster] upscale: temporal replaces anti-aliasing in the 3D scene (scene backing single-sample, "
+                            "native %ux MSAA kept outside the scene)\n", t.samples);
+        }
+        if (t.alt_texture && t.alt_texture.width == w && t.alt_texture.height == h && (!ms || t.alt_msaa))
             return true;
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:t.texture.pixelFormat
                                                                                       width:w
@@ -5151,7 +5218,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         note_alloc(AS_TEXTURE, t.alt_texture, w, h, 1, t.desc.format);
         t.alt_msaa = nil;
         t.alt_drawn = nil;
-        if (t.msaa && t.alt_texture) {
+        if (ms && t.alt_texture) {
             MTLTextureDescriptor *md = [MTLTextureDescriptor new];
             md.textureType = MTLTextureType2DMultisample;
             md.pixelFormat = td.pixelFormat;
@@ -5168,7 +5235,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         ++up_.allocs;
         if (t.promoted)
             hdr_tex_rebuild();   // PLAN_R2 item 10: the float scene backing gets the output clamp too
-        return t.alt_texture && (!t.msaa || t.alt_msaa);
+        return t.alt_texture && (!ms || t.alt_msaa);
     }
     void upscale_begin(uint32_t bb, uint32_t ds) {
         if (up_.open) {
@@ -5252,21 +5319,27 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             scene_z = dt->drawn_depth ? dt->drawn_depth : dt->texture;
             swap_backing(*dt);
         }
+        census_window_end(scene_z);   // R3 run 25 TEST (PASS_LOG)
         swap_backing(*bt);
         if (!up_.draws) {
             ++up_.skipped; // nothing drew the scene: the native back buffer is the frame (H1)
             return;
         }
-        id<MTLTexture> out = upscale_encode(scene, bt->texture);
+        id<MTLTexture> out = temporal_on_ ? temporal_encode(scene, scene_z, bt->texture) : nil;   // Wave B WB2
+        if (!out)
+            out = upscale_encode(scene, bt->texture);
         if (!out) {
             ++up_.failures;
             out = scene; // still a picture: the compose pass stretches it bilinearly
         }
-        upscale_compose(out, scene_z, up_.bb, up_.ds);
+        // R3 run 22 (TEST): the sharpen on the temporal output only (a single frame's error rises with it: bench)
+        const bool sharpen = tmp_sharp_stops_ >= 0.0f && temporal_on_ && out == tmp_.out;
+        upscale_compose(out, scene_z, up_.bb, up_.ds, sharpen);
         // R3 run 22: this frame's render-size scene depth for the post chain's depth copy (stretch_depth)
         up_.scene_z = scene_z && scene_z.textureType == MTLTextureType2D ? scene_z : nil;
         up_.scene_z_ds = up_.ds;
         up_.scene_z_frame = up_.frames;
+        tmp_.sharpened += sharpen;
         ++up_.scaled;
     }
     // MTLFXSpatialScaler: scene -> a private output at the native size. Null when it could not run.
@@ -5316,8 +5389,479 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         }
         return nil;
     }
+    // ---- Run 15 Wave B WB2: MetalFX temporal (owned by WB2) ---------------------------------------------------------
+    // Called from upscale_end when temporal_on_, before the spatial path: scene (single-sample colour backing), scene_z
+    // (its depth, may be nil), native (the output size). Reads fnd_frame() (motion, s2 reactive, jitter, reset). Returns
+    // the scaled output, or nil to fall back to the spatial scaler (counted per reason, remaster_tmp::Refuse).
+    // MTLFXTemporalScaler inputs: colour = the scene backing (BGRA8, or RGBA16F when hdr_output promoted it: auto
+    // exposure on), depth = the scene depth (Depth32Float_Stencil8, depthReversed NO), motion = the foundation's RG16F
+    // (previous - current, render px, y down: motionVectorScale +1), reactive = FndFrame.s2 when present (R8; WB1b, or
+    // WB1a's fallback; RECOMP_REMASTER_UPSCALE_TEMPORAL_NOREACTIVE=1 leaves it out), jitterOffset = +the foundation's
+    // jitter (signs from mfx_bench temporal-sign, temporal.h). History reset: remaster_tmp::reset_reasons. A/B `uptemp`
+    // OLD: the spatial scaler on the same jittered single-sample backing (the history resets on each switch).
+    struct {
+        bool checked = false, supported = false, logged_msaa = false;
+        float min_scale = 1.0f, max_scale = 1.0f;
+        id scaler = nil;   // id<MTLFXTemporalScaler>
+        id<MTLTexture> out = nil;
+        remaster_tmp::Key key{};
+        uint64_t prev_frame = 0, fnd_frames_seen = 0, fnd_motion_seen = 0;
+        uint64_t calls = 0, encoded = 0, resets = 0, reactive = 0, builds = 0, mirror = 0, sharpened = 0;
+        uint64_t reset_why[remaster_tmp::TRESET_COUNT] = {}, refused[remaster_tmp::REFUSE_COUNT] = {};
+        uint32_t logged_refuse = 0;   // reasons already named once in the log (bits)
+    } tmp_;
+    const bool tmp_noreactive_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL_NOREACTIVE"); return e && *e == '1'; }();
+    // TEST: RECOMP_REMASTER_UPSCALE_TEMPORAL_JSIGN=<x>[,<y>] multiplies the jitter offset (diagnosis of the sign in game)
+    const float tmp_jsign_[2] = {[] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL_JSIGN"); return e && *e ? (float)atof(e) : 1.0f; }(),
+                                 [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL_JSIGN"); const char *c = e ? strchr(e, ',') : nullptr;
+                                      return c ? (float)atof(c + 1) : e && *e ? (float)atof(e) : 1.0f; }()};
+    // TEST: RECOMP_REMASTER_UPSCALE_TEMPORAL_MVSCALE=<s> multiplies motionVectorScale (0: the vectors are ignored)
+    const float tmp_mvscale_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL_MVSCALE"); return e && *e ? (float)atof(e) : 1.0f; }();
+    const int tmp_exposure_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL_EXPOSURE"); return e && *e ? (*e == '1' ? 1 : 0) : -1; }();
+    // R3 run 23 TEST W2-synth (review/run23/w2-synth-design.md): RECOMP_REMASTER_UPSCALE_TEMPORAL_SYNTH=1 draws the
+    // MetalFX bench's detail pattern over the whole scene backing at the scene end (before fnd_end), jittered by the
+    // kit's own halfpix arithmetic, so the motion kernel, S2 and the encode run on it; =2 the same quad UNJITTERED while
+    // the encode still gets +j (control: "the draws do not really move"). _SYNTH_RESET=1: the scaler resets every frame
+    // (control: no history). With RECOMP_HOST_DUMP_DIR, every present dump also writes synth_<n>.ppm = the scaler's
+    // output before the compose / post chain / HUD.
+    // R3 run 25 TEST (review/run24/r3-3-design.md section 2): =3 the pattern as 1 over a flat depth alternating 0.3 / 0.7
+    // per window (the fail-on-purpose depth); =4 the GAME's colour (colour write mask none) over a flat depth 0.5;
+    // =5 the pattern as 1 over the GAME's depth (depth compare Always, no depth write, drawn_depth left as the game's).
+    const int tmp_synth_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL_SYNTH"); return e && *e >= '1' && *e <= '5' ? *e - '0' : 0; }();
+    const bool tmp_synth_reset_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL_SYNTH_RESET"); return e && *e == '1'; }();
+    uint64_t synth_frames_ = 0, synth_used_ = 0;
+    id<MTLTexture> synth_keep_ = nil;   // shared copy of tmp_.out, for the dump
+    // R3 run 25 TEST (r3-3-design.md 3b): RECOMP_REMASTER_UPSCALE_TEMPORAL_INPUTS_DUMP=1 (with RECOMP_HOST_DUMP_DIR) keeps
+    // shared copies of what the scaler was given (colour, this window's depth as the motion kernel read it: needs the
+    // kernel's previous-depth texture, i.e. FOUNDATION_LOG > 0, motion, reactive) and every present dump writes them
+    // beside present_<n>.ppm: in_colour_<n>.ppm, in_depth_<n>.pfm (device depth), in_mv_<n>.pfm (render px), in_react_<n>.pgm,
+    // in_<n>.txt (zn zf jitter).
+    const bool tmp_inputs_dump_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL_INPUTS_DUMP"); return e && *e == '1'; }();
+    struct InputsKeep {
+        id<MTLTexture> c = nil, z = nil, mv = nil, r = nil;
+        uint64_t used = 0, kept = 0;
+        float zn = 0.0f, zf = 0.0f;
+        double jx = 0.0, jy = 0.0;
+        bool have_z = false, have_r = false;
+    } inp_;
+    // R3 run 25 TEST (r3-3-design.md 3a): RECOMP_REMASTER_UPSCALE_PASS_LOG=1 = a census of the passes into the scene
+    // backing per window: depth clears (and after the window's first pass), passes with another depth, how many depth
+    // textures stood for the scene depth, other-colour passes on the scene depth, and whether the depth the encode
+    // took is the last backing pass's depth.
+    const bool tmp_pass_log_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_PASS_LOG"); return e && *e == '1'; }();
+    struct PassCensus {
+        uint64_t windows = 0, passes = 0, max_passes = 0, clears = 0, clears_after = 0, other_depth = 0, no_depth = 0,
+                 ds_other_color = 0, multi_z = 0, draws = 0, encodes = 0, encode_last = 0, fitted = 0;
+        uint32_t w_passes = 0, w_clears = 0;   // this window
+        __unsafe_unretained id<MTLTexture> w_last_z = nil, w_first_z = nil;   // compared only, never used
+        bool w_multi = false;
+    } pcs_;
+    void census_pass(const HostD9Target &t, bool clear_depth) {
+        if (!tmp_pass_log_ || !up_.open)
+            return;
+        if (t.color[0].id != up_.bb) {
+            if (up_.ds && t.depth.id == up_.ds)
+                ++pcs_.ds_other_color;
+            return;
+        }
+        ++pcs_.passes;
+        ++pcs_.w_passes;
+        if (!t.depth.id || !pass_depth_) {
+            ++pcs_.no_depth;
+            return;
+        }
+        if (t.depth.id != up_.ds) {
+            ++pcs_.other_depth;
+            return;
+        }
+        pcs_.fitted += pass_fitted_depth_;
+        if (clear_depth) {
+            ++pcs_.clears;
+            pcs_.clears_after += pcs_.w_passes > 1;
+        }
+        if (!pcs_.w_first_z)
+            pcs_.w_first_z = pass_depth_;
+        else if (pass_depth_ != pcs_.w_first_z)
+            pcs_.w_multi = true;
+        pcs_.w_last_z = pass_depth_;
+    }
+    void census_window_end(id<MTLTexture> scene_z) {
+        if (!tmp_pass_log_)
+            return;
+        ++pcs_.windows;
+        pcs_.max_passes = std::max<uint64_t>(pcs_.max_passes, pcs_.w_passes);
+        pcs_.multi_z += pcs_.w_multi;
+        pcs_.draws += up_.draws;
+        if (scene_z) {
+            ++pcs_.encodes;
+            pcs_.encode_last += scene_z == pcs_.w_last_z;
+        }
+        pcs_.w_passes = pcs_.w_clears = 0;
+        pcs_.w_last_z = pcs_.w_first_z = nil;
+        pcs_.w_multi = false;
+    }
+    // a shared copy of src in dst (same format and size), blitted on this frame's command buffer
+    bool keep_copy(id<MTLTexture> __strong &dst, id<MTLTexture> src) {
+        if (!src || src.sampleCount != 1 || src.textureType != MTLTextureType2D)
+            return false;
+        if (!dst || dst.width != src.width || dst.height != src.height || dst.pixelFormat != src.pixelFormat) {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat
+                                                                                            width:src.width
+                                                                                           height:src.height
+                                                                                        mipmapped:NO];
+            td.storageMode = MTLStorageModeShared;
+            td.usage = MTLTextureUsageShaderRead;
+            dst = [mtl_ newTextureWithDescriptor:td];
+        }
+        if (!dst)
+            return false;
+        id<MTLBlitCommandEncoder> be = [cmd_ blitCommandEncoder];
+        [be copyFromTexture:src toTexture:dst];
+        [be endEncoding];
+        return true;
+    }
+    // R3 run 22 TEST: RECOMP_REMASTER_UPSCALE_TEMPORAL_SHARPEN=<stops> (0 = full strength, 2 = the bench's best; unset
+    // = -1 = off: the compose pass binds exactly today's functions) = the sharpen (sharpen_msl.h) in the compose pass on
+    // the temporal output (review/run22/sharpen-design.md)
+    const float tmp_sharp_stops_ = [] {
+        const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL_SHARPEN");
+        return e && *e ? (float)std::clamp(atof(e), 0.0, 8.0) : -1.0f;
+    }();
+    bool temporal_available() {
+        if (tmp_.checked)
+            return tmp_.supported;
+        tmp_.checked = true;
+        if (@available(macOS 14.0, iOS 17.0, *)) {
+            Class c = NSClassFromString(@"MTLFXTemporalScalerDescriptor");
+            tmp_.supported = c != nil && [MTLFXTemporalScalerDescriptor supportsDevice:mtl_];
+            if (tmp_.supported) {
+                tmp_.min_scale = [MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:mtl_];
+                tmp_.max_scale = [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:mtl_];
+            }
+        }
+        fprintf(stderr, "[remaster] upscale: MetalFX temporal %s (input scale %.2f-%.2f, factor %.2f; jitter %s, reactive %s)\n",
+                tmp_.supported ? "available" : "NOT available: the spatial scaler stays", tmp_.min_scale, tmp_.max_scale,
+                upscale_factor_, fnd_jitter_ ? "on" : "OFF", tmp_noreactive_ ? "off (TEST)" : "when the foundation has S2");
+        return tmp_.supported;
+    }
+    // The scaler for key k (rebuilt on any change: size, formats, reactive, exposure). *built: it is new (reset).
+    id temporal_scaler(const remaster_tmp::Key &k, bool *built) {
+        *built = false;
+        if (tmp_.scaler && tmp_.key == k)
+            return tmp_.scaler;
+        if (@available(macOS 14.0, iOS 17.0, *)) {
+            tmp_.scaler = nil;
+            tmp_.out = nil;
+            tmp_.key = k;
+            *built = true;
+            MTLFXTemporalScalerDescriptor *sd = [MTLFXTemporalScalerDescriptor new];
+            sd.inputWidth = k.iw;
+            sd.inputHeight = k.ih;
+            sd.outputWidth = k.ow;
+            sd.outputHeight = k.oh;
+            sd.colorTextureFormat = (MTLPixelFormat)k.color;
+            sd.outputTextureFormat = (MTLPixelFormat)k.color;
+            sd.depthTextureFormat = (MTLPixelFormat)k.depth;
+            sd.motionTextureFormat = MTLPixelFormatRG16Float;
+            sd.autoExposureEnabled = k.auto_exposure;
+            if (k.reactive)
+                if (@available(macOS 14.4, iOS 17.4, *)) {
+                    sd.reactiveMaskTextureEnabled = YES;
+                    sd.reactiveMaskTextureFormat = (MTLPixelFormat)k.reactive;
+                }
+            id<MTLFXTemporalScaler> sc = [sd newTemporalScalerWithDevice:mtl_];
+            if (sc) {
+                MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)k.color
+                                                                                              width:k.ow
+                                                                                             height:k.oh
+                                                                                          mipmapped:NO];
+                td.usage = sc.outputTextureUsage | MTLTextureUsageShaderRead;
+                td.storageMode = MTLStorageModePrivate;
+                tmp_.out = [mtl_ newTextureWithDescriptor:td];
+                note_alloc(AS_TEXTURE, tmp_.out, k.ow, k.oh, 1, 0);
+                tmp_.scaler = tmp_.out ? sc : nil;
+                ++tmp_.builds;
+                ++up_.allocs;
+            }
+            fprintf(stderr, "[remaster] upscale: temporal scaler %ux%u -> %ux%u colour %llu depth %llu motion RG16F reactive %s "
+                            "auto exposure %d %s\n",
+                    k.iw, k.ih, k.ow, k.oh, (unsigned long long)k.color, (unsigned long long)k.depth,
+                    k.reactive ? "R8" : "none", (int)k.auto_exposure, tmp_.scaler ? "ready" : "FAILED");
+            return tmp_.scaler;
+        }
+        return nil;
+    }
+    // The MetalFX history reset of this frame (counted per reason).
+    bool temporal_reset(uint32_t fnd_reset, bool built) {
+        const uint32_t r = remaster_tmp::reset_reasons(fnd_reset, built, tmp_.prev_frame, up_.frames + 1);
+        if (r) {
+            ++tmp_.resets;
+            for (uint32_t i = 0; i < remaster_tmp::TRESET_COUNT; ++i)
+                tmp_.reset_why[i] += (r >> i) & 1u;
+        }
+        return r != 0;
+    }
+    id<MTLTexture> temporal_refuse(remaster_tmp::Refuse why) {
+        ++tmp_.refused[why];
+        if (!(tmp_.logged_refuse & (1u << why))) {
+            tmp_.logged_refuse |= 1u << why;
+            fprintf(stderr, "[remaster] upscale: temporal -> spatial (%s; first time, counted)\n", remaster_tmp::refuse_name(why));
+        }
+        return nil;
+    }
+    id<MTLTexture> temporal_encode(id<MTLTexture> scene, id<MTLTexture> scene_z, id<MTLTexture> native) {
+        using namespace remaster_tmp;
+        ++tmp_.calls;
+        // this scene's foundation window: FndFrame once WB1a fills it (frame = the window serial), else the fnd_ state
+        // directly (a window closed since the last call; motion written since the last call)
+        const remaster_fnd::FndFrame &F = fnd_frame();
+        const bool fresh_window = fnd_.frames != tmp_.fnd_frames_seen;
+        const bool fresh_motion = fnd_.motion != tmp_.fnd_motion_seen;
+        tmp_.fnd_frames_seen = fnd_.frames;
+        tmp_.fnd_motion_seen = fnd_.motion;
+        bool frame_ok = false;
+        id<MTLTexture> motion = nil, reactive = nil;
+        double jx = 0.0, jy = 0.0;
+        uint32_t freset = 0;
+        if (F.frame) {
+            frame_ok = F.valid && fresh_window;
+            motion = (__bridge id<MTLTexture>)F.motion;
+            reactive = (__bridge id<MTLTexture>)F.s2;
+            jx = F.jx, jy = F.jy, freset = F.reset;
+        } else {
+            ++tmp_.mirror;
+            frame_ok = fresh_window;
+            motion = fresh_motion ? fnd_.motion_tex : nil;
+            jx = fnd_.jx, jy = fnd_.jy, freset = fnd_.reset;
+        }
+        if (tmp_noreactive_ || (reactive && (reactive.pixelFormat != MTLPixelFormatR8Unorm || reactive.width != scene.width ||
+                                             reactive.height != scene.height || !(reactive.usage & MTLTextureUsageShaderRead))))
+            reactive = nil;
+        Inputs in;
+        in.supported = temporal_available();
+        in.factor = upscale_factor_;
+        in.min_scale = tmp_.min_scale;
+        in.max_scale = tmp_.max_scale;
+        in.ab_old = recomp_ab::old(recomp_ab::UPTEMP);
+        in.frame = frame_ok;
+        in.cw = (uint32_t)scene.width, in.ch = (uint32_t)scene.height, in.cs = (uint32_t)scene.sampleCount;
+        if (scene_z)
+            in.zw = (uint32_t)scene_z.width, in.zh = (uint32_t)scene_z.height, in.zs = (uint32_t)scene_z.sampleCount;
+        if (motion)
+            in.mw = (uint32_t)motion.width, in.mh = (uint32_t)motion.height;
+        in.usage_ok = (scene.usage & MTLTextureUsageShaderRead) && (!scene_z || (scene_z.usage & MTLTextureUsageShaderRead)) &&
+                      (!motion || (motion.usage & MTLTextureUsageShaderRead));
+        if (const Refuse why = check(in))
+            return temporal_refuse(why);
+        Key k;
+        k.iw = in.cw, k.ih = in.ch, k.ow = (uint32_t)native.width, k.oh = (uint32_t)native.height;
+        k.color = scene.pixelFormat;
+        k.depth = scene_z.pixelFormat;
+        k.reactive = reactive ? (uint64_t)reactive.pixelFormat : 0;
+        k.auto_exposure = want_auto_exposure(scene.pixelFormat == MTLPixelFormatRGBA16Float, tmp_exposure_);
+        if (@available(macOS 14.0, iOS 17.0, *)) {
+            bool built = false;
+            id<MTLFXTemporalScaler> sc = temporal_scaler(k, &built);
+            if (!sc || !tmp_.out)
+                return temporal_refuse(REFUSE_CREATE);
+            if ((scene.usage & sc.colorTextureUsage) != sc.colorTextureUsage ||
+                (scene_z.usage & sc.depthTextureUsage) != sc.depthTextureUsage ||
+                (motion.usage & sc.motionTextureUsage) != sc.motionTextureUsage)
+                return temporal_refuse(REFUSE_USAGE);
+            const bool reset = temporal_reset(freset, built);
+            begin_frame();
+            sc.colorTexture = scene;
+            sc.depthTexture = scene_z;
+            sc.motionTexture = motion;
+            sc.outputTexture = tmp_.out;
+            if (k.reactive)
+                if (@available(macOS 14.4, iOS 17.4, *))
+                    sc.reactiveMaskTexture = reactive;
+            sc.inputContentWidth = k.iw;
+            sc.inputContentHeight = k.ih;
+            sc.jitterOffsetX = kJitterSignX * tmp_jsign_[0] * (float)jx;
+            sc.jitterOffsetY = kJitterSignY * tmp_jsign_[1] * (float)jy;
+            sc.motionVectorScaleX = kMotionScale * tmp_mvscale_;
+            sc.motionVectorScaleY = kMotionScale * tmp_mvscale_;
+            sc.depthReversed = NO;
+            sc.preExposure = 1.0f;
+            sc.reset = reset || tmp_synth_reset_;   // run 23 TEST: _SYNTH_RESET=1 = no history (W2-synth control)
+            [sc encodeToCommandBuffer:cmd_];
+            ++tmp_.encoded;
+            if (tmp_inputs_dump_ && recomp_env("HOST_DUMP_DIR")) {   // run 25 TEST: what the scaler was given
+                keep_copy(inp_.c, scene);
+                // this window's depth as the kernel wrote it (flags 128; prevz_i flipped after the write)
+                id<MTLTexture> kz = fnd_.prevz_valid && fresh_window ? fnd_.prevz[fnd_.prevz_i] : nil;
+                inp_.have_z = keep_copy(inp_.z, kz);
+                keep_copy(inp_.mv, motion);
+                inp_.have_r = keep_copy(inp_.r, k.reactive ? reactive : nil);
+                inp_.zn = fnd_.zn, inp_.zf = fnd_.zf, inp_.jx = jx, inp_.jy = jy;
+                inp_.used = serial_;
+                ++inp_.kept;
+            }
+            if (tmp_synth_ && recomp_env("HOST_DUMP_DIR")) {   // run 23 TEST W2-synth: the scaler's output for the dump
+                if (!synth_keep_ || synth_keep_.width != tmp_.out.width || synth_keep_.height != tmp_.out.height ||
+                    synth_keep_.pixelFormat != tmp_.out.pixelFormat) {
+                    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:tmp_.out.pixelFormat
+                                                                                                    width:tmp_.out.width
+                                                                                                   height:tmp_.out.height
+                                                                                                mipmapped:NO];
+                    td.storageMode = MTLStorageModeShared;
+                    td.usage = MTLTextureUsageShaderRead;
+                    synth_keep_ = [mtl_ newTextureWithDescriptor:td];
+                }
+                if (synth_keep_) {
+                    id<MTLBlitCommandEncoder> be = [cmd_ blitCommandEncoder];
+                    [be copyFromTexture:tmp_.out toTexture:synth_keep_];
+                    [be endEncoding];
+                    synth_used_ = serial_;
+                }
+            }
+            tmp_.reactive += k.reactive != 0;
+            tmp_.prev_frame = up_.frames + 1;
+            return tmp_.out;
+        }
+        return temporal_refuse(REFUSE_UNSUPPORTED);
+    }
+    // The periodic line (with the upscale report, every 600 presents).
+    void temporal_report() {
+        fprintf(stderr, "[remaster] upscale: temporal calls %llu encoded %llu reactive %llu resets %llu (foundation %llu scaler %llu "
+                        "gap %llu) builds %llu mirror %llu | spatial instead:",
+                (unsigned long long)tmp_.calls, (unsigned long long)tmp_.encoded, (unsigned long long)tmp_.reactive,
+                (unsigned long long)tmp_.resets, (unsigned long long)tmp_.reset_why[0], (unsigned long long)tmp_.reset_why[1],
+                (unsigned long long)tmp_.reset_why[2], (unsigned long long)tmp_.builds, (unsigned long long)tmp_.mirror);
+        for (uint32_t i = 1; i < remaster_tmp::REFUSE_COUNT; ++i)
+            fprintf(stderr, " %s %llu", remaster_tmp::refuse_name(i), (unsigned long long)tmp_.refused[i]);
+        fprintf(stderr, " | sharpened %llu (stops %.2f)\n", (unsigned long long)tmp_.sharpened, tmp_sharp_stops_);   // run 22 TEST
+        if (tmp_resample_log_)   // run 23 TEST (W2 branch A)
+            fprintf(stderr, "[remaster] upscale: resample census (TEST) windows %llu draws %llu quads %llu full-size quads %llu\n",
+                    (unsigned long long)rsc_.windows, (unsigned long long)rsc_.draws, (unsigned long long)rsc_.quads,
+                    (unsigned long long)rsc_.full);
+        if (tmp_synth_)   // run 23 TEST W2-synth
+            fprintf(stderr, "[remaster] upscale: synth %llu frames (TEST, mode %d%s)\n", (unsigned long long)synth_frames_,
+                    tmp_synth_, tmp_synth_reset_ ? ", reset every frame" : "");
+        if (tmp_pass_log_) {   // run 25 TEST (r3-3-design.md 3a)
+            const double w = pcs_.windows ? (double)pcs_.windows : 1.0;
+            fprintf(stderr, "[remaster] upscale: pass census (TEST) windows %llu | passes/window mean %.3f max %llu | "
+                            "depth clears/window %.3f after-first %llu | other-depth passes %llu no-depth %llu fitted %llu | "
+                            "scene depth by other colour %llu | windows with >1 depth texture %llu | draws/window %.1f | "
+                            "encode depth = last depth pass %llu / %llu\n",
+                    (unsigned long long)pcs_.windows, pcs_.passes / w, (unsigned long long)pcs_.max_passes, pcs_.clears / w,
+                    (unsigned long long)pcs_.clears_after, (unsigned long long)pcs_.other_depth,
+                    (unsigned long long)pcs_.no_depth, (unsigned long long)pcs_.fitted,
+                    (unsigned long long)pcs_.ds_other_color, (unsigned long long)pcs_.multi_z, pcs_.draws / w,
+                    (unsigned long long)pcs_.encode_last, (unsigned long long)pcs_.encodes);
+        }
+        if (tmp_inputs_dump_)
+            fprintf(stderr, "[remaster] upscale: inputs kept %llu (TEST) depth %d reactive %d zn %.4f zf %.1f\n",
+                    (unsigned long long)inp_.kept, (int)inp_.have_z, (int)inp_.have_r, inp_.zn, inp_.zf);
+    }
+    // R3 run 23 TEST (W2-synth branch A, review/run23/w2-synth-design.md section 3 (2)): RECOMP_REMASTER_UPSCALE_
+    // RESAMPLE_LOG=1 counts the draws into the scene backing (inside the foundation window, so jittered) that sample a
+    // render target: a copy of the scene re-drawn through a jittered quad gives MetalFX shifted copies of ONE picture,
+    // i.e. a single-frame result. Per window: draws, of which "quads" (<= 2 primitives), and the RT's size; the first
+    // 24 distinct (program, stage, size, primitives) are named once.
+    struct ResampleCensus {
+        uint64_t draws = 0, quads = 0, full = 0, windows = 0, last_window = ~0ull;
+        std::set<std::string> seen;
+    } rsc_;
+    const bool tmp_resample_log_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_RESAMPLE_LOG"); return e && *e == '1'; }();
+    void resample_census(const HostD9Draw &d, Tex *const *bound, uint64_t ps_key) {
+        for (int i = 0; i < 8; ++i) {
+            const Tex *t = bound[i];
+            if (!t || t->desc.kind != HOST_D9_TEX_2D || !(t->desc.usage & HOST_D9_USAGE_RENDERTARGET) || t->desc.id == fnd_.bb)
+                continue;
+            if (rsc_.last_window != fnd_.frames) {
+                rsc_.last_window = fnd_.frames;
+                ++rsc_.windows;
+            }
+            ++rsc_.draws;
+            const bool quad = d.primitive_count <= 2;
+            rsc_.quads += quad;
+            const Tex *bb = tex_ptr(fnd_.bb);
+            const bool full = bb && t->desc.width * 2 >= bb->desc.width && t->desc.height * 2 >= bb->desc.height;
+            rsc_.full += quad && full;
+            char k[160];
+            snprintf(k, sizeof k, "ps %016llx stage %d rt %ux%u fmt %u prims %u vp %dx%d", (unsigned long long)ps_key, i,
+                     t->desc.width, t->desc.height, t->desc.format, d.primitive_count, d.viewport[2], d.viewport[3]);
+            if (rsc_.seen.size() < 24 && rsc_.seen.insert(k).second)
+                fprintf(stderr, "[remaster] upscale: resample (TEST) %s%s\n", k, quad && full ? " FULL-SIZE QUAD" : "");
+            break;
+        }
+    }
+    // R3 run 23 TEST W2-synth: the bench's pattern over the render-size scene backing (aliased inside the window), with
+    // depth 0.5 written everywhere; the quad is shifted by this window's jitter exactly as fnd_halfpix shifts a
+    // full-viewport game draw, while its uv keeps the unshifted screen mapping: pixel p shows the pattern at
+    // (p + 0.5 - j) x f in output pixels, the bench's input (mfx_bench.mm detail sequence).
+    void synth_scene() {
+        Tex *bt = tex_ptr(up_.bb);
+        if (!bt || !bt->aliased)
+            return;
+        HostD9Target t{};
+        t.color[0].id = up_.bb;
+        t.depth.id = up_.ds;
+        if (!begin_pass(t, false, nullptr, false, 0, false, 0) || !enc_ || !pass_color_[0]) {
+            end_pass();
+            return;
+        }
+        MTLPixelFormat cf[4] = {pass_color_[0].pixelFormat, MTLPixelFormatInvalid, MTLPixelFormatInvalid,
+                                MTLPixelFormatInvalid};
+        const MTLPixelFormat df = pass_depth_ ? pass_depth_.pixelFormat : MTLPixelFormatInvalid;
+        // run 25 modes (r3-3-design.md 2): 4 keeps the game's colour (write mask none), 5 keeps the game's depth
+        const bool keep_colour = tmp_synth_ == 4, game_z = tmp_synth_ == 5;
+        id<MTLRenderPipelineState> pso = utility_pipeline(mix(mix(keep_colour ? 0x5e7d0004ull : 0x5e7d0001ull, cf[0]), df),
+                                                          @"synth_fs", cf, df, !keep_colour);
+        if (!pso) {
+            end_pass();
+            return;
+        }
+        if (!up_.zwrite) {
+            MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new];
+            dd.depthCompareFunction = MTLCompareFunctionAlways;
+            dd.depthWriteEnabled = YES;
+            up_.zwrite = [mtl_ newDepthStencilStateWithDescriptor:dd];
+            MTLDepthStencilDescriptor *dn = [MTLDepthStencilDescriptor new];
+            dn.depthCompareFunction = MTLCompareFunctionAlways;
+            dn.depthWriteEnabled = NO;
+            up_.znone = [mtl_ newDepthStencilStateWithDescriptor:dn];
+        }
+        const NSUInteger tw = pass_color_[0].width, th = pass_color_[0].height;
+        float dx = 0.0f, dy = 0.0f;
+        if (tmp_synth_ != 2 && (fnd_jitter_ || fnd_jitter_ab_ >= 0))   // as fnd_halfpix (a full-viewport draw)
+            remaster_fnd::jitter_halfpix(fnd_jitter_sign_ * fnd_.jx, fnd_jitter_sign_ * fnd_.jy, (double)tw, (double)th, &dx, &dy);
+        const float m = 8.0f / (float)tw, mv = 8.0f / (float)th;   // 4 render pixels of margin, so the shifted quad covers
+        es_ = EncoderState{};
+        [enc_ setRenderPipelineState:pso];
+        [enc_ setDepthStencilState:pass_depth_ && !game_z ? up_.zwrite : up_.znone];
+        [enc_ setCullMode:MTLCullModeNone];
+        [enc_ setViewport:(MTLViewport){0, 0, (double)tw, (double)th, 0, 1}];
+        [enc_ setScissorRect:(MTLScissorRect){0, 0, tw, th}];
+        QuadIn q{};
+        q.rect[0] = -1.0f - m + dx;
+        q.rect[1] = 1.0f + mv + dy;
+        q.rect[2] = 1.0f + m + dx;
+        q.rect[3] = -1.0f - mv + dy;
+        q.uv[0] = -0.5f * m;
+        q.uv[1] = -0.5f * mv;
+        q.uv[2] = 1.0f + 0.5f * m;
+        q.uv[3] = 1.0f + 0.5f * mv;
+        q.z = tmp_synth_ == 3 ? ((fnd_.frames & 1) ? 0.3f : 0.7f) : 0.5f;   // run 25: 3 = the alternating depth
+        [enc_ setVertexBytes:&q length:sizeof q atIndex:0];
+        const float so[4] = {(float)bt->desc.width, (float)bt->desc.height, 0.0f, 0.0f};   // the native (output) size
+        [enc_ setFragmentBytes:so length:sizeof so atIndex:1];
+        [enc_ drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        bt->used = serial_;
+        if (pass_depth_ && !game_z)
+            if (Tex *dt = up_.ds ? tex_ptr(up_.ds) : nullptr) {
+                dt->used = serial_;
+                dt->drawn_depth = pass_depth_;
+            }
+        ++synth_frames_;
+        end_pass();
+    }
+    // ---- end Wave B WB2 -------------------------------------------------------------------------------------------
     // One pass into the native back buffer (and its depth, when the scene had one): every pixel and sample.
-    void upscale_compose(id<MTLTexture> color, id<MTLTexture> scene_z, uint32_t bb, uint32_t ds) {
+    void upscale_compose(id<MTLTexture> color, id<MTLTexture> scene_z, uint32_t bb, uint32_t ds, bool sharpen = false) {
         HostD9Target target{};
         target.color[0].id = bb;
         target.depth.id = scene_z ? ds : 0;
@@ -5331,9 +5875,13 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         MTLPixelFormat cf[4] = {pass_color_[0].pixelFormat, MTLPixelFormatInvalid, MTLPixelFormatInvalid,
                                 MTLPixelFormatInvalid};
         const MTLPixelFormat df = pass_depth_ ? pass_depth_.pixelFormat : MTLPixelFormatInvalid;
-        id<MTLRenderPipelineState> pso = utility_pipeline(
-            mix(mix(z ? (zms ? 0x05ca1e2ull : 0x05ca1e1ull) : 0x05ca1e0ull, cf[0]), df),
-            z ? (zms ? @"upscale_compose_ms_fs" : @"upscale_compose_fs") : @"copy_fs", cf, df, true);
+        id<MTLRenderPipelineState> pso =
+            sharpen ? utility_pipeline(mix(mix(z ? (zms ? 0x5a4b2ull : 0x5a4b1ull) : 0x5a4b0ull, cf[0]), df),
+                                       z ? (zms ? @"upscale_sharp_zms_fs" : @"upscale_sharp_z_fs") : @"upscale_sharp_fs", cf,
+                                       df, true)
+                    : utility_pipeline(mix(mix(z ? (zms ? 0x05ca1e2ull : 0x05ca1e1ull) : 0x05ca1e0ull, cf[0]), df),
+                                       z ? (zms ? @"upscale_compose_ms_fs" : @"upscale_compose_fs") : @"copy_fs", cf, df,
+                                       true);
         if (!pso) {
             end_pass();
             ++up_.failures;
@@ -5371,6 +5919,10 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         st[1] = st[2] = st[3] = 3; // clamp
         st[5] = st[6] = 2;         // linear (exact at the same size; a fallback stretch otherwise)
         [enc_ setFragmentSamplerState:sampler(st) atIndex:0];
+        if (sharpen) {   // R3 run 22 (TEST)
+            const float sp[4] = {tmp_sharp_stops_, color.pixelFormat == MTLPixelFormatRGBA16Float ? 1.0f : 0.0f, 0.0f, 0.0f};
+            [enc_ setFragmentBytes:sp length:sizeof sp atIndex:1];
+        }
         [enc_ drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
         if (Tex *bt = tex_ptr(bb))
             bt->used = serial_;
@@ -5381,8 +5933,252 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             }
         end_pass();
     }
+    // ---- Run 15 Wave B WB3: screen-space reflections (owned by WB3; review/run15/waveb-plan.md WB3, ssr.h) ---------
+    // Called from scene_split at the scene end when ssr_on_, after fnd_end (FndFrame filled) and before upscale_end
+    // (so it runs at the internal size): composites the reflections into the scene back buffer fnd_frame().scene.
+    // Skips (and counts) without a valid FndFrame, S0/S1 or a single-sample scene. Passes (ssr.h): blit the scene into
+    // ssr_.src + 4 mips, ssr_trace_cs at half size, ssr_resolve_fs over the scene (blend src-alpha, alpha kept).
+    // TEST envs: RECOMP_REMASTER_SSR_DEPTHN=1 normals from the depth when S0/S1 are absent (and, while FndFrame is not
+    // filled, this window's camera from the foundation state); _SSR_ROAD=1 the road receives; _SSR_DEBUG=1 mask x
+    // confidence, =2 the reflection only. A/B switch `ssr` (bit 28): OLD = no reflections. Off: nothing here runs.
+    const bool ssr_depthn_ = [] { const char *e = getenv("RECOMP_REMASTER_SSR_DEPTHN"); return e && *e == '1'; }();
+    const bool ssr_road_ = [] { const char *e = getenv("RECOMP_REMASTER_SSR_ROAD"); return e && *e == '1'; }();
+    const int ssr_debug_ = [] { const char *e = getenv("RECOMP_REMASTER_SSR_DEBUG"); return e ? atoi(e) : 0; }();
+    // run 25 TEST (review/r3-design/technical-track.md 3.4, the W3-stable control): a per-frame dither seed
+    const bool ssr_dither_frame_ = [] { const char *e = getenv("RECOMP_REMASTER_SSR_DITHER_FRAME"); return e && *e == '1'; }();
+    struct SsrSlot {
+        uint64_t serial = 0;
+        bool pending = false;
+    };
+    struct {
+        bool lib_tried = false, logged_proj = false;
+        id<MTLLibrary> lib = nil;
+        id<MTLComputePipelineState> cs = nil;
+        std::unordered_map<uint64_t, id<MTLRenderPipelineState>> pso;   // by the scene's colour format
+        id<MTLTexture> src = nil, trace = nil, none = nil;               // none: 1x1 stand-in for absent S0/S1
+        id<MTLSamplerState> smp = nil;
+        id<MTLBuffer> q = nil;   // 5 slots x 4 words (slot 4: a frame whose slot is still in flight, discarded)
+        SsrSlot slot[4];
+        uint64_t calls = 0, applied = 0, ab_old = 0, depthn = 0, skip[6] = {};   // skip: frame surface format proj targets strength
+        uint64_t q_recv = 0, q_hits = 0, q_conf = 0, q_frames = 0;
+    } ssr_;
+    bool ssr_library() {
+        if (ssr_.lib_tried)
+            return ssr_.cs != nil;
+        ssr_.lib_tried = true;
+        NSError *error = nil;
+        ssr_.lib = [mtl_ newLibraryWithSource:[NSString stringWithUTF8String:remaster_ssr::ssr_source()] options:nil error:&error];
+        id<MTLFunction> f = ssr_.lib ? [ssr_.lib newFunctionWithName:@"ssr_trace_cs"] : nil;
+        ssr_.cs = f ? [mtl_ newComputePipelineStateWithFunction:f error:&error] : nil;
+        ssr_.q = [mtl_ newBufferWithLength:5 * 16 options:MTLResourceStorageModeShared];
+        if (ssr_.q)
+            memset(ssr_.q.contents, 0, 5 * 16);
+        uint32_t st[14] = {};
+        st[1] = st[2] = st[3] = 3;   // clamp
+        st[5] = st[6] = st[7] = 2;   // linear, linear mips
+        ssr_.smp = sampler(st);
+        ssr_.none = fnd_texture(nil, MTLPixelFormatRGBA8Unorm, 1, 1);
+        fprintf(stderr, "[remaster] ssr: library %s%s%s (strength %.2f, road %d, debug %d, depth normals %d)\n",
+                ssr_.cs && ssr_.q && ssr_.none ? "ready" : "FAILED", error ? ": " : "",
+                error ? error.localizedDescription.UTF8String : "", ssr_strength_, (int)ssr_road_, ssr_debug_, (int)ssr_depthn_);
+        if (!ssr_.q || !ssr_.none)
+            ssr_.cs = nil;
+        return ssr_.cs != nil;
+    }
+    id<MTLRenderPipelineState> ssr_pso(MTLPixelFormat cf) {
+        auto it = ssr_.pso.find((uint64_t)cf);
+        if (it != ssr_.pso.end())
+            return it->second;
+        MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+        pd.vertexFunction = [ssr_.lib newFunctionWithName:@"ssr_vs"];
+        pd.fragmentFunction = [ssr_.lib newFunctionWithName:@"ssr_resolve_fs"];
+        pd.colorAttachments[0].pixelFormat = cf;
+        pd.colorAttachments[0].blendingEnabled = YES;   // out = lerp(scene, hit, w); the destination alpha is kept
+        pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+        pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorZero;
+        pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOne;
+        NSError *error = nil;
+        id<MTLRenderPipelineState> p = [mtl_ newRenderPipelineStateWithDescriptor:pd error:&error];
+        fprintf(stderr, "[remaster] ssr: resolve pipeline format %lu %s%s\n", (unsigned long)cf, p ? "ready" : "FAILED: ",
+                p ? "" : error.localizedDescription.UTF8String);
+        ssr_.pso[(uint64_t)cf] = p;
+        return p;
+    }
+    // ssr_.src (the scene's format, 5 levels) and the half-size trace (RGBA32F: hit px x, y, confidence, distance).
+    bool ssr_targets(id<MTLTexture> scene) {
+        const NSUInteger w = scene.width, h = scene.height, hw = (w + 1) / 2, hh = (h + 1) / 2;
+        if (!ssr_.src || ssr_.src.width != w || ssr_.src.height != h || ssr_.src.pixelFormat != scene.pixelFormat) {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:scene.pixelFormat
+                                                                                          width:w
+                                                                                         height:h
+                                                                                      mipmapped:YES];
+            td.mipmapLevelCount = std::min<NSUInteger>(5, td.mipmapLevelCount);
+            td.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+            td.storageMode = MTLStorageModePrivate;
+            ssr_.src = [mtl_ newTextureWithDescriptor:td];
+            note_alloc(AS_TEXTURE, ssr_.src, w, h, 1, 0);
+            fprintf(stderr, "[remaster] ssr: targets %lux%lu format %lu, trace %lux%lu %s\n", (unsigned long)w,
+                    (unsigned long)h, (unsigned long)scene.pixelFormat, (unsigned long)hw, (unsigned long)hh,
+                    ssr_.src ? "ready" : "FAILED");
+        }
+        ssr_.trace = fnd_texture(ssr_.trace, MTLPixelFormatRGBA32Float, hw, hh);
+        return ssr_.src && ssr_.trace;
+    }
+    // GPU counters of completed frames; one line per 600 calls.
+    void ssr_report() {
+        const uint64_t done = completed_.load();
+        for (int i = 0; i < 4 && ssr_.q; ++i) {
+            SsrSlot &sl = ssr_.slot[i];
+            if (!sl.pending || sl.serial > done)
+                continue;
+            sl.pending = false;
+            uint32_t *q = (uint32_t *)ssr_.q.contents + 4 * i;
+            ssr_.q_recv += q[0];
+            ssr_.q_hits += q[1];
+            ssr_.q_conf += q[2];
+            ++ssr_.q_frames;
+            memset(q, 0, 16);
+        }
+        if (ssr_.calls % 600)
+            return;
+        const double n = ssr_.q_frames ? (double)ssr_.q_frames : 1.0;
+        fprintf(stderr,
+                "[remaster] ssr: calls %llu applied %llu (depth normals %llu) ab-old %llu; skipped: no frame %llu, no surface "
+                "%llu, format %llu, projection %llu, targets %llu, strength 0 %llu | per frame (half px): receivers %.0f, hits "
+                "%.0f, mean confidence %.3f\n",
+                (unsigned long long)ssr_.calls, (unsigned long long)ssr_.applied, (unsigned long long)ssr_.depthn,
+                (unsigned long long)ssr_.ab_old, (unsigned long long)ssr_.skip[0], (unsigned long long)ssr_.skip[1],
+                (unsigned long long)ssr_.skip[2], (unsigned long long)ssr_.skip[3], (unsigned long long)ssr_.skip[4],
+                (unsigned long long)ssr_.skip[5], ssr_.q_recv / n, ssr_.q_hits / n,
+                ssr_.q_hits ? ssr_.q_conf / 1024.0 / ssr_.q_hits : 0.0);
+        ssr_.q_recv = ssr_.q_hits = ssr_.q_conf = ssr_.q_frames = 0;
+    }
+    void ssr_apply() {
+        ++ssr_.calls;
+        ssr_apply_frame();
+        ssr_report();
+    }
+    void ssr_apply_frame() {
+        using namespace remaster_ssr;
+        if (recomp_ab::old(recomp_ab::SSR)) {
+            ++ssr_.ab_old;
+            return;
+        }
+        if (ssr_strength_ <= 0.0f) {
+            ++ssr_.skip[5];
+            return;
+        }
+        remaster_fnd::FndFrame f = fnd_frame();
+        Tex *bt = tex_ptr(fnd_.bb);
+        id<MTLTexture> scene = nil, depth = nil, s0 = nil, s1 = nil;
+        if (f.valid) {
+            scene = (__bridge id<MTLTexture>)f.scene;
+            depth = (__bridge id<MTLTexture>)f.depth;
+            s0 = (__bridge id<MTLTexture>)f.s0;
+            s1 = (__bridge id<MTLTexture>)f.s1;
+        } else if (ssr_depthn_ && fnd_.prev_valid && fnd_.prev_cam_valid && bt && !bt->msaa) {
+            // TEST: FndFrame not filled yet (before WB1a): fnd_end has just stored this window's VP, P and camera
+            Tex *dt = fnd_.ds ? tex_ptr(fnd_.ds) : nullptr;
+            scene = bt->texture;
+            depth = dt ? (dt->drawn_depth ? dt->drawn_depth : dt->texture) : nil;
+            f.P = fnd_.p_prev;
+            f.V = fnd_.cam_prev.V;
+            f.jx = fnd_.jx_prev;
+            f.jy = fnd_.jy_prev;
+        } else {
+            ++ssr_.skip[0];
+            return;
+        }
+        const bool surf = s0 && s1;
+        if (!surf && !ssr_depthn_) {
+            ++ssr_.skip[1];
+            return;
+        }
+        if (!scene || !depth || scene.sampleCount != 1 || scene.textureType != MTLTextureType2D ||
+            depth.textureType != MTLTextureType2D || depth.width != scene.width || depth.height != scene.height ||
+            (surf && (s0.width != scene.width || s0.height != scene.height || s1.width != scene.width ||
+                      s1.height != scene.height))) {
+            ++ssr_.skip[2];
+            return;
+        }
+        const uint32_t w = (uint32_t)scene.width, h = (uint32_t)scene.height;
+        // the draws' halfpix is (63/64) / (guest width x the backing's scale when upscaled) (fnd_motion)
+        const double gw = bt && bt->desc.width ? bt->desc.width * (upscale_factor_ > 0.0f && bt->aliased && !up_halfpix_native_ ? bt->scale : 1.0) : w;
+        const uint32_t flags = (surf ? F_SURF | F_BACKFACE : F_DEPTHN) | F_DITHER | (ssr_road_ ? F_ROAD : 0u) |
+                               (ssr_debug_ == 1 ? F_DBG_MASK : 0u) | (ssr_debug_ == 2 ? F_DBG_REFL : 0u) |
+                               (ssr_dither_frame_ ? F_DITHER_FRAME : 0u);
+        SsrParams u;
+        const bool ssr_ok = ssr_params(f.P, f.V, w, h, f.jx, f.jy, gw / w, ssr_strength_, flags, &u);
+        if (ssr_ok && ssr_dither_frame_)
+            u.pad = (uint32_t)fnd_.frames;
+        if (!ssr_ok) {
+            ++ssr_.skip[3];
+            if (!ssr_.logged_proj) {
+                ssr_.logged_proj = true;
+                fprintf(stderr, "[remaster] ssr: not a D3D projection (P[2][3] %.4g, P[3][3] %.4g): skipped\n", f.P.m[2][3],
+                        f.P.m[3][3]);
+            }
+            return;
+        }
+        id<MTLRenderPipelineState> pso = ssr_library() ? ssr_pso(scene.pixelFormat) : nil;
+        if (!pso || !ssr_targets(scene)) {
+            ++ssr_.skip[4];
+            return;
+        }
+        end_pass();
+        begin_frame();
+        id<MTLBlitCommandEncoder> be = [cmd_ blitCommandEncoder];
+        [be copyFromTexture:scene sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+                 sourceSize:MTLSizeMake(w, h, 1) toTexture:ssr_.src destinationSlice:0 destinationLevel:0
+          destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [be generateMipmapsForTexture:ssr_.src];
+        [be endEncoding];
+        const int si = (int)(ssr_.calls & 3);
+        SsrSlot &sl = ssr_.slot[si];
+        const bool count = !sl.pending;
+        id<MTLComputeCommandEncoder> ce = [cmd_ computeCommandEncoder];
+        [ce setComputePipelineState:ssr_.cs];
+        [ce setTexture:depth atIndex:0];
+        [ce setTexture:surf ? s0 : ssr_.none atIndex:1];
+        [ce setTexture:surf ? s1 : ssr_.none atIndex:2];
+        [ce setTexture:ssr_.trace atIndex:3];
+        [ce setBytes:&u length:sizeof u atIndex:0];
+        [ce setBuffer:ssr_.q offset:(NSUInteger)(count ? si : 4) * 16 atIndex:1];
+        [ce dispatchThreadgroups:MTLSizeMake((ssr_.trace.width + 15) / 16, (ssr_.trace.height + 15) / 16, 1)
+            threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+        [ce endEncoding];
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = scene;
+        rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> re = [cmd_ renderCommandEncoderWithDescriptor:rp];
+        [re setRenderPipelineState:pso];
+        [re setFragmentTexture:ssr_.src atIndex:0];
+        [re setFragmentTexture:ssr_.trace atIndex:1];
+        [re setFragmentTexture:depth atIndex:2];
+        [re setFragmentTexture:surf ? s0 : ssr_.none atIndex:3];
+        [re setFragmentTexture:surf ? s1 : ssr_.none atIndex:4];
+        [re setFragmentBytes:&u length:sizeof u atIndex:0];
+        [re setFragmentSamplerState:ssr_.smp atIndex:0];
+        [re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [re endEncoding];
+        if (count) {
+            sl.pending = true;
+            sl.serial = serial_;
+        }
+        if (bt)
+            bt->used = serial_;
+        ++ssr_.applied;
+        ssr_.depthn += !surf;
+    }
+    // ---- end Wave B WB3 -------------------------------------------------------------------------------------------
     // A draw in the scene backing counts toward the scene and gets half a rendered pixel (the backing's scale);
     // one into the back buffer before the scene began this frame is counted (must stay 0).
+    // R3 run 25 TEST (the R3 #3 cause): RECOMP_REMASTER_UPSCALE_HALFPIX_NATIVE=1 gives the scene backing's draws D3D9's
+    // half-pixel offset of the game's own (native) pixel, as the native picture has, instead of half a rendered pixel:
+    // at 1.5x the rendered scene otherwise lands 0.5 x 1.5 - 0.5 = 0.25 output px right and down of the native one.
+    const bool up_halfpix_native_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_HALFPIX_NATIVE"); return e && *e == '1'; }();
     float upscale_draw() {
         if (up_.open && pass_color_id_ == up_.bb && pass_color_id_) {
             ++up_.draws;
@@ -5433,13 +6229,18 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                     (unsigned long long)up_.frames, (unsigned long long)up_.scaled,
                     (unsigned long long)up_.skipped, upscale_factor_ <= 1.5f ? 1 : 2, up_.in_w, up_.in_h,
                     (unsigned long)up_.sc_ow, (unsigned long)up_.sc_oh, upscale_factor_,
-                    upscale_temporal_ ? "asked, not built (v1 spatial)" : "off",
+                    temporal_on_ ? "on (Wave B WB2)" : "off",
                     (unsigned long long)up_.bb_before, (unsigned long long)up_.fitted,
                     (unsigned long long)up_.failures, (unsigned long long)up_.nested,
                     (unsigned long long)up_.refused, (unsigned long long)up_.stray_end,
                     (unsigned long long)up_.no_end, (unsigned long long)up_.depth_mismatch,
                     (unsigned long long)up_.replayed, (unsigned long long)up_.allocs,
                     (unsigned long long)up_.aborts, (unsigned long long)up_.depth_up_copies);
+        if (temporal_on_ && up_.frames % 600 == 0)
+            temporal_report();   // Wave B WB2
+        if (mipbias_code_ && up_.frames % 600 == 0)   // R3 run 22 (TEST)
+            fprintf(stderr, "[remaster] upscale: mip bias %.6f (TEST) on %llu scene-backing draws\n",
+                    d9msl::mipbias_value(mipbias_code_), (unsigned long long)mipbias_draws_);
     }
     // The back buffer or scene depth is redefined or dropped inside the scene: the other one goes back to native
     // and this frame's scene is lost (counted).
@@ -5469,7 +6270,24 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         fnd_.cam = remaster_fnd::Camera{};
         ++fnd_.windows;
         fnd_.jx = fnd_.jy = 0.0;
-        if (fnd_jitter_) {   // F3: Halton(2,3), 8 x f^2 phases; a fixed phase with _JITTER_PHASE
+        if (fnd_jitter_ab_ >= 0) {   // Wave B WB1a jitter-sign A/B: phase k in the OLD periods, phase 0 in the others
+            fnd_.phases = remaster_fnd::jitter_phases(upscale_factor_ > 0.0f ? upscale_factor_ : 1.0);
+            const bool old = recomp_ab::old_phase.load(std::memory_order_relaxed) != 0;
+            fnd_.phase = old ? (uint32_t)fnd_jitter_ab_ % fnd_.phases : 0u;
+            remaster_fnd::jitter(fnd_.phase, &fnd_.jx, &fnd_.jy);
+            if (!fnd_.ab_logged) {
+                fnd_.ab_logged = true;
+                double kx, ky, zx, zy;
+                remaster_fnd::jitter((uint32_t)fnd_jitter_ab_ % fnd_.phases, &kx, &ky);
+                remaster_fnd::jitter(0, &zx, &zy);
+                // run 21: other switches flipping with the jitter spoil the shift (R20C: +0.19 px y from the base
+                // switches); a jitter A/B sets RECOMP_AB_SWITCHES=none
+                fprintf(stderr, "[remaster] foundation: jitter A/B phase %u (%.4f, %.4f) in OLD periods vs phase 0 (%.4f, %.4f) "
+                                "render px: requested shift (%.4f, %.4f); other A/B switches 0x%llx\n",
+                        (uint32_t)fnd_jitter_ab_ % fnd_.phases, kx, ky, zx, zy, kx - zx, ky - zy,
+                        (unsigned long long)recomp_ab::switches());
+            }
+        } else if (fnd_jitter_) {   // F3: Halton(2,3), 8 x f^2 phases; a fixed phase with _JITTER_PHASE
             fnd_.phases = remaster_fnd::jitter_phases(upscale_factor_ > 0.0f ? upscale_factor_ : 1.0);
             fnd_.phase = fnd_jitter_ >= 1000 ? (uint32_t)(fnd_jitter_ - 1000) % fnd_.phases
                                              : (uint32_t)(fnd_.windows % fnd_.phases);
@@ -5499,7 +6317,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
     }
     // F1 K: a WORLD draw into the scene back buffer inside the window gives its clip constant block.
     void fnd_capture(const HostD9Draw &d, uint64_t vs_key, const d9sh::Program &vp) {
-        if (!pass_color_id_ || pass_color_id_ != fnd_.bb || !d.label || strncmp(d.label, "IDI_WORLD_FX/", 13))
+        if (!pass_color_id_ || pass_color_id_ != fnd_.bb || !label_is(d, label_class::WORLD_FX, "IDI_WORLD_FX/", 13))
             return;
         fnd_.plur.world();
         ++fnd_.world_draws;
@@ -5518,11 +6336,11 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
     // F3 jitter: only for draws into the scene back buffer inside the window (shadow, mirror, reflections, car env,
     // front end and the post chain never get it). One render pixel is 2 / (viewport x pass scale) in NDC.
     void fnd_halfpix(const HostD9Draw &d, float *halfpix) {
-        if (!fnd_jitter_ || !pass_color_id_ || pass_color_id_ != fnd_.bb)
+        if ((!fnd_jitter_ && fnd_jitter_ab_ < 0) || !pass_color_id_ || pass_color_id_ != fnd_.bb)
             return;
         float dx, dy;
-        remaster_fnd::jitter_halfpix(fnd_.jx, fnd_.jy, d.viewport[2] * (double)pass_scale_, d.viewport[3] * (double)pass_scale_,
-                                     &dx, &dy);
+        remaster_fnd::jitter_halfpix(fnd_jitter_sign_ * fnd_.jx, fnd_jitter_sign_ * fnd_.jy, d.viewport[2] * (double)pass_scale_,
+                                     d.viewport[3] * (double)pass_scale_, &dx, &dy);
         halfpix[0] += dx;
         halfpix[1] += dy;
         ++fnd_.jittered;
@@ -5555,6 +6373,10 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         return n;
     }
     // GPU counters of completed frames into the window sums (and the per-frame TEST line with _LOG).
+    // Wave B WB1a: the line also names the window's resets and whether the camera stood still (the parked gate reads
+    // only `reset 0x0 still 1` lines), the windows in that present and the game-frame step (H-windows), the H-lag
+    // scores (R / R2 / RG error < 0.5 % of the scored pixels) and the colour gate (mean |prev(p + mv) - cur| and
+    // |prev(p) - cur|, luma 0..1).
     void fnd_harvest() {
         if (!fnd_.q)
             return;
@@ -5566,10 +6388,13 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             sl.pending = false;
             uint32_t *q = (uint32_t *)fnd_.q.contents + 32 * i;
             const uint64_t sum = (uint64_t)q[3] | (uint64_t)q[4] << 32;
-            for (int k = 0; k < 17; ++k)
-                if (k != 3 && k != 4 && k != 5)
+            const uint64_t csm = (uint64_t)q[22] | (uint64_t)q[23] << 32, csz = (uint64_t)q[24] | (uint64_t)q[25] << 32;
+            for (int k = 0; k < 27; ++k)
+                if (k != 3 && k != 4 && k != 5 && (k < 22 || k > 25))
                     fnd_.q_sum[k] += q[k];
             fnd_.q_sum[3] += sum;
+            fnd_.q_sum[22] += csm;
+            fnd_.q_sum[24] += csz;
             fnd_.q_max = std::max<uint64_t>(fnd_.q_max, q[5]);
             ++fnd_.q_frames;
             if (fnd_log_ && sl.frame % (uint64_t)fnd_log_ == 0) {
@@ -5578,21 +6403,29 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                     he += q[k];
                 fprintf(stderr,
                         "[remaster] foundation frame %llu: px %u sky %u behind %u mv mean %.5f max %.5f px | reproj n %llu "
-                        "<0.1%% %u <0.25%% %u <0.5%% %u <1%% %u <2%% %u <5%% %u >=5%% %u disocc %u off %u edge %u locked %u\n",
+                        "<0.1%% %u <0.25%% %u <0.5%% %u <1%% %u <2%% %u <5%% %u >=5%% %u disocc %u off %u edge %u locked %u | "
+                        "reset 0x%x still %d windows %u step %d | lag n %u R %u R2 %u RG %u | colour n %u mv %.6f zero %.6f | "
+                        "reactive %u | rI %.3g\n",
                         (unsigned long long)sl.frame, q[0], q[1], q[2], q[0] ? sum / 65536.0 / q[0] : 0.0, q[5] / 65536.0,
-                        (unsigned long long)he, q[6], q[7], q[8], q[9], q[10], q[11], q[12], q[13], q[14], q[15], q[16]);
+                        (unsigned long long)he, q[6], q[7], q[8], q[9], q[10], q[11], q[12], q[13], q[14], q[15], q[16],
+                        sl.reset, (int)sl.still, sl.windows, sl.step, q[20], q[19], q[17], q[18], q[21],
+                        q[21] ? csm / 65536.0 / q[21] : 0.0, q[21] ? csz / 65536.0 / q[21] : 0.0, q[26], sl.rdev);
             }
             memset(q, 0, 32 * 4);
         }
     }
     // F1/F3 at the scene end: VP_k, the G/K check, the resets, the motion pass, the debug view, the previous VP.
     void fnd_end() {
+        fnd_frame_.valid = false;   // Wave B WB1a: refilled below for a usable window only
         if (!fnd_.open) {
             ++fnd_.stray_end;
             return;
         }
         fnd_.open = false;
         ++fnd_.frames;
+        fnd_frame_ = remaster_fnd::FndFrame{};
+        fnd_tex_ = decltype(fnd_tex_){};
+        fnd_.reactive_ok = false;
         using namespace remaster_fnd;
         Tex *bt = tex_ptr(fnd_.bb);
         // K with G (CONF14B fix): clusters of equal blocks; with the camera, the largest one that is its projection
@@ -5605,6 +6438,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             trans = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
         }
         const Pick pk = pick_clusters(fnd_.plur, 8, 0.25, have_g ? &vinv : nullptr, trans);
+        surf_score_world_t(pk);   // R3 #1: the world T check on the VP_k cluster's draws only
         fnd_.ties += pk.tie;
         fnd_.by_camera += pk.by_camera;
         fnd_.not_largest += pk.by_camera && pk.rank;
@@ -5698,8 +6532,17 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             for (uint32_t i = 0; i < RESET_COUNT; ++i)
                 fnd_.reset_why[i] += (reset >> i) & 1u;
         }
-        fnd_motion(bt, valid, vp, agree ? &P : nullptr);
-        // the previous VP: only at the end of a valid frame (main view only)
+        // Wave B WB1a: the parked gate's still flag and the game-frame step of this window (H-windows)
+        fnd_.still = camera_still(fnd_.cam_prev, fnd_.cam);
+        fnd_.step = fnd_.cam.have && fnd_.cam_prev.have ? (int)(fnd_.cam.frame - fnd_.cam_prev.frame) : -1;
+        fnd_.still_frames += fnd_.still && !reset;
+        surf_frame(fnd_frame_);   // Run 15 Wave B WB1b: s0-s2 and fnd_tex_.s0-s2 before the motion pass reads S1
+        const bool moved = fnd_motion(bt, valid, vp, agree ? &P : nullptr);
+        fnd_fill(bt, valid && moved, vp, vp_inv, agree ? &P : nullptr);
+        // the previous VP: only at the end of a valid frame (main view only); n-2 for the H-lag counters
+        fnd_.prev2_valid = fnd_.prev_valid;
+        if (fnd_.prev_valid)
+            fnd_.vp_prev2 = fnd_.vp_prev;
         fnd_.prev_valid = valid;
         if (valid)
             fnd_.vp_prev = vp;
@@ -5715,67 +6558,172 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
     void fnd_drop() {
         fnd_.open = false;
         fnd_.resized = true;
-        fnd_.prev_valid = fnd_.prevz_valid = false;
+        fnd_.prev_valid = fnd_.prevz_valid = fnd_.prev2_valid = fnd_.prevc_valid = false;
+        fnd_frame_.valid = false;
+    }
+    // Wave B WB1a: the consumers' FndFrame for the window that just closed (valid only with VP_k and vectors written
+    // this window). A window without a previous VP gets zero vectors and RESET_GAP. S0-S2 come from WB1b's
+    // surf_frame; without S2 the reactive fallback (camera-locked pixels, fast foliage with tags) stands in.
+    void fnd_fill(Tex *bt, bool ok, const remaster_fnd::M4 &vp, const remaster_fnd::M4 &vp_inv, const remaster_fnd::M4 *P) {
+        remaster_fnd::FndFrame &f = fnd_frame_;
+        Tex *dt = fnd_.ds ? tex_ptr(fnd_.ds) : nullptr;
+        id<MTLTexture> z = dt ? (dt->drawn_depth ? dt->drawn_depth : dt->texture) : nil;
+        f.valid = ok && bt && bt->texture && z && fnd_.motion_tex;
+        f.reset = fnd_.reset | (fnd_.motion_noprev ? (uint32_t)remaster_fnd::RESET_GAP : 0u);
+        f.frame = fnd_.windows;
+        f.w = bt && bt->texture ? (uint32_t)bt->texture.width : 0;
+        f.h = bt && bt->texture ? (uint32_t)bt->texture.height : 0;
+        f.jx = fnd_.jx;
+        f.jy = fnd_.jy;
+        f.vp = vp;
+        f.vp_inv = vp_inv;
+        f.V = fnd_.cam.have ? fnd_.cam.V : remaster_fnd::M4{};
+        f.P = P ? *P : fnd_.have_p ? fnd_.p_last : remaster_fnd::M4{};
+        f.zn = fnd_.zn;
+        f.zf = fnd_.zf;
+        if (!f.valid)
+            return;
+        fnd_tex_.motion = fnd_.motion_tex;
+        fnd_tex_.scene = bt->texture;
+        fnd_tex_.depth = z;
+        f.motion = (__bridge void *)fnd_tex_.motion;
+        f.scene = (__bridge void *)fnd_tex_.scene;
+        f.depth = (__bridge void *)fnd_tex_.depth;
+        if (!f.s2 && fnd_.reactive_ok && fnd_.reactive) {
+            fnd_tex_.s2 = fnd_.reactive;
+            f.s2 = (__bridge void *)fnd_tex_.s2;
+            ++fnd_.reactive_frames;
+        }
+        ++fnd_.frame_valid;
     }
     // F3 the motion pass: camera-only vectors from the scene depth and R = VP_k^-1 x VP_prev (double, CPU).
-    void fnd_motion(Tex *bt, bool valid, const remaster_fnd::M4 &vp, const remaster_fnd::M4 *P) {
+    // Wave B WB1a: with a consumer on, a window without a previous VP still gets vectors (R = I, zero motion; the
+    // FndFrame reset says so). RECOMP_REMASTER_FOUNDATION_SOURCE=g takes RG = (V_g P_prev)^-1 x (V_g,prev P_prev) as the
+    // vector source when it is formed (the H-lag winner, if the camera beats the block). The H-lag candidates are
+    // scored with _LOG; the colour gate (_COLGATE=1, with _LOG) keeps one copy of the previous scene colour; the
+    // reactive fallback (temporal on without WB1b's S2, or _REACTIVE=1) keeps the previous depth always on.
+    // Returns true when vectors were written this window.
+    bool fnd_motion(Tex *bt, bool valid, const remaster_fnd::M4 &vp, const remaster_fnd::M4 *P) {
         using namespace remaster_fnd;
         fnd_harvest();
         Tex *dt = fnd_.ds ? tex_ptr(fnd_.ds) : nullptr;
         id<MTLTexture> z = dt ? (dt->drawn_depth ? dt->drawn_depth : dt->texture) : nil;
-        if (!valid || !fnd_.prev_valid) {
+        const bool consumer = temporal_on_ || ssr_on_;
+        fnd_.motion_noprev = valid && !fnd_.prev_valid && consumer;
+        if (!valid || (!fnd_.prev_valid && !consumer)) {
             ++fnd_.motion_skip[0];
-            fnd_.prevz_valid = false;
-            return;
+            fnd_.prevz_valid = fnd_.prevc_valid = false;
+            return false;
         }
         if (!bt || !bt->texture || !z || !fnd_library()) {
             ++fnd_.motion_skip[1];
-            fnd_.prevz_valid = false;
-            return;
+            fnd_.prevz_valid = fnd_.prevc_valid = false;
+            return false;
         }
         const NSUInteger w = bt->texture.width, h = bt->texture.height;
         if (z.width != w || z.height != h) {
             ++fnd_.motion_skip[2];   // a fitted depth of another size: no vectors this frame
-            fnd_.prevz_valid = false;
-            return;
+            fnd_.prevz_valid = fnd_.prevc_valid = false;
+            return false;
         }
-        M4 R, Rsky;
-        if (!reprojection(vp, fnd_.vp_prev, &R)) {
+        const M4 &vprev = fnd_.prev_valid ? fnd_.vp_prev : vp;
+        M4 R, Rsky, R2{}, RG{};
+        if (!reprojection(vp, vprev, &R)) {
             ++fnd_.motion_skip[3];
-            fnd_.prevz_valid = false;
-            return;
+            fnd_.prevz_valid = fnd_.prevc_valid = false;
+            return false;
+        }
+        // R3 #2 (run 20): how far R is from I (the per-frame line's rI). A G-still camera can still have R != I for a
+        // frame or two while VP_k catches up (H-lag): those vectors are real motion, so W1-parked needs rI = 0 too.
+        fnd_.rdev = 0.0;
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j)
+                fnd_.rdev = std::max(fnd_.rdev, std::fabs(R.m[i][j] - (i == j ? 1.0 : 0.0)));
+        if (fnd_jitter_leak_) {   // TEST ONLY (W1-parked's fail-on-purpose): the current jitter leaks into the vectors
+            const double ww = (double)bt->texture.width, hh = (double)bt->texture.height;
+            R.m[3][0] += 2.0 * fnd_.jx / ww * R.m[3][3];
+            R.m[3][1] += -2.0 * fnd_.jy / hh * R.m[3][3];
+        }
+        const bool have_cams = P && fnd_.prev_valid && fnd_.prev_cam_valid && fnd_.cam.have && fnd_.cam_prev.have;
+        LagInputs li;
+        li.vp = vp;
+        li.vp_prev = vprev;
+        li.vp_prev2 = fnd_.vp_prev2;
+        li.prev = true;
+        li.prev2 = fnd_.prev_valid && fnd_.prev2_valid;
+        li.cam = have_cams;
+        if (have_cams) {   // one projection for both frames (the previous one): this frame's P = V_g^-1 x VP_k would
+            li.V = fnd_.cam.V;   // make RG = R by construction; with P_prev both, RG moves with the mod camera only
+            li.P = fnd_.p_prev;
+            li.V_prev = fnd_.cam_prev.V;
+            li.P_prev = fnd_.p_prev;
+        }
+        M4 r1;
+        const uint32_t lag = lag_candidates(li, &r1, &R2, &RG);
+        if (fnd_source_g_ && (lag & 4u)) {
+            R = RG;
+            ++fnd_.source_g;
         }
         Rsky = R;
-        if (P && fnd_.prev_cam_valid && fnd_.cam.have && fnd_.cam_prev.have) {   // the sky: rotation only
+        if (have_cams) {   // the sky: rotation only
             M4 rs;
             if (reprojection(mul(rotation_only(fnd_.cam.V), *P), mul(rotation_only(fnd_.cam_prev.V), fnd_.p_prev), &rs))
                 Rsky = rs;
         }
         fnd_.motion_tex = fnd_texture(fnd_.motion_tex, MTLPixelFormatRG16Float, w, h);
         // TEST measurement (the per-frame counters and the previous depth): _LOG or debug 8 only (CONF14B: +0.61 ms
-        // with them always on at 3840x2160 4x MSAA)
+        // with them always on at 3840x2160 4x MSAA); the reactive fallback also keeps the previous depth
         const bool measure = fnd_log_ > 0 || fnd_debug_ == 8;
-        for (int i = 0; i < 2 && measure; ++i) {
+        id<MTLTexture> tags = fnd_tex_.s1;
+        if (tags && (tags.width != w || tags.height != h || tags.pixelFormat != MTLPixelFormatRGBA8Unorm ||
+                     tags.textureType != MTLTextureType2D))
+            tags = nil;
+        const bool react = (temporal_on_ && !fnd_tex_.s2) || fnd_reactive_test_;
+        const bool keepz = measure || react;
+        for (int i = 0; i < 2 && keepz; ++i) {
             id<MTLTexture> o = fnd_.prevz[i];
             fnd_.prevz[i] = fnd_texture(o, MTLPixelFormatR32Float, w, h);
             if (fnd_.prevz[i] != o)
                 fnd_.prevz_valid = false;
         }
+        if (react)
+            fnd_.reactive = fnd_texture(fnd_.reactive, MTLPixelFormatR8Unorm, w, h);
+        const bool colgate = fnd_colgate_ && measure && bt->texture.sampleCount == 1 &&
+                             (bt->texture.usage & MTLTextureUsageShaderRead) && bt->texture.textureType == MTLTextureType2D;
+        if (colgate) {
+            id<MTLTexture> o = fnd_.prevc;
+            if (o && o.pixelFormat != bt->texture.pixelFormat)
+                o = nil;
+            fnd_.prevc = o && o.width == w && o.height == h ? o : nil;
+            if (!fnd_.prevc) {
+                fnd_.prevc_valid = false;
+                MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:bt->texture.pixelFormat
+                                                                                              width:w height:h mipmapped:NO];
+                td.usage = MTLTextureUsageShaderRead;
+                td.storageMode = MTLStorageModePrivate;
+                fnd_.prevc = [mtl_ newTextureWithDescriptor:td];
+                note_alloc(AS_TEXTURE, fnd_.prevc, w, h, 1, 0);
+            }
+        } else
+            fnd_.prevc_valid = false;
         const bool dbg = fnd_debug_ == 6 || fnd_debug_ == 8;
         if (dbg)
             fnd_.dbg = fnd_texture(fnd_.dbg, MTLPixelFormatRGBA16Float, w, h);
-        if (!fnd_.motion_tex || (measure && (!fnd_.prevz[0] || !fnd_.prevz[1])) || (dbg && !fnd_.dbg)) {
+        if (!fnd_.motion_tex || (keepz && (!fnd_.prevz[0] || !fnd_.prevz[1])) || (dbg && !fnd_.dbg) ||
+            (react && !fnd_.reactive) || (colgate && !fnd_.prevc)) {
             ++fnd_.motion_skip[1];
-            return;
+            return false;
         }
         FndMv u{};
         for (int i = 0; i < 4; ++i)
             for (int j = 0; j < 4; ++j) {   // MSL columns: u.R[4 j + i] = R[i][j]
                 u.R[4 * j + i] = (float)R.m[i][j];
                 u.Rsky[4 * j + i] = (float)Rsky.m[i][j];
+                u.R2[4 * j + i] = (float)R2.m[i][j];
+                u.RG[4 * j + i] = (float)RG.m[i][j];
             }
         const bool upscaled = upscale_factor_ > 0.0f && bt->aliased;
-        const double hs = upscaled ? bt->scale : 1.0;   // the draw's halfpix (d3d9_metal.mm draw)
+        const double hs = upscaled && !up_halfpix_native_ ? bt->scale : 1.0;   // the draw's halfpix (d3d9_metal.mm draw)
         u.size[0] = (float)w;
         u.size[1] = (float)h;
         u.h[0] = (float)((63.0 / 64.0) / (bt->desc.width * hs));
@@ -5789,8 +6737,13 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                      pf = P && P->m[2][2] > 0.0 && P->m[2][2] < 1.0 ? P->m[3][2] / (1.0 - P->m[2][2]) : 0.0;
         u.zn = pn > 0.0 ? (float)pn : fnd_.cam.have && fnd_.cam.near > 0.0 ? (float)fnd_.cam.near : 0.5f;
         u.zf = pf > u.zn ? (float)pf : fnd_.cam.have && fnd_.cam.far > u.zn ? (float)fnd_.cam.far : 15000.0f;
-        u.flags = (measure && fnd_.prevz_valid ? 1u : 0u) | (fnd_debug_ == 6 ? 2u : 0u) | (fnd_debug_ == 8 ? 4u : 0u) |
-                  (measure ? 8u : 0u) | 16u;   // 16: MSAA depth sample 0 (COMB14B cost: 0.19 vs 0.30 ms at 4K 4x)
+        fnd_.zn = u.zn;
+        fnd_.zf = u.zf;
+        const bool prevz_ok = keepz && fnd_.prevz_valid && fnd_.prev_valid;
+        u.flags = (prevz_ok ? 1u : 0u) | (fnd_debug_ == 6 ? 2u : 0u) | (fnd_debug_ == 8 ? 4u : 0u) | (measure ? 8u : 0u) |
+                  16u |   // 16: MSAA depth sample 0 (COMB14B cost: 0.19 vs 0.30 ms at 4K 4x)
+                  (colgate && fnd_.prevc_valid && prevz_ok ? 32u : 0u) | (react ? 64u : 0u) | (keepz ? 128u : 0u) |
+                  (tags ? 256u : 0u) | (measure && (lag & 2u) ? 512u : 0u) | (measure && (lag & 4u) ? 1024u : 0u);
         const int si = (int)(fnd_.frames & 7);
         FndSlot &sl = fnd_.slot[si];
         const bool count = measure && !sl.pending;   // a slot still in flight: this frame goes uncounted
@@ -5801,23 +6754,41 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         [ce setComputePipelineState:fnd_.cs[ms ? 1 : 0]];
         [ce setTexture:z atIndex:0];
         [ce setTexture:fnd_.motion_tex atIndex:1];
-        [ce setTexture:fnd_.prevz[fnd_.prevz_i] atIndex:2];
-        [ce setTexture:fnd_.prevz[fnd_.prevz_i ^ 1] atIndex:3];
+        [ce setTexture:keepz ? fnd_.prevz[fnd_.prevz_i] : fnd_.motion_tex atIndex:2];
+        [ce setTexture:keepz ? fnd_.prevz[fnd_.prevz_i ^ 1] : fnd_.motion_tex atIndex:3];
         [ce setTexture:dbg ? fnd_.dbg : fnd_.motion_tex atIndex:4];
+        [ce setTexture:colgate ? bt->texture : fnd_.motion_tex atIndex:5];
+        [ce setTexture:colgate ? fnd_.prevc : fnd_.motion_tex atIndex:6];
+        [ce setTexture:tags ? tags : fnd_.motion_tex atIndex:7];
+        [ce setTexture:react ? fnd_.reactive : fnd_.motion_tex atIndex:8];
         [ce setBytes:&u length:sizeof u atIndex:0];
         [ce setBuffer:fnd_.q offset:(NSUInteger)(count ? si : 8) * 32 * 4 atIndex:1];
         [ce dispatchThreadgroups:MTLSizeMake((w + 15) / 16, (h + 15) / 16, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
         [ce endEncoding];
+        if (colgate) {   // this frame's scene colour for the next frame's gate (before the debug view draws over it)
+            id<MTLBlitCommandEncoder> be = [cmd_ blitCommandEncoder];
+            [be copyFromTexture:bt->texture toTexture:fnd_.prevc];
+            [be endEncoding];
+            fnd_.prevc_valid = true;
+        }
         if (count) {
             sl.pending = true;
             sl.serial = serial_;
             sl.frame = fnd_.frames;
+            sl.reset = fnd_.reset;
+            sl.still = fnd_.still;
+            sl.rdev = fnd_.rdev;
+            sl.windows = (uint32_t)(fnd_.frames - fnd_.last_frames);
+            sl.step = fnd_.step;
         }
-        fnd_.prevz_i ^= 1;
-        fnd_.prevz_valid = measure;
+        if (keepz)
+            fnd_.prevz_i ^= 1;
+        fnd_.prevz_valid = keepz;
+        fnd_.reactive_ok = react;
         ++fnd_.motion;
         if (dbg)
             fnd_debug_view();
+        return true;
     }
     // TEST ONLY: the debug picture over the scene back buffer (copy_fs, the whole target).
     void fnd_debug_view() {
@@ -5860,9 +6831,10 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             ++fnd_.no_end;
             fnd_end();
         }
+        fnd_frame_.valid = false;   // Wave B WB1a: consumers read it between fnd_end and upscale_end only
         if (fnd_.frames == fnd_.last_frames) {   // this frame had no scene window: the next one resets
             fnd_.had_window = false;
-            fnd_.prev_valid = fnd_.prevz_valid = false;
+            fnd_.prev_valid = fnd_.prevz_valid = fnd_.prev2_valid = fnd_.prevc_valid = false;
         }
         fnd_.last_frames = fnd_.frames;
         const uint64_t presents = ++fnd_.presents;
@@ -5914,6 +6886,19 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                 !fnd_jitter_ ? "off" : fnd_jitter_ >= 1000 ? "fixed" : "Halton(2,3)", fnd_.phases,
                 (unsigned long long)fnd_.jittered, (unsigned long long)fnd_.nested, (unsigned long long)fnd_.stray_end,
                 (unsigned long long)fnd_.stray_camera, (unsigned long long)fnd_.no_end);
+        // Wave B WB1a: H-lag (the three candidates' share of scored pixels within 0.5 %), the colour gate, the
+        // reactive fallback and the consumers' FndFrame (per report window except the cumulative frame counts)
+        fprintf(stderr,
+                "[remaster] foundation WB1a: lag scored %llu R %.2f%% R2 %.2f%% RG %.2f%% (source %s, RG used %llu) | colour n %llu "
+                "mv %.6f zero %.6f ratio %.4f | reactive px %llu (%.2f%% of px) frames %llu | FndFrame valid %llu of %llu | "
+                "still frames %llu\n",
+                (unsigned long long)fnd_.q_sum[20], pct(fnd_.q_sum[19], fnd_.q_sum[20]), pct(fnd_.q_sum[17], fnd_.q_sum[20]),
+                pct(fnd_.q_sum[18], fnd_.q_sum[20]), fnd_source_g_ ? "g" : "k", (unsigned long long)fnd_.source_g,
+                (unsigned long long)fnd_.q_sum[21], fnd_.q_sum[21] ? fnd_.q_sum[22] / 65536.0 / (double)fnd_.q_sum[21] : 0.0,
+                fnd_.q_sum[21] ? fnd_.q_sum[24] / 65536.0 / (double)fnd_.q_sum[21] : 0.0,
+                fnd_.q_sum[24] ? (double)fnd_.q_sum[22] / (double)fnd_.q_sum[24] : 0.0, (unsigned long long)fnd_.q_sum[26],
+                pct(fnd_.q_sum[26], fnd_.q_sum[0]), (unsigned long long)fnd_.reactive_frames,
+                (unsigned long long)fnd_.frame_valid, (unsigned long long)fnd_.frames, (unsigned long long)fnd_.still_frames);
         // the GPU counters are per report window; the rest is cumulative
         memset(fnd_.q_sum, 0, sizeof fnd_.q_sum);
         fnd_.q_frames = fnd_.q_max = 0;
@@ -6054,6 +7039,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         }
         if (pass_depth_ && dt)
             dt->drawn_depth = pass_depth_; // Test121
+        census_pass(t, clear_depth);   // R3 run 25 TEST (PASS_LOG)
         if (pass_fitted_depth_ && up_.open && ((up_.ds && t.depth.id == up_.ds) || t.color[0].id == up_.bb))
             ++up_.fitted; // Remaster run 13: a scene backing paired with a target of another size (must stay 0)
         begin_frame();
@@ -6063,7 +7049,12 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             rp.visibilityResultBuffer = vis_buffer();
             pass_vis_ = true;
         }
+        surf_attach(rp, t);   // Run 15 Wave B WB1b: colour 4-6 on the in-window scene passes
         enc_ = [cmd_ renderCommandEncoderWithDescriptor:rp];
+        surf_.enc = surf_.want ? enc_ : nil;   // Run 15 Wave B WB1b
+        if (gpu_labels_ && enc_)   // run 20 TEST: the pass's targets (game surface ids) in gpudebug
+            enc_.label = [NSString stringWithFormat:@"pass c0 %u depth %u samples %u%s", t.color[0].id, t.depth.id,
+                                                    pass_samples_, pass_color_id_ && pass_color_id_ == fnd_.bb ? " scene" : ""];
         if (trace_) {
             ++pass_serial_;
             if (enc_) {
@@ -6238,6 +7229,8 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         }
         cmd_ = [queue_ commandBuffer];
         ++serial_;
+        if (gpu_labels_)   // run 20 TEST
+            cmd_.label = [NSString stringWithFormat:@"NFSMW frame %llu serial %llu", (unsigned long long)(presents_ + 1), (unsigned long long)serial_];
         dispatch_semaphore_t sem = frames_;
         uint64_t serial = serial_;
         std::atomic<uint64_t> *done = &completed_;
@@ -6323,16 +7316,15 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
 
     // ---- shaders --------------------------------------------------------
     // Run 15 (hitch): variants the main draw chain can draw plain when their shader is not ready
-    // (each listed field has a fallback there that drops it). Pools, grass and the rest never defer.
+    // (each listed field has a fallback there that drops it). Pools and the rest never defer.
     static bool pixel_deferrable(const d9msl::PixelVariant &v) {
-        return (v.smoke || v.parallax || v.glass || v.sky || v.fefloor || v.roadsheen || v.water || v.pbrworld ||
-                v.pbrprobe) &&
-               !v.pool && !v.grass && !v.grass_blade && !v.carpaint;
+        return (v.smoke || v.parallax || v.glass || v.sky || v.fefloor || v.roadsheen || v.water || v.pbrworld) &&
+               !v.pool && !v.carpaint;
     }
     static bool vertex_deferrable(const d9msl::PixelVariant &v, const d9msl::VertexVariant &vv) {
         return ((vv.smoke && v.smoke) || (vv.glass && v.glass) || vv.sky || vv.carenv || (vv.fefloor && v.fefloor) ||
                 (vv.pbr && (v.water || v.pbrworld))) &&
-               !vv.pool && !vv.grass && !vv.grass_blade;
+               !vv.pool;
     }
     id<MTLFunction> function(uint64_t code_key, const d9sh::Program &p,
                              const d9msl::PixelVariant &v, bool pixel,
@@ -6393,6 +7385,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                                         pixel ? "ps" : "vs", (unsigned long long)key, warm_key.c_str(), src.size(),
                                         deferred_logged_);
                         }
+                        ++deferred_nil_;
                         return nil;   // not cached: asked again next draw
                     }
                     from_background = lib != nil;
@@ -6408,7 +7401,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             if (!lib) {
                 MTLCompileOptions *opts = ShaderWarm::options();
                 const uint64_t compile_t0 = os_monotonic_ns();
-                lib = [mtl_ newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()]
+                lib = [mtl_ newLibraryWithSource:d9_msl_source(src)
                                          options:opts
                                            error:&error];
                 const uint64_t compile_ns = os_monotonic_ns() - compile_t0;
@@ -6530,6 +7523,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                                         MTLPixelFormat df, bool blend, const uint32_t *rs,
                                         const uint32_t cw[4]) {
         key = mix(key, 0x5a3f0000ull + pass_samples_);
+        key = surf_pso_key(key, surf_mode());   // Run 15 Wave B WB1b (unchanged outside a surface pass)
         auto it = pipelines_.find(key);
         if (it != pipelines_.end())
             return it->second;
@@ -6582,9 +7576,10 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
             pd.depthAttachmentPixelFormat = df;
             pd.stencilAttachmentPixelFormat = df;
         }
+        const bool surf_on = surf_pso(pd, surf_mode());   // Run 15 Wave B WB1b: colour 4-6 in a surface pass
         // Test70: a pipeline the warm-up created from an identical recorded identity is used as is.
         std::string spec;
-        if (warm_ && warm_->pipelines_on()) {
+        if (warm_ && warm_->pipelines_on() && !surf_on) {   // WB1b: the warm spec records colours 0-3 only
             auto vk = fn_warm_keys_.find((__bridge const void *)vfn), fk = fn_warm_keys_.find((__bridge const void *)ffn);
             if (vk != fn_warm_keys_.end() && fk != fn_warm_keys_.end()) {
                 const PipeSpec ps = warm_spec_of(pd, vk->second, fk->second);
@@ -6615,6 +7610,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                                                 const MTLPixelFormat cf[4], MTLPixelFormat df,
                                                 bool write_color) {
         key = mix(key, 0x5a3f0000ull + pass_samples_);
+        key = surf_pso_key(key, 0);   // Run 15 Wave B WB1b
         auto it = pipelines_.find(key);
         if (it != pipelines_.end())
             return it->second;
@@ -6628,6 +7624,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                 pd.colorAttachments[i].writeMask =
                     (i == 0 && write_color) ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
             }
+        surf_pso(pd, 0);   // Run 15 Wave B WB1b: colour 4-6 declared (mask 0) in a surface pass
         if (df != MTLPixelFormatInvalid) {
             pd.depthAttachmentPixelFormat = df;
             pd.stencilAttachmentPixelFormat = df;
@@ -6816,20 +7813,24 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         // As many as the program reads, so its own defs always land and a
         // read past what the game set is zero rather than past the buffer.
         uint32_t n = std::max<uint32_t>(std::max<uint32_t>(count, p.max_const), 1);
-        constants_.assign(n * 4, 0.0f);
-        if (c && count)
-            memcpy(constants_.data(), c, count * 4 * sizeof(float));
-        for (const auto &def : p.defs)
-            if (def.first < n)
-                memcpy(&constants_[def.first * 4], def.second.data(), 4 * sizeof(float));
+        const float *src = c;
+        // Run 29 (D-167): the game's block as it is when it already covers every register the program reads and the
+        // program has no defs (most programs): no copy. Otherwise the copy, zeroing only the registers past it.
+        if (!(c && count == n && p.defs.empty())) {
+            constants_.resize(n * 4);
+            const uint32_t have = c ? count : 0;
+            if (have)
+                memcpy(constants_.data(), c, have * 4 * sizeof(float));
+            std::fill(constants_.begin() + have * 4, constants_.end(), 0.0f);
+            for (const auto &def : p.defs)
+                if (def.first < n)
+                    memcpy(&constants_[def.first * 4], def.second.data(), 4 * sizeof(float));
+            src = constants_.data();
+        }
         if (vertex)
-            [enc_ setVertexBytes:constants_.data()
-                          length:constants_.size() * sizeof(float)
-                         atIndex:16];
+            [enc_ setVertexBytes:src length:n * 4 * sizeof(float) atIndex:16];
         else
-            [enc_ setFragmentBytes:constants_.data()
-                            length:constants_.size() * sizeof(float)
-                           atIndex:0];
+            [enc_ setFragmentBytes:src length:n * 4 * sizeof(float) atIndex:0];
     }
 
     void bind_inline(int slot, const uint8_t *bytes, uint32_t size) {
@@ -6985,6 +7986,84 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         snprintf(path, sizeof path, "%s/present_%05u.ppm", host_dump_dir(),
                  (unsigned)(presents_ + 1));
         host_write_ppm(path, rgb.data(), (int)w, (int)h);
+        // R3 run 23 TEST W2-synth: the scaler's last output beside it (8-bit BGRA only)
+        if (tmp_synth_ && synth_keep_ && synth_keep_.pixelFormat == MTLPixelFormatBGRA8Unorm) {
+            settle(synth_used_);
+            const uint32_t sw = (uint32_t)synth_keep_.width, sh = (uint32_t)synth_keep_.height;
+            std::vector<uint8_t> sb((size_t)sw * sh * 4), srgb((size_t)sw * sh * 3);
+            [synth_keep_ getBytes:sb.data() bytesPerRow:sw * 4 fromRegion:MTLRegionMake2D(0, 0, sw, sh) mipmapLevel:0];
+            for (size_t i = 0, n = (size_t)sw * sh; i < n; ++i) {
+                srgb[i * 3] = sb[i * 4 + 2];
+                srgb[i * 3 + 1] = sb[i * 4 + 1];
+                srgb[i * 3 + 2] = sb[i * 4];
+            }
+            snprintf(path, sizeof path, "%s/synth_%05u.ppm", host_dump_dir(), (unsigned)(presents_ + 1));
+            host_write_ppm(path, srgb.data(), (int)sw, (int)sh);
+        }
+        if (tmp_inputs_dump_ && inp_.kept)
+            dump_inputs((unsigned)(presents_ + 1));
+    }
+    // R3 run 25 TEST (r3-3-design.md 3b): the scaler's last inputs, as kept by temporal_encode
+    void dump_inputs(unsigned n) {
+        settle(inp_.used);
+        const char *dir = host_dump_dir();
+        char path[1024];
+        if (inp_.c && (inp_.c.pixelFormat == MTLPixelFormatBGRA8Unorm || inp_.c.pixelFormat == MTLPixelFormatRGBA16Float)) {
+            const uint32_t w = (uint32_t)inp_.c.width, h = (uint32_t)inp_.c.height;
+            std::vector<uint8_t> bgra((size_t)w * h * 4), rgb((size_t)w * h * 3);
+            if (inp_.c.pixelFormat == MTLPixelFormatRGBA16Float) {
+                std::vector<uint16_t> half((size_t)w * h * 4);
+                [inp_.c getBytes:half.data() bytesPerRow:w * 8 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+                hdrconv::rgba16f_to_bgra8(half.data(), bgra.data(), (size_t)w * h);
+            } else
+                [inp_.c getBytes:bgra.data() bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+            for (size_t i = 0, k = (size_t)w * h; i < k; ++i)
+                rgb[i * 3] = bgra[i * 4 + 2], rgb[i * 3 + 1] = bgra[i * 4 + 1], rgb[i * 3 + 2] = bgra[i * 4];
+            snprintf(path, sizeof path, "%s/in_colour_%05u.ppm", dir, n);
+            host_write_ppm(path, rgb.data(), (int)w, (int)h);
+        }
+        // PFM rows go bottom to top; the scorer flips them back
+        auto pfm = [&](const char *name, const std::vector<float> &v, uint32_t w, uint32_t h, int ch) {
+            snprintf(path, sizeof path, "%s/%s_%05u.pfm", dir, name, n);
+            if (FILE *f = fopen(path, "wb")) {
+                fprintf(f, "%s\n%u %u\n-1.0\n", ch == 3 ? "PF" : "Pf", w, h);
+                for (uint32_t y = h; y-- > 0;)
+                    fwrite(v.data() + (size_t)y * w * ch, sizeof(float), (size_t)w * ch, f);
+                fclose(f);
+            }
+        };
+        if (inp_.have_z && inp_.z && inp_.z.pixelFormat == MTLPixelFormatR32Float) {
+            const uint32_t w = (uint32_t)inp_.z.width, h = (uint32_t)inp_.z.height;
+            std::vector<float> z((size_t)w * h);
+            [inp_.z getBytes:z.data() bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+            pfm("in_depth", z, w, h, 1);
+        }
+        if (inp_.mv && inp_.mv.pixelFormat == MTLPixelFormatRG16Float) {
+            const uint32_t w = (uint32_t)inp_.mv.width, h = (uint32_t)inp_.mv.height;
+            std::vector<__fp16> m((size_t)w * h * 2);
+            [inp_.mv getBytes:m.data() bytesPerRow:w * 4 fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+            std::vector<float> v((size_t)w * h * 3, 0.0f);
+            for (size_t i = 0, k = (size_t)w * h; i < k; ++i)
+                v[i * 3] = (float)m[i * 2], v[i * 3 + 1] = (float)m[i * 2 + 1];
+            pfm("in_mv", v, w, h, 3);
+        }
+        if (inp_.have_r && inp_.r && inp_.r.pixelFormat == MTLPixelFormatR8Unorm) {
+            const uint32_t w = (uint32_t)inp_.r.width, h = (uint32_t)inp_.r.height;
+            std::vector<uint8_t> r((size_t)w * h);
+            [inp_.r getBytes:r.data() bytesPerRow:w fromRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0];
+            snprintf(path, sizeof path, "%s/in_react_%05u.pgm", dir, n);
+            if (FILE *f = fopen(path, "wb")) {
+                fprintf(f, "P5\n%u %u\n255\n", w, h);
+                fwrite(r.data(), 1, r.size(), f);
+                fclose(f);
+            }
+        }
+        snprintf(path, sizeof path, "%s/in_%05u.txt", dir, n);
+        if (FILE *f = fopen(path, "w")) {
+            fprintf(f, "zn %.6f zf %.3f jx %.6f jy %.6f depth %d reactive %d kept %llu\n", inp_.zn, inp_.zf, inp_.jx, inp_.jy,
+                    (int)inp_.have_z, (int)inp_.have_r, (unsigned long long)inp_.kept);
+            fclose(f);
+        }
     }
 
     struct VDesc {
@@ -7093,6 +8172,36 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
     id<MTLTexture> white_ = nil, white_cube_ = nil, white_depth_ = nil, white_volume_ = nil;
     std::vector<uint8_t> scratch_;
     std::vector<float> constants_;
+    id<MTLTexture> fmt_tex_[4] = {nil, nil, nil, nil}, fmt_depth_ = nil;   // run 29: draw()'s attachment format cache
+    MTLPixelFormat fmt_cf_[4] = {MTLPixelFormatInvalid, MTLPixelFormatInvalid, MTLPixelFormatInvalid,
+                                 MTLPixelFormatInvalid}, fmt_df_ = MTLPixelFormatInvalid;
+    // R3 run 31 O6 (A/B labelcache, kill RECOMP_OPT_LABELCACHE=0): the label classes of the draw() running now. A
+    // question about any other draw, or a label pointer that is not the one classified, is answered from the string.
+    const HostD9Draw *lc_draw_ = nullptr;
+    const char *lc_label_ = nullptr;
+    uint32_t lc_ = 0;
+    static bool labelcache_on() {
+        static const bool on = [] { const char *e = getenv("RECOMP_OPT_LABELCACHE"); return !(e && e[0] == '0'); }();
+        return on && !recomp_ab::old(recomp_ab::LABELCACHE);
+    }
+    // Does the draw's label start with `prefix` (the bit's own prefix, kept as the OLD path's literal)?
+    bool label_is(const HostD9Draw &d, uint32_t bit, const char *prefix, size_t n) const {
+        if (&d == lc_draw_ && d.label == lc_label_)
+            return (lc_ & bit) != 0;
+        if (labelcache_on())
+            return (label_class::of(d.label) & bit) != 0;
+        return d.label && !strncmp(d.label, prefix, n);
+    }
+    struct DeclHash {   // R3 run 31 O5: draw()'s declaration hashes (id, size and bytes checked on every hit)
+        uint32_t id = 0, size = 0;
+        uint64_t hash = 0;
+        uint8_t bytes[192];
+    } decl_cache_[4];
+    uint32_t decl_next_ = 0;
+    static bool drawring_on() {
+        static const bool on = [] { const char *e = getenv("RECOMP_OPT_DRAWRING"); return !(e && e[0] == '0'); }();
+        return on && !recomp_ab::old(recomp_ab::DRAWRING);
+    }
     std::unordered_map<uint32_t, Tex> textures_;
     remaster::TexKeys rtex_; // Remaster A1 step 1: texture keys, dumps, counters (off unless asked)
     remaster::ReplacementCache rcache_{rtex_}; // Remaster A1 step 3: per-key replacements (pack only)
@@ -7127,11 +8236,87 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                                                   "BLOCKED (pixel shader)", "BLOCKED (pipeline)"};
     std::unordered_map<uint64_t, bool> wetroad_ps_;
     uint64_t wetroad_draws_ = 0, wetroad_frames_ = 0;
+    // Run 20 GPU capture (D-133; harness/tools/gputrace.py, knowledge/HARNESS.md): with MTL_CAPTURE_ENABLED=1 a capture
+    // scope labelled "NFSMW frame" spans one present to the next, so `gpucapture start --label "NFSMW frame"` takes
+    // exactly one game frame (pop_smoke has no CAMetalLayer, so there is no Layer boundary). TEST ONLY
+    // RECOMP_GPU_LABELS=1: labels on the frame's command buffer, each pass (its targets), each draw (a debug group:
+    // effect, shader keys, the variant's non-zero fields, the bound stages' texture keys) and each bound game texture
+    // (its surface id, key and size). Both unset: nothing here runs.
+    const bool gpu_labels_ = [] { const char *e = getenv("RECOMP_GPU_LABELS"); return e && *e == '1'; }();
+    const bool cap_on_ = [] { const char *e = getenv("MTL_CAPTURE_ENABLED"); return e && *e == '1'; }();
+    id<MTLCaptureScope> cap_scope_ = nil;
+    void capture_scope_frame() {
+        if (!cap_on_)
+            return;
+        if (!cap_scope_) {
+            cap_scope_ = [[MTLCaptureManager sharedCaptureManager] newCaptureScopeWithCommandQueue:queue_];
+            cap_scope_.label = @"NFSMW frame";
+            fprintf(stderr, "[remaster] gpu capture: scope \"NFSMW frame\" (one present to the next), labels %s\n",
+                    gpu_labels_ ? "on" : "off");
+        } else {
+            [cap_scope_ endScope];
+        }
+        [cap_scope_ beginScope];
+    }
+    void gpu_label_tex(Tex *t, uint32_t sid, id<MTLTexture> use) {
+        if (t->label_key == t->desc.key + 1)
+            return;
+        t->label_key = t->desc.key + 1;
+        NSString *l = [NSString stringWithFormat:@"tex id %u k %016llx %ux%u", sid, (unsigned long long)t->desc.key,
+                                                 t->desc.width, t->desc.height];
+        t->texture.label = l;
+        if (use != t->texture && !use.label)   // the HD pack's or a player mod's replacement
+            use.label = [NSString stringWithFormat:@"replacement k %016llx", (unsigned long long)t->desc.key];
+    }
+    void gpu_label_draw(const HostD9Draw &d, uint64_t vs_key, uint64_t ps_key, const d9msl::PixelVariant &v,
+                        Tex *const *bound, uint32_t used) {
+        char b[768];
+        int n = snprintf(b, sizeof b, "draw %llu %s | vs %016llx ps %016llx |", (unsigned long long)draws_,
+                         d.label ? d.label : "-", (unsigned long long)vs_key, (unsigned long long)ps_key);
+        const std::pair<const char *, unsigned> f[] = {
+            {"sheen", v.roadsheen}, {"wetroad", v.wetroad}, {"pbrworld", v.pbrworld}, {"glass", v.glass},
+            {"water", v.water}, {"sky", v.sky}, {"carpaint", v.carpaint}, {"parallax", v.parallax},
+            {"smoke", v.smoke}, {"raindrop", v.raindrop}, {"soft", v.soft}, {"shadowpcf", v.shadowpcf},
+            {"pool", v.pool}, {"hdr", v.hdr}, {"surf", v.surf}, {"reactive", v.reactive}, {"fefloor", v.fefloor},
+            {"a2c", v.a2c}, {"alphak", v.alphak}};
+        for (const auto &kv : f)
+            if (kv.second && n > 0 && n < (int)sizeof b)
+                n += snprintf(b + n, sizeof b - n, " %s=%u", kv.first, kv.second);
+        for (uint32_t s = 0; s < 16; ++s)
+            if ((used >> s & 1) && bound[s] && n > 0 && n < (int)sizeof b)
+                n += snprintf(b + n, sizeof b - n, " | t%u k %016llx", s, (unsigned long long)bound[s]->desc.key);
+        [enc_ pushDebugGroup:[NSString stringWithUTF8String:b]];
+    }
     // Remaster run 13 road sheen (RECOMP_REMASTER_ROADSHEEN=1; A/B switch roadsheen): road programs whose highlight
     // lines the patch replaces (pixel_is_roadsheen, once per program), and the draws that got the variant.
     const bool roadsheen_on_ = [] { const char *e = getenv("RECOMP_REMASTER_ROADSHEEN"); return e && *e == '1'; }();
     std::unordered_map<uint64_t, bool> roadsheen_ps_;
     uint64_t roadsheen_draws_ = 0, roadsheen_frames_ = 0, roadsheen_fallback_ = 0, roadsheen_draws_at_present_ = 0;
+    // R3 run 18 material sets (orm_init): on only with the pack, 16 GB or more and the road sheen on. requested = first
+    // top-level uploads of a key with an ORM row; draws = draws bound with the ORM; missing = sheen draws whose ORM
+    // was not resident yet (drawn with today's sheen); fallbacks = roadsheen 2 shaders that failed (today's sheen).
+    bool orm_active_ = false;
+    uint64_t orm_rows_ = 0, orm_requested_ = 0, orm_draws_ = 0, orm_missing_ = 0, orm_fallback_ = 0;
+    // R3 run 22 (D-136): the road sheen mode a resident ORM gives: 3 = cavity + micro normals (review/run22/
+    // c-cavity-design.md); TEST RECOMP_REMASTER_MATERIALS_MODE=2 = the run-18 sheen on the same pack (the A/B arm).
+    // mode3_fallback_: mode-3 draws whose program did not patch or build, drawn as mode 2 (a real refusal; the reason
+    // is logged once per program as "not translated"). mode3_deferred_ (run 23): mode-3 draws drawn as mode 2 while
+    // their program compiles in the background (first sight without a warm seed entry).
+    const uint8_t orm_mode_ = [] { const char *e = getenv("RECOMP_REMASTER_MATERIALS_MODE"); return (uint8_t)(e && *e == '2' ? 2 : 3); }();
+    // R3 run 29 facade glint (orm_init, fg_select): on with RECOMP_REMASTER_FACADEGLINT=1, the material set and a
+    // glint.tsv. draws = draws bound with the glint; missing = listed draws whose ORM was not resident yet (plain);
+    // fallback = glint programs that failed (plain); deferred = drawn plain while their program compiles; skips:
+    // 0 program/vs/label/variant, 1 not the main view or alpha test, 2 stage 0 unusable or albedo not resident.
+    const bool fg_on_ = [] { const char *e = getenv("RECOMP_REMASTER_FACADEGLINT"); return e && *e == '1'; }();
+    bool fg_active_ = false;
+    std::unordered_set<uint64_t> fg_keys_;
+    NSUInteger fg_main_w_ = 0;
+    uint64_t fg_frames_ = 0, fg_draws_ = 0, fg_missing_ = 0, fg_fallback_ = 0, fg_deferred_ = 0, fg_skip_[3] = {};
+    uint64_t mode3_fallback_ = 0, mode3_deferred_ = 0;
+    // Run 23: every nil function() returned because its compile is still in flight; build() compares it around its
+    // two function() calls (last_build_deferred_).
+    uint64_t deferred_nil_ = 0;
+    bool last_build_deferred_ = false;
     // Remaster run 13 MetalFX upscaling (RECOMP_REMASTER_UPSCALE=1 Quality 1.5x | 2 Performance 2x, or a factor
     // 1.1-3; the core mod sets it from the `upscale` setting). 0: off, and nothing below is ever touched.
     const float upscale_factor_ = [] {
@@ -7142,6 +8327,23 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         return (f >= 1.1 && f <= 3.0) ? (float)f : 0.0f;
     }();
     const bool upscale_temporal_ = [] { const char *e = getenv("RECOMP_REMASTER_UPSCALE_TEMPORAL"); return e && *e == '1'; }();
+    // R3 run 22 (TEST): RECOMP_REMASTER_UPSCALE_MIPBIAS=<b> (e.g. -0.585 = log2(1/1.5), -1.585 = FSR2's log2(1/1.5) - 1)
+    // = the texture mip bias of scene-backing draws while upscaling (PixelVariant::mipbias, 1/64 steps, [-2, 2)); unset or
+    // upscaling off: 0 = nothing changes. "0" itself is a variant with bias(0.0) (the identity control).
+    const uint8_t mipbias_code_ = [this] {
+        const char *e = getenv("RECOMP_REMASTER_UPSCALE_MIPBIAS");
+        return e && *e && upscale_factor_ > 0.0f ? d9msl::mipbias_code((float)atof(e)) : (uint8_t)0;
+    }();
+    uint64_t mipbias_draws_ = 0;
+    // Run 15 Wave B (review/run15/waveb-plan.md P0): the consumers that switch the foundation on. temporal_on_: MetalFX
+    // temporal (WB2) needs upscaling on; ssr_on_: screen-space reflections (WB3, RECOMP_REMASTER_SSR=1, the core mod's
+    // `ssr`); ssr_strength_: RECOMP_REMASTER_SSR_STRENGTH percent 0..200 as a 0..2 weight. All unset: nothing changes.
+    const bool temporal_on_ = upscale_temporal_ && upscale_factor_ > 0.0f;
+    const bool ssr_on_ = [] { const char *e = getenv("RECOMP_REMASTER_SSR"); return e && *e == '1'; }();
+    const float ssr_strength_ = [] {
+        const char *e = getenv("RECOMP_REMASTER_SSR_STRENGTH");
+        return (float)std::clamp(e && *e ? atof(e) : 100.0, 0.0, 200.0) / 100.0f;
+    }();
     struct {
         bool checked = false, supported = false;
         bool open = false, begun_frame = false;
@@ -7169,22 +8371,54 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
     // _JITTER_PHASE=<k>: a fixed phase k (the gate 5.4 sign/size pair). _DEBUG=6 motion (hue = direction), 8 the
     // reprojected-depth error (green < 0.5 %, red above, blue disoccluded, purple depth edge), drawn over the scene
     // before 252. _LOG=<n>: one line per n window frames with that frame's GPU counters (the combined test's gates).
-    const bool fnd_on_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION"); return e && *e == '1'; }();
-    const int fnd_jitter_ = [] {
+    // Run 15 Wave B P0: the foundation runs when a consumer needs it (temporal_on_, ssr_on_) or the TEST env says so;
+    // temporal also turns the jitter on (RECOMP_REMASTER_FOUNDATION_JITTER=0 forces it off). fnd_surf_: the surface
+    // attachments S0/S1 (WB1b; RECOMP_REMASTER_FOUNDATION_SURF=1 TEST, ssr, temporal); fnd_s2_: S2 reactive (temporal
+    // and the TEST env only).
+    const bool fnd_on_ = temporal_on_ || ssr_on_ ||
+                         [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION"); return e && *e == '1'; }();
+    const int fnd_jitter_ = [](bool temporal) {
         const char *e = getenv("RECOMP_REMASTER_FOUNDATION_JITTER"), *k = getenv("RECOMP_REMASTER_FOUNDATION_JITTER_PHASE");
         if (k && *k)
             return 1000 + std::max(0, atoi(k));   // 1000 + a fixed phase
-        return e && *e == '1' ? 1 : 0;
-    }();
+        if (e && *e == '0')
+            return 0;
+        return (e && *e == '1') || temporal ? 1 : 0;
+    }(temporal_on_);
+    const bool fnd_surf_test_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_SURF"); return e && *e == '1'; }();
+    const bool fnd_surf_ = fnd_surf_test_ || ssr_on_ || temporal_on_;
+    const bool fnd_s2_ = fnd_surf_test_ || temporal_on_;
     const int fnd_debug_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_DEBUG"); return e ? atoi(e) : 0; }();
     const int fnd_log_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_LOG"); return e ? std::max(0, atoi(e)) : 0; }();
+    // Wave B WB1a TEST envs: _JITTER_AB=<k> (phase k in the A/B OLD periods, phase 0 otherwise; needs RECOMP_AB_PERIOD),
+    // _SOURCE=g (vectors from the mod camera RG when formed), _COLGATE=1 (the colour reprojection gate, with _LOG),
+    // _REACTIVE=1 (the reactive fallback without temporal).
+    const int fnd_jitter_ab_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_JITTER_AB"); return e && *e ? std::max(0, atoi(e)) : -1; }();
+    const bool fnd_source_g_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_SOURCE"); return e && *e == 'g'; }();
+    const bool fnd_colgate_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_COLGATE"); return e && *e == '1'; }();
+    const bool fnd_reactive_test_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_REACTIVE"); return e && *e == '1'; }();
     struct FndSlot {
         uint64_t serial = 0, frame = 0;
-        bool pending = false;
+        bool pending = false, still = false;
+        uint32_t reset = 0, windows = 0;
+        int step = 0;
+        double rdev = 0.0;   // R3 #2 (run 20): max |R - I| of this frame's vectors
     };
+    // TEST ONLY (R3 #2 controls, run 20): _JITTER_LEAK=1 adds the current jitter to R after rI is taken (W1-parked must
+    // FAIL); _JITTER_SIGN=-1 negates the halfpix jitter only (W1-jitter must FAIL by sign).
+    const bool fnd_jitter_leak_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_JITTER_LEAK"); return e && *e == '1'; }();
+    const double fnd_jitter_sign_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_JITTER_SIGN"); return e && atof(e) < 0.0 ? -1.0 : 1.0; }();
     struct {
         bool open = false, had_window = false, prev_valid = false, prev_cam_valid = false, resized = false;
         bool have_p = false, logged_p = false, prevz_valid = false, lib_tried = false;
+        bool prev2_valid = false, prevc_valid = false, motion_noprev = false, reactive_ok = false, still = false,
+             ab_logged = false;   // Wave B WB1a
+        int step = 0;
+        double rdev = 0.0;   // R3 #2 (run 20)
+        float zn = 0.0f, zf = 0.0f;
+        uint64_t still_frames = 0, frame_valid = 0, reactive_frames = 0, source_g = 0;
+        remaster_fnd::M4 vp_prev2{};
+        id<MTLTexture> prevc = nil, reactive = nil;
         uint32_t bb = 0, ds = 0;
         remaster_fnd::Plurality plur;
         std::unordered_map<uint64_t, int32_t> regs;   // vs key -> clip register (-1: no 4-dp4 oPos)
@@ -7200,7 +8434,7 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
                  vp_fallback = 0, gk_checked = 0, gk_agree = 0, gk_fail[6] = {}, selftest_fail = 0, motion = 0,
                  motion_skip[4] = {}, resets = 0, reset_why[remaster_fnd::RESET_COUNT] = {}, jittered = 0;
         double selftest_max = 0.0, off_max = 0.0;
-        uint64_t q_sum[17] = {};   // harvested GPU counters since the last report (q[3]/[4] as one 64-bit sum)
+        uint64_t q_sum[27] = {};   // harvested GPU counters since the last report (q[3]/[4], [22]/[23], [24]/[25] as 64-bit sums)
         uint64_t q_frames = 0, q_max = 0, presents = 0, last_frames = 0;
         id<MTLLibrary> lib = nil;
         id<MTLComputePipelineState> cs[2] = {nil, nil};
@@ -7208,11 +8442,526 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
         id<MTLBuffer> q = nil;   // 8 slots x 32 words, shared
         FndSlot slot[8];
     } fnd_;
+    // Run 15 Wave B P0 contract: the consumers' view of the last closed scene window (remaster_fnd::FndFrame; WB1a
+    // fills both at the end of fnd_end, WB1b's surf_frame(FndFrame &) adds s0-s2). fnd_tex_ holds the strong refs
+    // that FndFrame's void * texture fields point at (__bridge). Consumers read fnd_frame() between fnd_end and
+    // upscale_end only; fnd_frame_.valid is false until WB1a fills it (consumers then skip and count).
+    remaster_fnd::FndFrame fnd_frame_{};
+    struct {
+        id<MTLTexture> motion = nil, s0 = nil, s1 = nil, s2 = nil, scene = nil, depth = nil;
+    } fnd_tex_;
+    const remaster_fnd::FndFrame &fnd_frame() const { return fnd_frame_; }
+    // ---- Run 15 Wave B WB1b: surface attachments (surface.h; review/run15/waveb-plan.md WB1b) ---------------------
+    // fnd_surf_ -> S0 (colour 4, RGBA16F: world normal oct / roughness / linear view depth) and S1 (colour 5, RGBA8:
+    // tag / F0 / flags); fnd_s2_ -> S2 (colour 6, R8 reactive, blend max). Only on the in-window single-sample scene
+    // passes (colour 0 = the scene back buffer, depth = the scene depth, no guest colour 1-3); cleared at the window's
+    // first such pass, loaded after. Every pipeline used in such a pass declares 4-6 (write mask 0 unless the draw's
+    // variant writes them; the warm seed is skipped for those: its spec has colours 0-3 only). Unset envs/consumers:
+    // nothing here runs (surf_active() is false, no key changes, no attachments). MSAA scenes: no surface (counted).
+    // TEST views (RECOMP_REMASTER_FOUNDATION_DEBUG): 1 world normal, 2 roughness, 3 tag palette, 4 F0, 5 stale
+    // (green: S0.w matches the scene depth to 1/512, red: stale), 7 reactive; drawn over the scene at the window end.
+    // Run 20: 8 (S0.w depth kind: green view depth, blue reciprocal, red neither). Run 21: 9 (W1-stale by distance:
+    // r = the relative S0.w error x 64, g = 1 (the view's marker), b = log2(view depth) / 14; untagged pixels black).
+    // A list ("3,1,5") with RECOMP_REMASTER_FOUNDATION_DEBUG_PERIOD=<s> cycles the views (one run dumps several).
+    const std::vector<int> surf_debug_list_ = [] {
+        std::vector<int> l;
+        const char *e = getenv("RECOMP_REMASTER_FOUNDATION_DEBUG");
+        for (const char *q = e; q && *q;) {
+            const int v = atoi(q);
+            if (v == 1 || v == 2 || v == 3 || v == 4 || v == 5 || v == 7 || v == 8 || v == 9)
+                l.push_back(v);
+            q = strpbrk(q, ",:");   // ':' too (the harness's T71_ENV list is comma-separated)
+            q = q ? q + 1 : nullptr;
+        }
+        return l;
+    }();
+    const double surf_debug_period_ = [] {
+        const char *e = getenv("RECOMP_REMASTER_FOUNDATION_DEBUG_PERIOD");
+        return e ? std::max(0.0, atof(e)) : 0.0;
+    }();
+    const bool surf_debug_ = !surf_debug_list_.empty();
+    int surf_view() const {
+        if (surf_debug_list_.empty())
+            return 0;
+        const size_t i = surf_debug_period_ > 0.0 ? (size_t)(CACurrentMediaTime() / surf_debug_period_) % surf_debug_list_.size() : 0;
+        return surf_debug_list_[i];
+    }
+    struct {
+        id<MTLTexture> s0 = nil, s1 = nil, s2 = nil;
+        id<MTLRenderCommandEncoder> enc = nil;   // the pass that has the attachments (begin_pass)
+        bool want = false, s01 = false, s2on = false, debugging = false, logged = false, logged_msaa = false;
+        uint64_t cleared_window = ~0ull, mode_call = ~0ull;
+        int mode = 0;   // this draw's attachment use: 0 none (mask 0), 1 S0/S1, 2 S2 (valid for draw mode_call only)
+        std::unordered_map<uint64_t, int8_t> slot;     // (vs, ps, variants) -> the normal slot or -1
+        std::unordered_map<uint64_t, uint8_t> ps_cls;  // ps key -> 1 road, 2 water, 0 neither
+        std::unordered_map<uint64_t, int32_t> clip;    // vs key -> the clip constant register or -1
+        std::unordered_map<uint64_t, id<MTLRenderPipelineState>> dbg_pso;
+        id<MTLLibrary> dbg_lib = nil;
+        bool dbg_tried = false;
+        uint64_t windows = 0, passes = 0, skip_msaa = 0, skip_mrt = 0, skip_depth = 0, skip_size = 0, frames = 0;
+        uint64_t draws[remaster_surf::C_COUNT] = {}, derived = 0, reactive = 0, none = 0, nocam = 0, failed = 0,
+                 nonrigid = 0, world_t_n = 0;
+        double world_t_err = 0.0;
+        // R3 #1 (run 20; technical-track.md 3.1): world_t_* score only the draws whose clip block is in the frame's
+        // VP_k cluster (W = I for those); placed models (their own W) are counted apart. wt: this frame's (error,
+        // block hash) per scored IDI_WORLD_FX draw, scored at fnd_end once the cluster is known.
+        std::vector<std::pair<double, uint64_t>> wt;
+        double world_t_sum = 0.0, world_t_all = 0.0;
+        uint64_t world_t_other = 0, world_t_all_n = 0, block_logged = 0, dbg_size_skip = 0;
+        bool dbg_pending = false;
+    } surf_;
+    // TEST ONLY (RECOMP_REMASTER_FOUNDATION_SURF_FLIP=1, the R3 #1 fail-on-purpose control): negate the normal rows.
+    const bool surf_flip_ = [] { const char *e = getenv("RECOMP_REMASTER_FOUNDATION_SURF_FLIP"); return e && *e == '1'; }();
+    void surf_score_world_t(const remaster_fnd::Pick &pk) {
+        if (surf_.wt.empty())
+            return;
+        std::vector<uint64_t> in;
+        if (pk.valid && pk.block)
+            for (const auto &x : fnd_.plur.e)
+                if (remaster_fnd::same_block(x.block, pk.block))
+                    in.push_back(x.hash);
+        for (const auto &w : surf_.wt)
+            if (std::find(in.begin(), in.end(), w.second) != in.end()) {
+                surf_.world_t_err = std::max(surf_.world_t_err, w.first);
+                surf_.world_t_sum += w.first;
+                ++surf_.world_t_n;
+            } else {
+                ++surf_.world_t_other;
+            }
+        surf_.wt.clear();
+        // TEST (RECOMP_REMASTER_FOUNDATION_LOG > 0): the cluster's block and the camera V rows, 3 times from frame 300
+        // on, for the unit test N6 (the game's own convention; d3d9_tests test_surface_basis)
+        if (fnd_log_ > 0 && pk.valid && pk.block && fnd_.cam.have && surf_.frames >= 300 && surf_.block_logged < 3 &&
+            surf_.frames % 100 == 0) {
+            ++surf_.block_logged;
+            const remaster_fnd::M4 &V = fnd_.cam.V;
+            fprintf(stderr, "[remaster] foundation surface block: frame %llu c", (unsigned long long)surf_.frames);
+            for (int i = 0; i < 16; ++i)
+                fprintf(stderr, " %.9g", pk.block[i]);
+            fprintf(stderr, " | V");
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j)
+                    fprintf(stderr, " %.9g", V.m[i][j]);
+            fprintf(stderr, "\n");
+        }
+    }
+    bool surf_active() const { return surf_.enc && surf_.enc == enc_; }
+    int surf_mode() const { return surf_.mode_call == stat_calls_ ? surf_.mode : 0; }
+    // Pipeline caches: the key gains the surface layout only inside a surface pass (unchanged otherwise).
+    uint64_t surf_pso_key(uint64_t key, int mode) {
+        return surf_active() ? mix(key, 0x5355524600ull | (uint64_t)mode << 4 | (surf_.s01 ? 1u : 0u) | (surf_.s2on ? 2u : 0u))
+                             : key;
+    }
+    bool surf_pso(MTLRenderPipelineDescriptor *pd, int mode) {
+        if (!surf_active())
+            return false;
+        const MTLPixelFormat f[3] = {MTLPixelFormatRGBA16Float, MTLPixelFormatRGBA8Unorm, MTLPixelFormatR8Unorm};
+        for (int i = 0; i < 3; ++i) {
+            if (i < 2 ? !surf_.s01 : !surf_.s2on)
+                continue;
+            MTLRenderPipelineColorAttachmentDescriptor *a = pd.colorAttachments[remaster_surf::kAttS0 + i];
+            a.pixelFormat = f[i];
+            const bool on = i < 2 ? mode == 1 : mode == 2;
+            a.writeMask = on ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
+            if (on && i == 2) {   // reactive: the strongest effect over the pixel wins
+                a.blendingEnabled = YES;
+                a.rgbBlendOperation = a.alphaBlendOperation = MTLBlendOperationMax;
+                a.sourceRGBBlendFactor = a.destinationRGBBlendFactor = MTLBlendFactorOne;
+                a.sourceAlphaBlendFactor = a.destinationAlphaBlendFactor = MTLBlendFactorOne;
+            }
+        }
+        return true;
+    }
+    id<MTLTexture> surf_texture(id<MTLTexture> t, MTLPixelFormat f, NSUInteger w, NSUInteger h) {
+        if (t && t.width == w && t.height == h)
+            return t;
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:f width:w height:h mipmapped:NO];
+        td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        td.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> n = [mtl_ newTextureWithDescriptor:td];
+        note_alloc(AS_TEXTURE, n, w, h, 1, 0);
+        return n;
+    }
+    // begin_pass, right before the encoder: colour 4-6 on an in-window scene pass.
+    void surf_attach(MTLRenderPassDescriptor *rp, const HostD9Target &t) {
+        surf_.want = false;
+        if (!(fnd_surf_ || fnd_s2_) || !fnd_on_ || !fnd_.open || surf_.debugging || !pass_color_[0] || !pass_color_id_ ||
+            pass_color_id_ != fnd_.bb)
+            return;
+        if (pass_samples_ != 1) {
+            if (!surf_.logged_msaa) {
+                surf_.logged_msaa = true;
+                fprintf(stderr, "[remaster] foundation surface: the scene is multisampled (Smooth edges on): no surface "
+                                "attachments (single-sample scenes only)\n");
+            }
+            ++surf_.skip_msaa;
+            return;
+        }
+        if (pass_color_[1] || pass_color_[2] || pass_color_[3]) {
+            ++surf_.skip_mrt;
+            return;
+        }
+        if (t.color[0].level || t.color[0].face || !pass_depth_ || (fnd_.ds && t.depth.id != fnd_.ds)) {
+            ++surf_.skip_depth;
+            return;
+        }
+        const NSUInteger w = pass_color_[0].width, h = pass_color_[0].height;
+        if (pass_depth_.width != w || pass_depth_.height != h) {
+            ++surf_.skip_size;
+            return;
+        }
+        surf_.s01 = fnd_surf_;
+        surf_.s2on = fnd_s2_;
+        if (surf_.s01) {
+            surf_.s0 = surf_texture(surf_.s0, MTLPixelFormatRGBA16Float, w, h);
+            surf_.s1 = surf_texture(surf_.s1, MTLPixelFormatRGBA8Unorm, w, h);
+        }
+        if (surf_.s2on)
+            surf_.s2 = surf_texture(surf_.s2, MTLPixelFormatR8Unorm, w, h);
+        if ((surf_.s01 && (!surf_.s0 || !surf_.s1)) || (surf_.s2on && !surf_.s2))
+            return;
+        const bool first = surf_.cleared_window != fnd_.windows;
+        if (first) {
+            surf_.cleared_window = fnd_.windows;
+            ++surf_.windows;
+        }
+        if (!surf_.logged) {
+            surf_.logged = true;
+            fprintf(stderr, "[remaster] foundation surface: %s%s at %lux%lu (colour 4 S0 RGBA16F, 5 S1 RGBA8, 6 S2 R8)\n",
+                    surf_.s01 ? "S0/S1" : "", surf_.s2on ? (surf_.s01 ? " + S2" : "S2") : "", (unsigned long)w,
+                    (unsigned long)h);
+        }
+        id<MTLTexture> tx[3] = {surf_.s01 ? surf_.s0 : nil, surf_.s01 ? surf_.s1 : nil, surf_.s2on ? surf_.s2 : nil};
+        for (int i = 0; i < 3; ++i) {
+            if (!tx[i])
+                continue;
+            MTLRenderPassColorAttachmentDescriptor *a = rp.colorAttachments[remaster_surf::kAttS0 + i];
+            a.texture = tx[i];
+            a.loadAction = first ? MTLLoadActionClear : MTLLoadActionLoad;
+            a.clearColor = MTLClearColorMake(0, 0, 0, 0);
+            a.storeAction = MTLStoreActionStore;
+        }
+        surf_.want = true;
+        ++surf_.passes;
+    }
+    // draw(), after the variant selection and before the pipeline: the class, the values and the variant halves.
+    void surf_select(const HostD9Draw &d, const uint32_t *rs, uint64_t vs_key, uint64_t ps_key, const d9sh::Program &vp,
+                     const d9sh::Program &pp, d9msl::PixelVariant &pv, d9msl::VertexVariant &vv) {
+        using namespace remaster_surf;
+        surf_.mode = 0;
+        if (!surf_active())
+            return;
+        surf_.mode_call = stat_calls_;
+        const char *L = d.label ? d.label : "";
+        auto is = [L](const char *p) { return !strncmp(L, p, strlen(p)); };
+        if (pv.fefloor || vv.fefloor) {
+            ++surf_.none;
+            return;
+        }
+        if (rs[27]) {   // blended: effects are reactive; decals and the rest keep the surface under them
+            const uint32_t src = rs[19], dst = rs[20];
+            const bool fx = is("IDI_PARTICLES_FX/") || is("IDI_RAIN_DROP_FX/") || (dst == 2 && !is("IDI_SKYBOX_FX/"));
+            if (!surf_.s2on || !fx) {
+                ++surf_.none;
+                return;
+            }
+            d9msl::PixelVariant t = pv;
+            t.reactive = dst == 2 ? (src == 5 ? 3 : 2) : 1;
+            if (!function(ps_key, pp, t, true)) {
+                ++surf_.failed;
+                return;
+            }
+            pv = t;
+            surf_.mode = 2;
+            ++surf_.reactive;
+            return;
+        }
+        if (!surf_.s01) {
+            ++surf_.none;
+            return;
+        }
+        if (!fnd_.cam.have) {   // no camera yet this window: no world normal
+            ++surf_.nocam;
+            return;
+        }
+        uint8_t cls = C_UNKNOWN, flags = 0;
+        float f0 = -1.0f;
+        if (is("IDI_SKYBOX_FX/")) {
+            cls = C_SKY;
+        } else if (is("IDI_CAR_FX/")) {
+            flags |= remaster_fnd::SURF_DYNAMIC;
+            const float f = d.vconst && d.vconst_count > 23 ? car_f0(d.vconst[4 * 22], d.vconst[4 * 23]) : 0.3f;
+            cls = car_class(f);
+            if (cls == C_CAR_PAINT)
+                f0 = std::max(0.04f, f);
+        } else if (is("IDI_GLOSSYWINDOW_FX/")) {
+            cls = C_GLASS;
+        } else if (is("IDI_TREE_FX/")) {
+            cls = C_FOLIAGE;
+        } else if (is("IDI_WORLD")) {   // WORLD, WORLDNORMALMAP, WORLDREFLECT, WORLDBONE
+            auto it = surf_.ps_cls.find(ps_key);
+            if (it == surf_.ps_cls.end())
+                it = surf_.ps_cls.emplace(ps_key, d9msl::pixel_is_water(pp)                                     ? 2
+                                                  : d9msl::pixel_is_roadsheen(pp) || d9msl::pixel_is_wetroad(pp) ? 1
+                                                                                                                  : 0).first;
+            // R3 #1 (run 20): water needs the water feature's own test too (a water texture at stage 0: water_key);
+            // the program shape alone fits most world programs (R20N: walls tagged WATER, 2.2 M "water" draws)
+            const Tex *st0 = d.sampler_texture[0] ? tex_ptr(d.sampler_texture[0]) : nullptr;
+            const bool wkey = pv.water || (st0 && st0->desc.key && water_key(st0->desc.key));
+            cls = it->second == 1                ? C_ROAD
+                  : it->second == 2 && wkey      ? C_WATER
+                  : is("IDI_WORLDNORMALMAP_FX/") ? C_WORLD_NM
+                                                 : C_WORLD;
+            if (is("IDI_WORLDBONE_FX/"))
+                flags |= remaster_fnd::SURF_DYNAMIC;
+        }
+        if (!cls) {
+            ++surf_.none;
+            return;
+        }
+        if (rs[15] && (rs[25] == 5 || rs[25] == 7) && cls != C_ROAD && cls != C_WATER && cls != C_SKY) {
+            flags |= remaster_fnd::SURF_ALPHA_TEST;
+            if (cls == C_WORLD || cls == C_WORLD_NM)
+                cls = C_FOLIAGE;
+        }
+        const Prior pr = prior(cls);
+        D9SurfParams sp{};
+        const remaster_fnd::M4 &V = fnd_.cam.V;
+        for (int k = 0; k < 3; ++k) {
+            float *row = k == 0 ? sp.vt0 : k == 1 ? sp.vt1 : sp.vt2;
+            for (int j = 0; j < 3; ++j)
+                row[j] = (float)(surf_flip_ ? -V.m[k][j] : V.m[k][j]);   // run 20: FLIP turns the derived normal too
+        }
+        const double vw = d.viewport[2] * (double)pass_scale_, vh = d.viewport[3] * (double)pass_scale_;
+        sp.proj[0] = fnd_.have_p && fnd_.p_last.m[0][0] != 0.0 ? (float)(1.0 / fnd_.p_last.m[0][0]) : 1.0f;
+        sp.proj[1] = fnd_.have_p && fnd_.p_last.m[1][1] != 0.0 ? (float)(1.0 / fnd_.p_last.m[1][1]) : -1.0f;
+        sp.proj[2] = vw > 0.0 ? (float)(2.0 / vw) : 0.0f;
+        sp.proj[3] = vh > 0.0 ? (float)(2.0 / vh) : 0.0f;
+        // the vertex normal: a free varying, NORMAL0 and a rigid world matrix; else the depth-derivative normal
+        float T[12];
+        int slot = -1;
+        uint64_t tblock = 0;   // R3 #1: the clip block's hash (the world T check's cluster membership)
+        if (cls != C_SKY && !(d.pool_fuse && d.pool_block)) {
+            auto ci = surf_.clip.find(vs_key);
+            if (ci == surf_.clip.end()) {
+                uint32_t a = 0;
+                ci = surf_.clip.emplace(vs_key, d9msl::vertex_clip_regs(vp, &a) && a < 252 ? (int32_t)a : -1).first;
+            }
+            const int32_t a = ci->second;
+            if (a >= 0 && d.vconst && (uint32_t)a + 4 <= d.vconst_count) {
+                if (normal_rows(d.vconst + 4 * a, V.m, T)) {
+                    tblock = remaster_fnd::block_hash(d.vconst + 4 * a);
+                    if (surf_flip_)
+                        for (float &x : T)
+                            x = -x;
+                    const uint64_t sk = mix(mix(vs_key, ps_key), pv.key() ^ vv.key() * 31);
+                    auto si = surf_.slot.find(sk);
+                    if (si == surf_.slot.end())
+                        si = surf_.slot.emplace(sk, (int8_t)d9msl::surf_slot(vp, pp, vv, pv)).first;
+                    slot = si->second;
+                } else {
+                    ++surf_.nonrigid;
+                }
+            }
+        }
+        d9msl::PixelVariant t = pv;
+        d9msl::VertexVariant tv = vv;
+        bool ok = false;
+        if (slot >= 4) {
+            t.surf = (uint8_t)slot;
+            tv.surf = (uint8_t)slot;
+            ok = function(vs_key, vp, t, false, tv) && function(ps_key, pp, t, true);
+        }
+        if (!ok) {
+            flags |= SURF_DERIVED_N;
+            t = pv;
+            tv = vv;
+            t.surf = 1;
+            ok = function(ps_key, pp, t, true);
+        }
+        if (!ok) {
+            ++surf_.failed;
+            return;
+        }
+        sp.tag[0] = cls / 255.0f;
+        sp.tag[1] = f0 >= 0.0f ? f0 : pr.f0;
+        sp.tag[2] = flags / 255.0f;
+        sp.tag[3] = pr.rough;
+        pv = t;
+        vv = tv;
+        surf_.mode = 1;
+        ++surf_.draws[cls];
+        if (flags & SURF_DERIVED_N)
+            ++surf_.derived;
+        if (tv.surf) {
+            [enc_ setVertexBytes:T length:sizeof T atIndex:20];
+            if (is("IDI_WORLD_FX/")) {   // the VP_k cluster's world geometry has W = I: T must be the identity
+                double e = 0.0;
+                for (int k = 0; k < 3; ++k)
+                    for (int i = 0; i < 3; ++i)
+                        e = std::max(e, std::fabs(T[4 * k + i] - (k == i ? 1.0 : 0.0)));
+                surf_.world_t_all = std::max(surf_.world_t_all, e);   // every world draw (the run-15 number)
+                ++surf_.world_t_all_n;
+                if (surf_.wt.size() < 65536)
+                    surf_.wt.emplace_back(e, tblock);
+            }
+        }
+        [enc_ setFragmentBytes:&sp length:sizeof sp atIndex:6];
+    }
+    // fnd_end (before the motion pass): this window's S0-S2 into the FndFrame, the TEST view, the report.
+    void surf_frame(remaster_fnd::FndFrame &f) {
+        const bool have = (fnd_surf_ || fnd_s2_) && surf_.cleared_window == fnd_.windows;
+        fnd_tex_.s0 = have && surf_.s01 ? surf_.s0 : nil;
+        fnd_tex_.s1 = have && surf_.s01 ? surf_.s1 : nil;
+        fnd_tex_.s2 = have && surf_.s2on ? surf_.s2 : nil;
+        f.s0 = (__bridge void *)fnd_tex_.s0;
+        f.s1 = (__bridge void *)fnd_tex_.s1;
+        f.s2 = (__bridge void *)fnd_tex_.s2;
+        if (!(fnd_surf_ || fnd_s2_))
+            return;
+        if (have) {
+            ++surf_.frames;
+            if (surf_debug_)   // R3 #1 (run 20): drawn at present over the finished frame (exact colours, no grade/HUD)
+                surf_.dbg_pending = true;
+        }
+        if (surf_.frames == 1 || (have && surf_.frames % 1800 == 0) || (fnd_log_ && have && surf_.frames % (uint64_t)fnd_log_ == 0)) {
+            const uint64_t *n = surf_.draws;
+            fprintf(stderr,
+                    "[remaster] foundation surface: frames %llu windows %llu passes %llu (no surface: msaa %llu mrt %llu "
+                    "depth %llu size %llu) | draws road %llu paint %llu chrome %llu car %llu glass %llu water %llu world "
+                    "%llu world_nm %llu foliage %llu sky %llu | derived %llu reactive %llu none %llu nocam %llu failed %llu "
+                    "nonrigid %llu | world T err max %.5f (n %llu) mean %.5f other %llu all max %.5f (n %llu)%s\n",
+                    (unsigned long long)surf_.frames, (unsigned long long)surf_.windows, (unsigned long long)surf_.passes,
+                    (unsigned long long)surf_.skip_msaa, (unsigned long long)surf_.skip_mrt,
+                    (unsigned long long)surf_.skip_depth, (unsigned long long)surf_.skip_size, (unsigned long long)n[1],
+                    (unsigned long long)n[2], (unsigned long long)n[3], (unsigned long long)n[4], (unsigned long long)n[5],
+                    (unsigned long long)n[6], (unsigned long long)n[7], (unsigned long long)n[8], (unsigned long long)n[9],
+                    (unsigned long long)n[10], (unsigned long long)surf_.derived, (unsigned long long)surf_.reactive,
+                    (unsigned long long)surf_.none, (unsigned long long)surf_.nocam, (unsigned long long)surf_.failed,
+                    (unsigned long long)surf_.nonrigid, surf_.world_t_err, (unsigned long long)surf_.world_t_n,
+                    surf_.world_t_n ? surf_.world_t_sum / (double)surf_.world_t_n : 0.0,
+                    (unsigned long long)surf_.world_t_other, surf_.world_t_all, (unsigned long long)surf_.world_t_all_n,
+                    surf_flip_ ? " FLIP (TEST)" : "");
+        }
+    }
+    // TEST ONLY: one surface view drawn over the scene back buffer (a pass of its own, no surface attached).
+    // R3 #1 (run 20): called from present() with the presented back buffer (before run 20 it drew over the scene
+    // back buffer at fnd_end, so the game's post chain graded the palette and the HUD covered it: surf_px could not
+    // decode the views). Only when the back buffer has S0's size.
+    void surf_debug_view(uint32_t bb) {
+        if (!surf_.dbg_tried) {
+            surf_.dbg_tried = true;
+            static const char kSurfDbg[] =
+                "#include <metal_stdlib>\nusing namespace metal;\n"
+                "struct SdOut { float4 pos [[position]]; };\n"
+                "vertex SdOut surf_dbg_vs(uint vid [[vertex_id]]) {\n"
+                "    float2 c = float2(float(vid & 1), float((vid >> 1) & 1));\n"
+                "    SdOut o; o.pos = float4(c * 2.0 - 1.0, 0.0, 1.0); return o;\n}\n"
+                "static float3 oct_dec(float2 e) {\n"
+                "    float3 n = float3(e, 1.0 - abs(e.x) - abs(e.y));\n"
+                "    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * select(float2(-1.0), float2(1.0), n.xy >= 0.0);\n"
+                "    return normalize(n);\n}\n"
+                "constant float3 pal[11] = { float3(0.0), float3(0.45, 0.45, 0.5), float3(1.0, 0.1, 0.1), float3(1.0, 1.0, 0.2),\n"
+                "    float3(0.6, 0.3, 0.1), float3(0.2, 0.9, 1.0), float3(0.1, 0.2, 1.0), float3(0.85, 0.75, 0.6),\n"
+                "    float3(0.9, 0.5, 0.9), float3(0.1, 0.8, 0.1), float3(0.6, 0.8, 1.0) };\n"
+                "fragment float4 surf_dbg_fs(SdOut in [[stage_in]], texture2d<float> s0 [[texture(0)]],\n"
+                "                            texture2d<float> s1 [[texture(1)]], texture2d<float> s2 [[texture(2)]],\n"
+                "                            depth2d<float> z [[texture(3)]], constant float4 &k [[buffer(0)]]) {\n"
+                "    uint2 p = uint2(in.pos.xy);\n"
+                "    int view = int(k.x);\n"
+                "    if (view == 7) { float r = s2.read(p).r; return float4(r, r, r, 1.0); }\n"
+                "    float4 a = s0.read(p), b = s1.read(p);\n"
+                "    int tag = int(b.r * 255.0 + 0.5);\n"
+                "    if (view == 3) return float4(pal[min(tag, 10)], 1.0);\n"
+                "    if (tag == 0) return float4(0.0, 0.0, 0.0, 1.0);\n"
+                "    if (view == 1) return float4(oct_dec(a.xy) * 0.5 + 0.5, 1.0);\n"
+                "    if (view == 2) return float4(a.zzz, 1.0);\n"
+                "    if (view == 4) return float4(b.ggg, 1.0);\n"
+                "    float d = z.read(p);\n"
+                "    float den = d - k.z;   // run 20: negative for a D3D projection (P22 > 1): max(den, 1e-9) made every pixel stale\n"
+                "    float lin = k.w / (abs(den) > 1.0e-9 ? den : -1.0e-9);\n"
+                "    float rel = abs(a.w - lin) / max(lin, 1.0e-4);\n"
+                "    if (view == 9)   // run 21 TEST: r = rel x 64 (r >= 0.125 = stale by view 5's 1/512), g = 1, b = log2(depth) / 14\n"
+                "        return float4(min(rel * 64.0, 1.0), 1.0, clamp(log2(max(lin, 1.0)) / 14.0, 0.0, 1.0), 1.0);\n"
+                "    if (view == 8) {   // run 20 TEST: which depth S0.w holds: green = view depth, blue = its reciprocal\n"
+                "        if (rel < 1.0 / 512.0) return float4(0.0, 0.6, 0.0, 1.0);\n"
+                "        if (abs(a.w * lin - 1.0) < 1.0 / 512.0) return float4(0.0, 0.0, 0.8, 1.0);\n"
+                "        return float4(0.8, 0.0, 0.0, 1.0);\n"
+                "    }\n"
+                "    return rel < 1.0 / 512.0 ? float4(0.0, 0.6, 0.0, 1.0) : float4(0.8, 0.0, 0.0, 1.0);\n}\n";
+            NSError *error = nil;
+            surf_.dbg_lib = [mtl_ newLibraryWithSource:[NSString stringWithUTF8String:kSurfDbg] options:nil error:&error];
+            fprintf(stderr, "[remaster] foundation surface: debug views %zu (first %d, period %.1f s) %s%s%s\n",
+                    surf_debug_list_.size(), surf_view(), surf_debug_period_,
+                    surf_.dbg_lib ? "ready" : "FAILED", error && !surf_.dbg_lib ? ": " : "",
+                    error && !surf_.dbg_lib ? error.localizedDescription.UTF8String : "");
+        }
+        const int view = surf_view();
+        if (!surf_.dbg_lib || !view || (view == 7 ? !surf_.s2on : !surf_.s01))
+            return;
+        Tex *dt = fnd_.ds ? tex_ptr(fnd_.ds) : nullptr;
+        id<MTLTexture> z = dt ? (dt->drawn_depth ? dt->drawn_depth : dt->texture) : nil;
+        if ((view == 5 || view == 8 || view == 9) && (!z || z.sampleCount != 1 || !fnd_.have_p))
+            return;
+        Tex *btex = tex_ptr(bb);
+        if (!btex || !btex->texture || !surf_.s0 || btex->texture.width != surf_.s0.width ||
+            btex->texture.height != surf_.s0.height) {
+            ++surf_.dbg_size_skip;
+            return;
+        }
+        end_pass();
+        HostD9Target target{};
+        target.color[0].id = bb;
+        surf_.debugging = true;
+        const bool ok = begin_pass(target, false, nullptr, false, 0, false, 0) && enc_;
+        surf_.debugging = false;
+        if (!ok) {
+            end_pass();
+            return;
+        }
+        const MTLPixelFormat cf = pass_color_[0].pixelFormat;
+        id<MTLRenderPipelineState> pso = surf_.dbg_pso[(uint64_t)cf];
+        if (!pso) {
+            MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+            pd.vertexFunction = [surf_.dbg_lib newFunctionWithName:@"surf_dbg_vs"];
+            pd.fragmentFunction = [surf_.dbg_lib newFunctionWithName:@"surf_dbg_fs"];
+            pd.colorAttachments[0].pixelFormat = cf;
+            NSError *error = nil;
+            pso = [mtl_ newRenderPipelineStateWithDescriptor:pd error:&error];
+            surf_.dbg_pso[(uint64_t)cf] = pso;
+        }
+        if (pso) {
+            const NSUInteger tw = pass_color_[0].width, th = pass_color_[0].height;
+            es_ = EncoderState{};
+            [enc_ setRenderPipelineState:pso];
+            [enc_ setCullMode:MTLCullModeNone];
+            [enc_ setViewport:(MTLViewport){0, 0, (double)tw, (double)th, 0, 1}];
+            [enc_ setScissorRect:(MTLScissorRect){0, 0, tw, th}];
+            if (surf_.s01) {
+                [enc_ setFragmentTexture:surf_.s0 atIndex:0];
+                [enc_ setFragmentTexture:surf_.s1 atIndex:1];
+            }
+            if (surf_.s2on)
+                [enc_ setFragmentTexture:surf_.s2 atIndex:2];
+            if (view == 5 || view == 8 || view == 9)
+                [enc_ setFragmentTexture:z atIndex:3];
+            const float k[4] = {(float)view, 0.0f, (float)fnd_.p_last.m[2][2], (float)fnd_.p_last.m[3][2]};
+            [enc_ setFragmentBytes:k length:sizeof k atIndex:0];
+            [enc_ drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        }
+        end_pass();
+    }
+    // ---- end Wave B WB1b -----------------------------------------------------------------------------------------
     // Remaster run 13 Xbox 360 sky, our own version (RECOMP_REMASTER_SKY=1, set by core.nfsmw x360_sky 2; A/B switch
     // sky): the PC sky pass 0 combine in the 360 order and the 360 horizon distance (pixel_is_sky / vertex_is_sky).
     const bool sky_on_ = [] { const char *e = getenv("RECOMP_REMASTER_SKY"); return e && *e == '1'; }();
     std::unordered_map<uint64_t, bool> sky_ps_, sky_vs_;
     uint64_t sky_draws_ = 0, sky_vs_draws_ = 0, sky_all_ = 0, sky_frames_ = 0, sky_fallback_ = 0, sky_draws_at_present_ = 0;
+    // R3 run 17 Xbox 360 lens drops, our own version (RECOMP_REMASTER_RAINDROP=1, set by core.nfsmw rain_drops 1).
+    const bool raindrop_on_ = [] { const char *e = getenv("RECOMP_REMASTER_RAINDROP"); return e && *e == '1'; }();
+    const bool raindrop_forcefail_ = [] { const char *e = getenv("RECOMP_REMASTER_RAINDROP_FORCEFAIL"); return e && *e == '1'; }();
+    std::unordered_map<uint64_t, bool> raindrop_ps_;
+    uint64_t raindrop_draws_ = 0, raindrop_all_ = 0, raindrop_frames_ = 0, raindrop_fallback_ = 0;
     // Remaster run 13 natural glass (RECOMP_REMASTER_GLASS=1; A/B switch glass).
     const bool glass_on_ = [] { const char *e = getenv("RECOMP_REMASTER_GLASS"); return e && (*e == '1' || *e == '2'); }();
     // Remaster run 13 wall parallax (RECOMP_REMASTER_PARALLAX=1; A/B switch parallax).
@@ -7236,14 +8985,9 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
     }();
     const bool water_on_ = water_mode_ != 0;
     std::unordered_map<uint64_t, bool> water_ps_, water_vs_;
-    remaster_grass::State grass_;   // run 13 grass shells (grass.h)
-    float grass_eye_[3] = {};          // run 14: this frame's eye from a grass draw that has one (see grass_blades)
-    uint64_t grass_eye_frame_ = 0;
-    id<MTLBuffer> grass_arena_ = nil;   // run 14 grass blades: the root records (shared storage, grass_.b pages)
-    std::unordered_map<uint64_t, MTLVertexDescriptor *> grass_vdescs_;   // run 14: blade layouts by Layout hash
-    std::vector<remaster_grass::Run> grass_runs_;
     NSUInteger water_main_w_ = 0;
     const double water_t0_ = CACurrentMediaTime();
+    uint64_t fade_draws_ = 0, fade_frames_ = 0;   // run 27 scenery fade-in
     uint64_t water_draws_ = 0, water_frames_ = 0, water_fallback_ = 0, water_draws_at_present_ = 0, water_skip_[3] = {};
     // Remaster run 13 car reflections (RECOMP_REMASTER_CARENV=1; A/B switch carenv).
     const bool carenv_on_ = [] { const char *e = getenv("RECOMP_REMASTER_CARENV"); return e && (*e == '1' || *e == '2'); }();
@@ -7276,30 +9020,11 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
     bool wetroad_log_ = true;
     const double wetroad_t0_ = CACurrentMediaTime();
     uint64_t a2c_draws_ = 0, a2c_frames_ = 0;
-    // Remaster run 12 step 0 (TEST ONLY, RECOMP_REMASTER_PBRPROBE=1; allow list RECOMP_REMASTER_PBRPROBE_KEYS=<keys.tsv>,
-    // the rows marked "built"): the sun-share probe and census of WORLD lighting draws (review/run12/PLAN.md G0).
-    const bool pbrprobe_on_ = [] { const char *e = getenv("RECOMP_REMASTER_PBRPROBE"); return e && *e == '1'; }();
-    std::unordered_map<uint64_t, bool> pbr_ps_;
-    std::unordered_map<uint64_t, d9msl::SunFlow> pbr_vs_;
-    std::set<uint64_t> pbr_keys_;
-    bool pbr_keys_loaded_ = false, pbr_log_consts_ = true;
-    std::map<std::string, uint64_t> pbr_census_;   // "ps vs flow label view" -> draws (cumulative)
-    std::map<uint64_t, uint64_t> pbr_key_draws_;   // allow-list stage-0 key -> probed draws (cumulative)
-    uint64_t pbr_frames_ = 0, pbr_draws_ = 0, pbr_fallback_ = 0;
-    NSUInteger pbr_main_w_ = 0;
+    std::unordered_map<uint64_t, bool> pbr_ps_;   // WORLD lighting programs seen (pixel_is_pbrworld; the class is on the Program)
     // Remaster run 12 PBR step 2 pilot (TEST ONLY until the owner approves; review/run12/patch-plan.md):
     // RECOMP_REMASTER_PBRWORLD=1 with RECOMP_REMASTER_PBRWORLD_PACK=<dir> (slot index.tsv + manifest.tsv); strength,
-    // flat and debug switches in d3d9_shadergen.cpp (pbr_env). Never together with the probe (both use buffer(3)).
-    const bool pbw_active_ = [] {
-        const char *e = getenv("RECOMP_REMASTER_PBRWORLD"), *q = getenv("RECOMP_REMASTER_PBRPROBE");
-        if (!(e && *e == '1'))
-            return false;
-        if (q && *q == '1') {
-            fprintf(stderr, "[remaster] pbrworld: REFUSED (RECOMP_REMASTER_PBRPROBE is on; both use buffer 3)\n");
-            return false;
-        }
-        return true;
-    }();
+    // flat and debug switches in d3d9_shadergen.cpp (pbr_env). (Run 29: the run-12 sun-share probe was removed.)
+    const bool pbw_active_ = [] { const char *e = getenv("RECOMP_REMASTER_PBRWORLD"); return e && *e == '1'; }();
     const bool pbw_debug_ = [] { const char *d = getenv("RECOMP_REMASTER_PBRWORLD_DEBUG"); return d && *d >= '1' && *d <= '3'; }();
     std::unordered_map<uint64_t, float> pbw_ecos_;   // manifest: pilot key -> packed ecos and sig at the run's strength
     std::unordered_map<uint64_t, bool> pbw_vs_;      // vs key -> sun flow and pbr registers found
@@ -7309,7 +9034,6 @@ fragment float4 hdr_addback_fs(HV i [[stage_in]], float4 dst [[color(0)]], textu
     uint64_t pbw_frames_ = 0, pbw_draws_ = 0, pbw_fallback_ = 0, pbw_skip_[6] = {};
     uint64_t pbw_draws_at_present_ = 0;
     id<MTLBuffer> pwq_ = nil;
-    id<MTLBuffer> pbq_ = nil;
     std::vector<Tex *> tex_index_;
     // What the encoder was last told in this pass, so a draw that repeats it
     // makes no call. Reset whenever a new encoder starts or a clear or blit

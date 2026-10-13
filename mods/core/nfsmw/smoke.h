@@ -1,10 +1,10 @@
-/* Denser tyre smoke (run 14; design review/run14/smoke-design.md). Setting 'denser_smoke' (bool, live). Follows Look:
- * Xbox 360 on, PC off, Definitive the menu value (read here, not through k_look_follow).
+/* Denser tyre smoke (run 14; design review/run14/smoke-design.md). Setting 'denser_smoke' (bool, live); the
+ * Xbox 360 look that forced it on was retired in run 30 (D-170).
  *
  * How: a wrap on Emitter::SpawnParticles(float a, float b), thiscall, ret 8 (00509b30; xenon_fx.h wraps it too). The
  * first argument `a` is read once (00509e82) and feeds only the spawn count (design §1), so scaling it scales the
  * number of particles that call spawns and nothing else. Only the emitters in k_smoke_keys are touched; `a` is put
- * back after the call. Off, PC Look, or any other emitter: the hook only calls on (byte-identical).
+ * back after the call. Off, or any other emitter: the hook only calls on (byte-identical).
  *
  * Which emitters (OBS, offline diff of GLOBAL/attributes.bin, 8 Oct, scratchpad smoke/): the tyre-smoke records are
  * emitterdata collections keyed by Attrib::StringHash32 of their names. Rate field +0xc4 (particles per second; +0xc0
@@ -99,7 +99,7 @@ static uint64_t g_smoke_grp_patches, g_smoke_extra_zeroed;
 static int g_smoke_on = -1, g_smoke_calls_to_refresh, g_smoke_ab = -1, g_smoke_ab_phase = -1, g_smoke_log;
 static float g_smoke_kt = SMOKE_FILL_KT, g_smoke_kx = SMOKE_FILL_KX;   /* run 16 smokeperf (TEST env may change them) */
 static uint64_t g_smoke_marked;
-static uint64_t g_smoke_ab_period_ns, g_smoke_scaled, g_smoke_calls, g_smoke_tapered, g_spray_scaled;
+static uint64_t g_smoke_ab_period_ns, g_smoke_scaled, g_smoke_calls, g_smoke_tapered;
 
 /* Pure: 1 below SMOKE_TAPER_FULL live particles, 0 at SMOKE_TAPER_NONE and above, linear between. */
 static float smoke_taper_t(uint32_t live) {
@@ -144,57 +144,23 @@ static uint64_t smoke_now_ns(void) {   /* the kit's os_monotonic_ns clock (uptim
 #endif
     return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
 }
-/* Setting with the Look rule: Xbox 360 on, PC off, Definitive the saved value. Re-read every 64 calls (live). */
+/* The saved setting, re-read every 64 calls (live). Run 30 (D-170): the Xbox 360 look that forced it on is retired. */
 static int smoke_enabled(const PopModApi *api) {
+    (void)api;
     if (g_smoke_on >= 0 && g_smoke_calls_to_refresh-- > 0) return g_smoke_on;
     g_smoke_calls_to_refresh = 64;
-    int64_t look = 0, v = 1;
-    api->settings_get(api, "look", &look);
-    api->settings_get(api, "denser_smoke", &v);
-    g_smoke_on = look == 1 ? 1 : look == 2 ? 0 : v != 0;
+    g_smoke_on = setting("denser_smoke", 1) != 0;   /* run 29: through setting(), so the Light preset reaches it */
     return g_smoke_on;
 }
-/* Run-16 spray census (harness/spraycensus.sh, work/spray/census.log; Rosewood AI drive 200 s, rain vs dry particles):
- * the emitters of effect group 98c0d7ac spawn only in the rain. Left out: 0da41fa7 (group 21a3994d, rain 133 / dry 0,
- * too few to matter) and every emitter that also spawns in the dry. */
-#ifndef SPRAY_KEYS
-#define SPRAY_KEYS \
-    0x942117c8u,   /* rain 5850, dry 0 (group 98c0d7ac) */ \
-    0x09123526u,   /* rain 4370, dry 0 (group 98c0d7ac) */ \
-    0x1aa64781u    /* rain 2417, dry 0 (group 98c0d7ac) */
-#endif
-/* Run 16 (D-110, owner's HDR play test: "behind vehicles in the rain the spray tanks performance"; design
- * review/r2close/hdr-defects.md 5.3 F2a; HDRS: particles cost 1.4 ms median / 3.8 ms p90 with the float frame vs 0.85 ms
- * without): rain spray emitters are spawned at 1/K and drawn with the alpha exponent K, the smokeperf trick (same cloud,
- * 1/K of the fill). Hidden setting `spray_fill` = K (default 1 = as the game since 10 Oct, D-117: the HDRX and HDRG in-run
- * A/Bs showed no GPU gain); the PC Look draws the game's own. */
-static const uint32_t k_spray_keys[] = {
-    SPRAY_KEYS
-};
-static int smoke_spray_key(uint32_t key) {
-    for (unsigned i = 0; i < sizeof k_spray_keys / sizeof k_spray_keys[0]; ++i)
-        if (k_spray_keys[i] && k_spray_keys[i] == key) return 1;
-    return 0;
-}
-static float g_spray_k = -1.0f;
-static int g_spray_calls_to_refresh;
-static float spray_k(const PopModApi *api) {
-    if (g_spray_k >= 0.0f && g_spray_calls_to_refresh-- > 0) return g_spray_k;
-    g_spray_calls_to_refresh = 64;
-    int64_t look = 0, v = 1;
-    api->settings_get(api, "look", &look);
-    api->settings_get(api, "spray_fill", &v);
-    g_spray_k = look == 2 || v < 1 ? 1.0f : v > 4 ? 4.0f : (float)v;
-    return g_spray_k;
-}
-/* stuffpack_smoke, the same Look rule. */
+/* Run 16's rain-spray fill (hidden setting spray_fill, D-110) was retired at K = 1 (D-117: no GPU gain) and its code
+ * removed in run 29 (D-167): rain spray is spawned and drawn as the game does. */
+/* stuffpack_smoke, the same way. */
 static int smoke_sp_enabled(const PopModApi *api) {
     if (g_sp_on >= 0 && g_sp_calls_to_refresh-- > 0) return g_sp_on;
     g_sp_calls_to_refresh = 64;
-    int64_t look = 0, v = 1;
-    api->settings_get(api, "look", &look);
+    int64_t v = 1;
     api->settings_get(api, "stuffpack_smoke", &v);
-    g_sp_on = look == 1 ? 1 : look == 2 ? 0 : v != 0;
+    g_sp_on = v != 0;
     return g_sp_on;
 }
 /* TEST ONLY A/B: 1 = this period runs the original (no multiplier). */
@@ -349,9 +315,6 @@ static uint32_t smoke_alpha_k16(const PopModApi *api, uint32_t self) {
     } else if (g_smoke_grp_ever && smoke_extra_key(key) && smoke_added_to(smoke_emitter_group_key(self), key)) {
         if (!smoke_sp_enabled(api)) return 0;
         k = g_smoke_kx;
-    } else if (smoke_spray_key(key)) {   /* D-110 rain spray */
-        k = spray_k(api);
-        if (k <= 1.0f) return 0;
     } else {
         return 0;
     }
@@ -364,14 +327,13 @@ static uint32_t smoke_alpha_k16(const PopModApi *api, uint32_t self) {
 static void smoke_spawn(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
     (void)user;
     const uint32_t self = cpu->ecx, sp = cpu->esp;
-    if (!self || (!g_smoke_log && !g_smoke_grp_ever && !smoke_enabled(api) && spray_k(api) <= 1.0f)) { api->call_next(api, inv, cpu); return; }
+    if (!self || (!g_smoke_log && !g_smoke_grp_ever && !smoke_enabled(api))) { api->call_next(api, inv, cpu); return; }
     const uint32_t inst = get_u32(self + 0x7cu), coll = inst ? get_u32(inst + 4u) : 0, key = coll ? get_u32(coll + 0x20u) : 0;
     const uint32_t live = get_u32(SMOKE_LIVE);
     uint32_t a_bits = 0, scaled = 0;
     const int table = key && smoke_key(key);
     const int added = key && g_smoke_grp_ever && smoke_extra_key(key) && smoke_added_to(smoke_emitter_group_key(self), key);
-    const int spray = key && smoke_spray_key(key);
-    if (table || added || spray) {
+    if (table || added) {
         const int old = smoke_ab_old(api, live);
         float f = 1.0f;
         if (table && !old && smoke_enabled(api)) {
@@ -383,17 +345,6 @@ static void smoke_spawn(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation
             const float t = !old && smoke_sp_enabled(api) ? smoke_taper_t(live) : 0.0f;
             if (t < 1.0f) ++g_smoke_extra_zeroed;
             f *= t / g_smoke_kx;
-        }
-        if (spray && !old) {   /* D-110: rain spray at 1/K, drawn with the alpha exponent K (smoke_alpha_k16) */
-            const float k = spray_k(api);
-            if (k > 1.0f) {
-                f /= k;
-                if (++g_spray_scaled == 1) {
-                    char sl[160];
-                    snprintf(sl, sizeof sl, "core.nfsmw: rain spray fill K %.0f: first spray emitter scaled (key %08x)", k, key);
-                    api->log(api, sl);
-                }
-            }
         }
         if (f != 1.0f) {
             api->guest_read_u32(api, sp + 4u, &a_bits);
@@ -419,7 +370,7 @@ static void smoke_spawn(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation
     if (scaled) api->guest_write_u32(api, sp + 4u, a_bits);
     if (key) smoke_census(api, self, coll, key, b, caller, get_u32(self + 0x1cu) - before);
 }
-/* Installed in every Look: off is a pass-through (the setting is live). */
+/* Always installed: off is a pass-through (the setting is live). */
 static void smoke_init(const PopModApi *api) {
     const char *e = getenv("RECOMP_REMASTER_SMOKELOG");
     g_smoke_log = e && !strcmp(e, "1");

@@ -247,8 +247,10 @@ void Launcher::rebuild() {
             add(kOpenFolder, "Open game folder");
         if (info_.can_open_folder)
             add(kOpenFolder + 1000, "Open saves folder");
-        if (info_.can_open_folder && !info_.profile_dir.empty())   // NFSMW Remaster 2.0.4: player texture mods
+        if (info_.can_open_folder && !info_.profile_dir.empty())   // NFSMW Remaster run 19 (D-132): player texture mods
             add(kOpenFolder + 2000, "Open mods folder");
+        if (info_.can_open_folder && !info_.profile_dir.empty())   // NFSMW run 31: changed game files (DataMods)
+            add(kOpenFolder + 3000, "Open DataMods folder");
         add(kBack, "Back");
         break;
     case Screen::Importing:
@@ -559,6 +561,10 @@ void Launcher::activate(int id) {
     case kOpenFolder + 2000:   // <profile>/Mods, created here when the game has not made it yet
         os_mkdir((info_.profile_dir + "/Mods").c_str());
         platform_.open_folder(info_.profile_dir + "/Mods");
+        break;
+    case kOpenFolder + 3000:   // <profile>/DataMods, the same way
+        os_mkdir((info_.profile_dir + "/DataMods").c_str());
+        platform_.open_folder(info_.profile_dir + "/DataMods");
         break;
     case kStore:
         platform_.open_url(spec_.store_url);

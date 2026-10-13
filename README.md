@@ -17,6 +17,9 @@ trademarks of Electronic Arts Inc.
 2. Download the **Setup app** (`NFS-Most-Wanted-Native-Setup` disk image) from the
    [latest release](https://github.com/elforeign/nfs-most-wanted-mac/releases/latest), open it, and choose your game folder.
 3. Click **Build**. About 10 minutes later on a recent Mac (longer on older ones) the game is in your Applications folder.
+   Two optional extras can be ticked first, or added later by running Setup again: *Make HD textures* (about 1¼ hours on
+   an M5 Pro) and *Prepare the shaders* (about 35 minutes, for a smooth first drive).
+4. Questions, screenshots, mods: the **[Discord](https://discord.gg/d6HfMwdM9v)**.
 
 The Setup app holds no game files: it builds the game on your Mac from your copy. Step by step, including the one-time
 "Open Anyway" for an app that is not notarized by Apple: **[Getting started](docs/GETTING_STARTED.md)**. You can
@@ -27,12 +30,12 @@ also build in Terminal with `./setup.sh`.
 - Native Apple Silicon app (tested at 4K 60 fps on an M5 Pro MacBook Pro with HDR off; with HDR and 2x anti-aliasing
   heavy rain is near the limit), any resolution and aspect ratio, true widescreen (field of view, HUD and minimap
   moved out to the edges, widescreen movies fitted correctly).
-- **One Look setting:** **Definitive** (default), **Xbox 360** or **PC**. Definitive is every finished improvement:
-  rebuilt effects written for this port (glow, gentle auto brightness for tunnels, motion blur at speed, movie-style
-  depth of field), natural wet roads, road sun sheen, car and glass reflections, water, wall depth,
-  ambient occlusion, sun rays, lamp glow, softer shadows, soft particles, smooth leaves and fences, and a golden colour
-  filter to taste. *Xbox 360* is the console look rebuilt for this port; *PC* shows the game exactly as it shipped.
-  Every improvement also has its own switch.
+- **One Definitive look:** every finished improvement on: rebuilt effects written for this port (glow, gentle auto
+  brightness for tunnels, motion blur at speed, movie-style depth of field), natural wet roads, road sun sheen, car
+  and glass reflections, water, wall depth, ambient occlusion, sun rays, lamp glow, softer shadows, soft particles,
+  smooth leaves and fences. A **golden colour filter** switch gives the console's warm colour, and the features with
+  an Xbox 360 version (wet roads, car paint, glass, water, rain drops) let you pick it. Every improvement also has its
+  own switch.
 - **Day and weather cycles** (both optional): a slow day, and clear, overcast, rain and drying roads.
 - **Light pools** cast by the PC game's own street lamps and tunnel lights onto the road and walls.
 - Rear-view mirror: sharp HD picture, full scenery, car shadows, headlights and police lights, knocked-over props.

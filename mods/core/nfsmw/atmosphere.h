@@ -1,7 +1,7 @@
 /* atmosphere.h - Remaster run 14 B1 height fog and haze (review/run14/smoke-realism-design.md 8 (B) B1). Our own
  * code; PC data only. Included by nfsmw.c after upscale.h (it uses get_u32, get_float, setting, install_at, g_api).
  *
- * The setting `atmosphere` (off until the owner's eye check; Xbox 360 and PC looks off via k_look_follow) is read at
+ * The setting `atmosphere` (off until the owner's eye check) is read at
  * launch and handed to the kit as RECOMP_REMASTER_ATMOS=1; `atmosphere_strength` (%, live) scales the density. Off:
  * nothing here installs and the kit runs no pass.
  *
@@ -103,7 +103,7 @@ static void atm_send(uint32_t dev, float mode) {
 static void atm_begin(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
     (void)api; (void)cpu; (void)inv; (void)user;
     if (g_atm_open || get_u32(0x00925e90u) != 6) return;                          /* the world only, once a frame */
-    if (g_look == LOOK_PC || get_u32(0x009017fcu) || get_u32(0x00901828u)) return; /* the PC look: none */
+    if (get_u32(0x009017fcu) || get_u32(0x00901828u)) return; /* the PC colour treatment: none */
     const uint32_t dev = get_u32(0x00982bdcu);
     if (!dev) return;
     static uint32_t calls;

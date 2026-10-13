@@ -16,3 +16,10 @@ addr = 0x00a37f70
 size = 4
 stride = 4
 count = 1
+
+# Run 33 (D-183): the front end's root object (cFEng; the game's own calls pass [0091cadc] as `this` to
+# IsPackagePushed 00516b50). The offscreen runner (pop_smoke) reads the screen that has the player's input from it,
+# so a script's key waits for its screen (`await fe:<name>>0`). Read only; nothing in the game uses this entry.
+[globals.fe_root]
+addr = 0x0091cadc
+size = 4

@@ -8,6 +8,7 @@ You need:
   - Your own installed PC game folder: Need for Speed: Most Wanted, Black Edition, version 1.3 (English),
     the folder with speed.exe, GLOBAL, TRACKS, MOVIES and so on.
   - About 10 GB free, and about 10 minutes the first time on a recent Mac (longer on older ones).
+    Optional: "Make HD textures" adds about 1 1/4 hours and 6 GB; "Prepare the shaders" about 35 minutes.
 
 Opening the app the first time:
   This app is not notarized by Apple, so macOS blocks it the first time. Open it once, click Done,

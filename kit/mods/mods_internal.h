@@ -123,6 +123,7 @@ void mods_overlay_begin_init(uint32_t owner);
 void mods_overlay_end_init(void);
 void mods_overlay_seal(void);
 bool mods_overlay_sealed(void);
+bool mods_overlay_layer_name_refused(const std::string &rel);   // run 29: program files never served from a layer
 uint32_t mods_overlay_layer_count(void);
 void mods_fill_overlay_api(PopModApi *api);
 

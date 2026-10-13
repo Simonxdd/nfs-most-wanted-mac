@@ -1,0 +1,697 @@
+{
+ "about": "HD HUD drawing layer: our own vector art (D-130), drawn from numbers measured on the originals; rendered at 4x by ui2_pack.py. alpha_coverage = mean alpha of the 4x render (0-1).",
+ "scale": 4,
+ "textures": [
+  {
+   "name": "7000_LINES_00",
+   "key": "cf40149f00000000",
+   "file": "GLOBAL/HUDS_Custom_00.bin",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "bc7",
+   "svg": "7000_LINES_00.svg",
+   "svg_sha256": "e639dfd90201afad0035bfcef97f70632266bc68708cd42b1e33c0e0ddc872a0",
+   "alpha_coverage": 0.07993
+  },
+  {
+   "name": "8000_LINES_00",
+   "key": "1e9f1e2000000000",
+   "file": "GLOBAL/HUDS_Custom_00.bin",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "bc7",
+   "svg": "8000_LINES_00.svg",
+   "svg_sha256": "55fe8f36626341ddcf08dcbd7210ab41de62d92a8680a667098514dc898efbb3",
+   "alpha_coverage": 0.07992
+  },
+  {
+   "name": "9000_LINES_00",
+   "key": "6dfe27a100000000",
+   "file": "GLOBAL/HUDS_Custom_00.bin",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "bc7",
+   "svg": "9000_LINES_00.svg",
+   "svg_sha256": "5677d133a965ded26f73e0e6ecb1a7d72b628ec7d206bf941dc4bc8f041c55e2",
+   "alpha_coverage": 0.08315
+  },
+  {
+   "name": "10000_LINES_00",
+   "key": "92eaa5c900000000",
+   "file": "GLOBAL/HUDS_Custom_00.bin",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "bc7",
+   "svg": "10000_LINES_00.svg",
+   "svg_sha256": "8ca42d9d2b46287c8072b5f5b6846479801431e978a028d4f0ab54a52661392b",
+   "alpha_coverage": 0.08695
+  },
+  {
+   "name": "TACH_NEEDLE_00",
+   "key": "55dddb6a00000000",
+   "file": "GLOBAL/HUDS_Custom_00.bin",
+   "source_size": [
+    32,
+    128
+   ],
+   "size": [
+    128,
+    512
+   ],
+   "format": "rgba8",
+   "svg": "TACH_NEEDLE_00.svg",
+   "svg_sha256": "3ca44d353074a629debe2d36de08c0aa8a9c71e8125cc67acabddb7aaaf17e97",
+   "alpha_coverage": 0.08123
+  },
+  {
+   "name": "TURBO_NEEDLE_00",
+   "key": "7585993600000000",
+   "file": "GLOBAL/HUDS_Custom_00.bin",
+   "source_size": [
+    32,
+    128
+   ],
+   "size": [
+    128,
+    512
+   ],
+   "format": "rgba8",
+   "svg": "TURBO_NEEDLE_00.svg",
+   "svg_sha256": "cccfa130ae4bc64bbf53547af85ae0848b6b510a958b676640a3b99371778bf8",
+   "alpha_coverage": 0.01686
+  },
+  {
+   "name": "TACH_FILL_00",
+   "key": "d777238400000000",
+   "file": "GLOBAL/HUDS_Custom_00.bin",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "bc7",
+   "svg": "TACH_FILL_00.svg",
+   "svg_sha256": "f72646fe6f457949b57ce1624d25c66fd5c8dadab6b79fc984731150c9f22dd1",
+   "alpha_coverage": 0.43835
+  },
+  {
+   "name": "TURBO_LINES_00",
+   "key": "838d9ee400000000",
+   "file": "GLOBAL/HUDS_Custom_00.bin",
+   "source_size": [
+    128,
+    32
+   ],
+   "size": [
+    512,
+    128
+   ],
+   "format": "bc7",
+   "svg": "TURBO_LINES_00.svg",
+   "svg_sha256": "bbee655554f2767be1f1d272298d7a3d0805a13e42715f6a4303e2010b9407fc",
+   "alpha_coverage": 0.07179
+  },
+  {
+   "name": "REDLINE_MASK",
+   "key": "732c6e0d00000000",
+   "file": "GLOBAL/HUDTEXRACE.BIN",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "rgba8",
+   "svg": "REDLINE_MASK.svg",
+   "svg_sha256": "9d7c8309bb2ca3bb02580dcc35c38ec388d1bc377258d06b35e26537565e837a",
+   "alpha_coverage": 0.07574
+  },
+  {
+   "name": "REDLINE_COLOR",
+   "key": "d80ccb0000000000",
+   "file": "GLOBAL/HUDTEXRACE.BIN",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "bc7",
+   "svg": "REDLINE_COLOR.svg",
+   "svg_sha256": "64d7b7202370a127a125817019ed64c882176f764c38f9a1cd235d6dffdc29e9",
+   "alpha_coverage": 0.07488
+  },
+  {
+   "name": "HEATMETERMASKTOP",
+   "key": "cb0b685d00000000",
+   "file": "GLOBAL/HUDTEXRACE.BIN",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "rgba8",
+   "svg": "HEATMETERMASKTOP.svg",
+   "svg_sha256": "ef841dc5f9952c5ec992e85e33eb033d4a86b80ef70ff027f1f91fd43696831c",
+   "alpha_coverage": 0.0501
+  },
+  {
+   "name": "METER_BACKING",
+   "key": "20865c0a00000000",
+   "file": "GLOBAL/HUDTEXRACE.BIN",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "bc7",
+   "svg": "METER_BACKING.svg",
+   "svg_sha256": "2969d9ba7523c7506331b6f9a24121057fcbc322e526288594d2cb085ef4744e",
+   "alpha_coverage": 0.04662
+  },
+  {
+   "name": "METER_BACKING2",
+   "key": "3151dd7c00000000",
+   "file": "GLOBAL/HUDTEXRACE.BIN",
+   "source_size": [
+    128,
+    128
+   ],
+   "size": [
+    512,
+    512
+   ],
+   "format": "bc7",
+   "svg": "METER_BACKING2.svg",
+   "svg_sha256": "a4b5f9304aec2d4b0583b8a368a88977dd0f955db90186ac316f8f62befa0a87",
+   "alpha_coverage": 0.04902
+  },
+  {
+   "name": "BLACK_RING",
+   "key": "f25b6c2b00000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    64,
+    64
+   ],
+   "size": [
+    256,
+    256
+   ],
+   "format": "bc7",
+   "svg": "BLACK_RING.svg",
+   "svg_sha256": "848f8bd004efadfa5debe9d6ec3d4fd9de589249efabf991f3f332e827c3b033",
+   "alpha_coverage": 0.28674
+  },
+  {
+   "name": "OUTTER_RING",
+   "key": "9238633100000000",
+   "file": "GLOBAL/GlobalB.lzc",
+   "source_size": [
+    64,
+    64
+   ],
+   "size": [
+    256,
+    256
+   ],
+   "format": "bc7",
+   "svg": "OUTTER_RING.svg",
+   "svg_sha256": "304b1401584da71d3ec8314736ad7195caddb41fe3baa5a33a4f760dafdd0484",
+   "alpha_coverage": 0.02647
+  },
+  {
+   "name": "RADAR_LEDS",
+   "key": "6ccd683000000000",
+   "file": "GLOBAL/HUDTEXRACE.BIN",
+   "source_size": [
+    128,
+    32
+   ],
+   "size": [
+    512,
+    128
+   ],
+   "format": "rgba8",
+   "svg": "RADAR_LEDS.svg",
+   "svg_sha256": "3504b01d2d63e729a50bbfef8481aa1700adda9fc6780334b54c6d2f3435223e",
+   "alpha_coverage": 0.09814
+  },
+  {
+   "name": "RADAR_LEDS_COLOR",
+   "key": "0ca9e96e00000000",
+   "file": "GLOBAL/HUDTEXRACE.BIN",
+   "source_size": [
+    128,
+    32
+   ],
+   "size": [
+    512,
+    128
+   ],
+   "format": "rgba8",
+   "svg": "RADAR_LEDS_COLOR.svg",
+   "svg_sha256": "f4072da15b657810aaa6ffb19d356d74ae23e80de0b23e0af41191b50d483eb8",
+   "alpha_coverage": 0.06738
+  },
+  {
+   "name": "LED_MAIN",
+   "key": "14025bd800000000",
+   "file": "GLOBAL/GlobalB.lzc",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "rgba8",
+   "svg": "LED_MAIN.svg",
+   "svg_sha256": "f70e325d1b7a12855a9092c012350c1d10e6d6b65571f7693e2e2ff46ccf4d76",
+   "alpha_coverage": 0.15625
+  },
+  {
+   "name": "ARROW",
+   "key": "02716e8a00000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "ARROW.svg",
+   "svg_sha256": "736d8e75632af5f17cde5edb6d2f530a4ee2a9e787ad4a4f0b77e55153a417ea",
+   "alpha_coverage": 0.05353
+  },
+  {
+   "name": "BUTTON_RING",
+   "key": "c4f4ebea00000000",
+   "file": "GLOBAL/GlobalB.lzc",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "BUTTON_RING.svg",
+   "svg_sha256": "3fa08ff0f443a273cfc9d35f3ee9ccb9b507a64729f3b6fb7f6dc5428be4ebde",
+   "alpha_coverage": 0.243
+  },
+  {
+   "name": "INNER_STRIPES",
+   "key": "c56abf2400000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    64,
+    64
+   ],
+   "size": [
+    256,
+    256
+   ],
+   "format": "bc7",
+   "svg": "INNER_STRIPES.svg",
+   "svg_sha256": "9a6d73ee22628a9f3f1bd5092c717c848625ae8c4e7ff5d199f81f3a9ba295a0",
+   "alpha_coverage": 0.40143
+  },
+  {
+   "name": "MINIMAP_ICON_CAR",
+   "key": "ada8524700000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_CAR.svg",
+   "svg_sha256": "97d56e1ddc0c15ffe625128002dfdc8988cbabf00aac8b93951ea3d88f9518bd",
+   "alpha_coverage": 0.35767
+  },
+  {
+   "name": "MINIMAP_ICON_SAFE_HOUSE",
+   "key": "2cfd527300000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_SAFE_HOUSE.svg",
+   "svg_sha256": "9e99d8294821485fca16b4fae9b95473f4fec0985051396c9a088f701e387604",
+   "alpha_coverage": 0.46401
+  },
+  {
+   "name": "MINIMAP_MASK",
+   "key": "40cdc51500000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    256,
+    256
+   ],
+   "size": [
+    1024,
+    1024
+   ],
+   "format": "rgba8",
+   "svg": "MINIMAP_MASK.svg",
+   "svg_sha256": "07ad3d4c5a62869b5f37ae2ca14195aba72214dbd54b9248ab2f6c846026f497",
+   "alpha_coverage": 0.60626
+  },
+  {
+   "name": "NUMBER2",
+   "key": "53d9eb7a00000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    64,
+    64
+   ],
+   "size": [
+    256,
+    256
+   ],
+   "format": "bc7",
+   "svg": "NUMBER2.svg",
+   "svg_sha256": "f839b53e5d1f7254cef1da20509edf9cf6972824aa51c4902d9f1c455751f56c",
+   "alpha_coverage": 0.30098
+  },
+  {
+   "name": "TIME_BACKING",
+   "key": "861b2b3c00000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    128,
+    32
+   ],
+   "size": [
+    512,
+    128
+   ],
+   "format": "bc7",
+   "svg": "TIME_BACKING.svg",
+   "svg_sha256": "c89a378c1f8fc8bb8862aba18ef6f749c99220535f04795aefc7a712627eaf85",
+   "alpha_coverage": 0.60122
+  },
+  {
+   "name": "SHIFT_UP_ICON",
+   "key": "9d2bb64900000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "SHIFT_UP_ICON.svg",
+   "svg_sha256": "1fff970bb36b26fb608cf6bb1eb715784ce47acd385f31c943a993966fb4d047",
+   "alpha_coverage": 0.22337
+  },
+  {
+   "name": "MINIMAP_ICON_CAR_LOT",
+   "key": "12bb839500000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_CAR_LOT.svg",
+   "svg_sha256": "c2886e0010037b3c3d560d4d36f722a7d8829872c370c7f8d980bae41296d40e",
+   "alpha_coverage": 0.48029
+  },
+  {
+   "name": "MINIMAP_ICON_CHOP_SHOP",
+   "key": "1ce551d400000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_CHOP_SHOP.svg",
+   "svg_sha256": "a66b32344ef2e19189f7afa7a3161f84df9d15d00515aba2a4304e436b383533",
+   "alpha_coverage": 0.53576
+  },
+  {
+   "name": "MINIMAP_ICON_CIRCUIT",
+   "key": "2555938400000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_CIRCUIT.svg",
+   "svg_sha256": "8eb38be11bd6f12867b24b735d6b1f7389f9c9268697cd75a136ed8e6ef6c8da",
+   "alpha_coverage": 0.47628
+  },
+  {
+   "name": "MINIMAP_ICON_COP_VIEW",
+   "key": "9b36582d00000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    64,
+    64
+   ],
+   "size": [
+    256,
+    256
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_COP_VIEW.svg",
+   "svg_sha256": "3e3380b3e4e6b77b2da6f238f52d1018de72df9f0691d093a5423808f964044c",
+   "alpha_coverage": 0.06947
+  },
+  {
+   "name": "MINIMAP_ICON_EVENT",
+   "key": "b935881300000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_EVENT.svg",
+   "svg_sha256": "bcdee2e1c2d09705485f804857ab1b91ff9e7cd7c4e3a4327fcf0671321648cb",
+   "alpha_coverage": 0.41987
+  },
+  {
+   "name": "MINIMAP_ICON_EVENT_CELL",
+   "key": "331990d200000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_EVENT_CELL.svg",
+   "svg_sha256": "59ae0b25039da1287a8d0c5344e56730b702079003973398393982d5d258cc28",
+   "alpha_coverage": 0.43678
+  },
+  {
+   "name": "MINIMAP_ICON_EVENT_RIVA",
+   "key": "975d759000000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_EVENT_RIVA.svg",
+   "svg_sha256": "7288304034a11649ac2ef6038857c850d65b4fb70270a81f577783259d3ae9ec",
+   "alpha_coverage": 0.44628
+  },
+  {
+   "name": "MINIMAP_ICON_HIDING_SPO",
+   "key": "dc3c044900000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_HIDING_SPO.svg",
+   "svg_sha256": "f6e1d8c6e0f207362a52fe1ca5a7578451c43a03835c41acaf50e3e6ba9020ec",
+   "alpha_coverage": 0.17611
+  },
+  {
+   "name": "MINIMAP_ICON_POINT_TO_P",
+   "key": "571cd20600000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    16,
+    16
+   ],
+   "size": [
+    64,
+    64
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_POINT_TO_P.svg",
+   "svg_sha256": "05a01f0d2d2615260989f2c77332e9c9ec3923e51c3ae183f56feb2025efd36e",
+   "alpha_coverage": 0.46389
+  },
+  {
+   "name": "MINIMAP_ICON_PURSUIT_BR",
+   "key": "997a286800000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_PURSUIT_BR.svg",
+   "svg_sha256": "0d0e18315d1a35c6320926a508a39d1bc0abe04a90abff4bea9fe70b5b7222a8",
+   "alpha_coverage": 0.4665
+  },
+  {
+   "name": "MINIMAP_ICON_ROADBLOCK",
+   "key": "123f07e200000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_ROADBLOCK.svg",
+   "svg_sha256": "2ec1eb0746ac9310a4d3fd3c756f54b9c6183e93c27de15ff259da7f8e72e33e",
+   "alpha_coverage": 0.28125
+  },
+  {
+   "name": "MINIMAP_ICON_SPEEDTRAP",
+   "key": "a96409f900000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_SPEEDTRAP.svg",
+   "svg_sha256": "975a013d6d6d11b04b5718dd68dc1d31e663ebb04690b0f92cbf8d16b67b4ec9",
+   "alpha_coverage": 0.49791
+  },
+  {
+   "name": "MINIMAP_ICON_SPEED_TRAP",
+   "key": "d6adb61800000000",
+   "file": "GLOBAL/InGameA.bun",
+   "source_size": [
+    32,
+    32
+   ],
+   "size": [
+    128,
+    128
+   ],
+   "format": "bc7",
+   "svg": "MINIMAP_ICON_SPEED_TRAP.svg",
+   "svg_sha256": "202575d611f21b6cc9888b004f74b57a95851d22a374bea9d4d6ebb7d9ca0011",
+   "alpha_coverage": 0.10748
+  }
+ ],
+ "kept_on_picture_layer": [
+  "ARROW_MAIN",
+  "COPS_ICON",
+  "HEAT_ICON",
+  "MINIMAP_ICON_COPCAR",
+  "N20_ICON",
+  "OUTRUN_BACKING",
+  "POSITION_BACKING",
+  "RADAR_BACKING",
+  "RADAR_ICON"
+ ]
+}

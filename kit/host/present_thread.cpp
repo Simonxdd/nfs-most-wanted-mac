@@ -1023,6 +1023,13 @@ struct Service : std::enable_shared_from_this<Service> {
             f->acknowledgement_deadline = ts + acknowledgement_grace();
             f->input.drawable_w = rect.w;
             f->input.drawable_h = rect.h;
+            // R3 run 17 (D-119): a world frame sealed before a resize and presented after it is drawn over the NEW
+            // rectangle, so its scene mapping must be the new one too (as at seal); it published the old scale with
+            // the new drawable, and the pointer hit-tested against it for that frame. Repeats are rescaled above.
+            if (!f->repeat && f->input.world && f->input.guest_w > 0 && f->input.guest_h > 0) {
+                const int domain = f->input.scene.domain_w > 0 ? f->input.scene.domain_w : f->input.guest_w;
+                f->input.scene = {float(rect.w) / domain, float(rect.h) / f->input.guest_h, 0, 0, domain};
+            }
         }
         auto prepare = [&] {
             std::lock_guard lock(mutex);
@@ -2018,7 +2025,8 @@ bool host_present_copy_composite(HostCompletedComposite *out) {
     {
         std::lock_guard lock(s->mutex);
         texture = s->cached;
-        if (!texture || texture->format != gpu::Format::RGBA8)
+        // R3 run 17: BGRA8 composites too (the real app's), returned as RGBA like the RGBA8 ones.
+        if (!texture || (texture->format != gpu::Format::RGBA8 && texture->format != gpu::Format::BGRA8))
             return false;
         result.w = texture->w;
         result.h = texture->h;
@@ -2032,6 +2040,9 @@ bool host_present_copy_composite(HostCompletedComposite *out) {
     if (!s->device->readback(texture->texture, {0, 0, result.w, result.h}, result.rgba.data(),
                              result.w * 4))
         return false;
+    if (texture->format == gpu::Format::BGRA8)
+        for (size_t i = 0; i < result.rgba.size(); i += 4)
+            std::swap(result.rgba[i], result.rgba[i + 2]);
     *out = std::move(result);
     return true;
 }

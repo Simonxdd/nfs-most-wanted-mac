@@ -53,6 +53,8 @@ struct Present {
     bool had_palette = false;
     uint32_t palette[256] = {0};
 };
+extern bool g_ddraw_untracked_stores;   // dx/ddraw.cpp (run 31, D-177)
+
 static std::vector<Present> g_presents;
 static int g_display_w = 0, g_display_h = 0, g_display_bpp = 0;
 
@@ -2832,6 +2834,10 @@ static void test_cursor_surface_learned() {
 // as no import that might write the surface ran while the lock was open; one
 // that might sends it back to comparing the whole lock.
 static void test_lock_write_tracking() {
+    // Run 31 (D-177): the tracked path is tested whatever the game config says (a store_hooks = false game starts
+    // with tracking off); the untracked path is tested below; the game's value is restored at the end.
+    const bool untracked_game = g_ddraw_untracked_stores;
+    g_ddraw_untracked_stores = false;
     rec_reset();
     uint32_t rt = make_render_target_for_test(64, 64, 8);
     CHECK(rt != 0);
@@ -2908,6 +2914,34 @@ static void test_lock_write_tracking() {
     call_shim(tramp("KERNEL32.dll", "DeleteCriticalSection"), {cs});
     CHECK_EQ(g_dirty_count, 0u); // every range closed with its lock
     reset_ddraw_for_test();
+
+    // Run 31 (D-177): a game built with store_hooks = false (its translated stores carry no check). No range opens,
+    // the store flag stays clear, and the Unlock compares the whole surface: every write is found, the one no range
+    // would have seen included (above, the tracked lock did not look for it).
+    g_ddraw_untracked_stores = true;
+    CHECK_EQ(call_method(rt, S_Lock, {0, desc, DDLOCK_WAIT, 0}), DD_OK);
+    CHECK_EQ(g_dirty_count, 0u);
+    CHECK_EQ(g_store_hooks, 0u);
+    wr8(o->pixels + 20 * o->pitch + 3, 7);
+    gm_ptr(o->pixels + 50 * o->pitch + 7)[0] = 7;
+    CHECK_EQ(call_method(rt, S_Unlock, {0}), DD_OK);
+    {
+        HostFrameHandle f = host_frame_current();
+        CHECK_EQ(host_frame_record_count(f), 2u);
+        if (host_frame_record_count(f) == 2) {
+            CHECK_EQ(host_frame_record(f, 0)->dst_y, 20);
+            CHECK_EQ(host_frame_record(f, 1)->dst_y, 50);
+        }
+    }
+    g_ddraw_untracked_stores = false;
+    reset_ddraw_for_test();
+    // and the tracked path sets the flag while its range is open, and clears it with the close
+    CHECK_EQ(call_method(rt, S_Lock, {0, desc, DDLOCK_WAIT, 0}), DD_OK);
+    CHECK_EQ(g_store_hooks, g_dirty_count != 0 ? 1u : 0u);
+    CHECK_EQ(call_method(rt, S_Unlock, {0}), DD_OK);
+    CHECK_EQ(g_store_hooks, 0u);
+    reset_ddraw_for_test();
+    g_ddraw_untracked_stores = untracked_game;
 }
 
 static void test_lock_write_records() {

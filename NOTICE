@@ -68,6 +68,19 @@ The setup kit downloads, into its own cache and checked against pinned SHA-256 h
 National Security Agency), an OpenJDK 26.0.1 build (GPL-2.0 with the Classpath Exception) and, only when the Mac has
 no Python 3.11 or later, a python-build-standalone CPython 3.12 build (PSF licence and its bundled licences).
 
+The HD HUD (tools/hd_pack/hud_pack.py, since 3.0) is made by Setup on the player's Mac: the game's own HUD, minimap and
+font pictures upscaled with their edges redrawn, and 40 gauges and icons drawn again from this port's own vector art
+(tools/hd_pack/hud_svg, written for this port, same licence as the code), rendered by macOS's own SVG renderer
+(CoreSVG). No game picture is distributed.
+
+The optional HD texture pack (tools/hd_pack, since 2.1) is made by Setup on the player's Mac from the player's own game
+files; no pack and no game texture is distributed. For it Setup downloads, into its own cache and checked against
+pinned SHA-256 hashes: the 4x-PBRify-UpscalerV4 upscaling model by Kim2091 (PBRify, CC0 1.0);
+the 1x-PBRify_RoughnessV2 material model by Kim2091 (PBRify, CC0 1.0), taken from the PBRify_Remix 1.7.2 release zip;
+photo materials from ambientCG (ambientcg.com, CC0 1.0), whose fine grain is added to some world textures; and, from the Python Package
+Index, PyTorch and torchvision (BSD-3-Clause), spandrel (MIT), etcpak (MIT), NumPy (BSD-3-Clause) and Pillow
+(MIT-CMU) with their dependencies, each under its own licence.
+
 Native PlayStation menu prompt adaptation (mods/core/nfsmw/frontend_pad.h) uses
 structure, flag and resource-hash research from NFS-XtendedInput, commit
 60958fc1928308023457e3ae94a2f3e79cf3c9b5. Its MIT notice follows:

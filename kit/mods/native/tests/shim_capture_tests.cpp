@@ -84,8 +84,13 @@ void prepare() {
     imports_init();
 }
 
-constexpr uint32_t CAPTURE_TARGET = 0x00401000u;
-constexpr uint32_t UNWIND_TARGET = 0x0040c690u;
+// The two hooked functions of the capture-window suites. Both hooks replace
+// their function and never run it, so any two hookable functions serve: the
+// Populous entry point and load_objs where that is the image, else the first
+// two hookable functions of whatever image the binary carries (set by
+// pick_capture_targets(); run 31 found neither fixed address hookable on NFSMW).
+uint32_t CAPTURE_TARGET = 0x00401000u;
+uint32_t UNWIND_TARGET = 0x0040c690u;
 PopModApi capture_test_api{};
 
 bool prepare_capture_hooks() {
@@ -114,6 +119,25 @@ bool prepare_capture_hooks() {
     mods_hooks_set_load_order(0, 0);
     mods_hooks_set_cpu_size(0, POP_CPU_V1_BASELINE_SIZE);
     return true;
+}
+
+bool pick_capture_targets() {
+    CAPTURE_TARGET = 0x00401000u;
+    UNWIND_TARGET = 0x0040c690u;
+    if (mods_symbol_hookable(CAPTURE_TARGET) && mods_symbol_hookable(UNWIND_TARGET))
+        return true;
+    CAPTURE_TARGET = UNWIND_TARGET = 0;
+    for (int32_t i = 0; i < recomp_func_count && !UNWIND_TARGET; ++i) {
+        const uint32_t addr = recomp_func_addrs[i];
+        if (!mods_symbol_hookable(addr))
+            continue;
+        if (!CAPTURE_TARGET)
+            CAPTURE_TARGET = addr;
+        else if (addr != CAPTURE_TARGET)
+            UNWIND_TARGET = addr;
+    }
+    MOD_CHECK(CAPTURE_TARGET != 0 && UNWIND_TARGET != 0);
+    return CAPTURE_TARGET != 0 && UNWIND_TARGET != 0;
 }
 
 bool install_capture_test_hook(uint32_t target, PopHookFn callback, void *user = nullptr) {
@@ -321,7 +345,7 @@ MOD_TEST_SUITE(imports_call_observer_sees_entry_arguments) {
 // faults into abandoned bookkeeping. This asserts the state the process is
 // left in, not that some function was called.
 MOD_TEST_SUITE(capture_windows_close_when_a_guest_jump_escapes) {
-    if (!prepare_capture_hooks())
+    if (!prepare_capture_hooks() || !pick_capture_targets())
         return;
     if (!install_capture_test_hook(UNWIND_TARGET, unwind_capture_test_hook))
         return;
@@ -381,7 +405,7 @@ MOD_TEST_SUITE(capture_windows_close_when_a_guest_jump_escapes) {
 }
 
 MOD_TEST_SUITE(capture_survives_other_thread_exit_and_nested_unwind) {
-    if (!prepare_capture_hooks())
+    if (!prepare_capture_hooks() || !pick_capture_targets())
         return;
     if (!install_capture_test_hook(UNWIND_TARGET, unwind_capture_test_hook))
         return;

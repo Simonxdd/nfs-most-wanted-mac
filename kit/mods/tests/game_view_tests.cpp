@@ -17,12 +17,12 @@ namespace {
 // The parity fixture's own snapshot of the writable image, which is where the
 // entity pool and the tribe records live. Produced by
 // `.venv/bin/python tools/test.py --mods` in a fresh isolated fixture run.
-const char *SNAPSHOT = "build/recomp/parity/native/frame32._data_00598000.bin";
+const char *SNAPSHOT = "recomp/parity/native/frame32._data_00598000.bin"; // under the build root
 const uint32_t SNAPSHOT_BASE = 0x00598000u;
 
 bool load_snapshot() {
     const char *path = recomp_env("TEST_GAME_VIEW_SNAPSHOT");
-    FILE *f = fopen(path && *path ? path : SNAPSHOT, "rb");
+    FILE *f = fopen(path && *path ? path : mods_test_build_path(SNAPSHOT).c_str(), "rb");
     if (!f)
         return false;
     std::vector<unsigned char> bytes;

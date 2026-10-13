@@ -3,6 +3,25 @@
 How to play the native Mac version, change its settings, and add the optional mods. If you have not built the app
 yet, start with [Getting started](GETTING_STARTED.md).
 
+## What's new in 3.0
+
+**One look.** The *Look* setting is gone: Definitive is the only look, with every improvement on. For the Xbox 360's
+warm colour turn on F10 → Graphics → **Golden colour filter**; wet roads, car reflections, glass, water and rain drops
+each keep their Xbox 360 version under Advanced. A profile saved on the Xbox 360 or PC look opens in Definitive once.
+
+**A clearer settings menu.** The pages are named by what you want to change: Graphics, Display, Audio, **Interface**
+(HUD, minimap, menus, movies, subtitles), **Gameplay** (career, police and heat, unlocks, fixes), Mods and Controls
+(with the keyboard keys). Graphics → Advanced is split by effect: lighting and shadows; textures, surfaces and
+reflections; camera and colour; sky, weather and rain; smoke and sparks; the rear-view mirror; detail limits. Each
+strength slider sits under its switch, and every setting's text at the bottom of the menu says what it does, what you
+will see, what it costs and what to do on a slower Mac. About twenty fine-tuning rows are no longer listed (your saved
+values are kept). The [settings guide](SETTINGS.md) follows the same layout and starts with the settings that change
+speed the most.
+
+**Made by Setup on your Mac:** the **HD HUD** (sharp gauges, minimap and fonts from the game's own art, with the gauges
+and icons redrawn as crisp vector art; a few minutes, on by default), and with *Make HD textures*: the HD texture pack,
+road surface detail and sunlit wall relief.
+
 ## What's new in 2.0
 
 **The look.** One setting now chooses the whole picture: F10 → Graphics → **Look**. *Definitive* (default) has every
@@ -63,7 +82,7 @@ Press **Return**, **Cross** or **A** to start. Everything in the game's own menu
 Press **F10** (**Fn+F10** on a MacBook), the DualSense **touchpad button**, or **Back+Start** on other controllers.
 The game pauses its input while the menu is open.
 
-- **Pages:** *Graphics*, *Display*, *Audio*, *Xbox 360*, *PC*, *Mods* and *Controls*. **Tab** or **L1/R1** changes
+- **Pages:** *Graphics*, *Display*, *Audio*, *Interface*, *Gameplay*, *Mods* and *Controls*. **Tab** or **L1/R1** changes
   page. On Graphics, the short *Picture* list comes first; *Advanced* opens every other graphics setting.
 - **Move:** arrow keys, the D-pad or left stick, or point with the mouse. **Left/Right** (or the **< >** arrows)
   change a value; **Return**/**Cross** selects; **Escape**/**Circle** or **F10** closes.
@@ -75,7 +94,9 @@ Every setting, its default and what it does: [Settings](SETTINGS.md).
 
 ### Recommended starting points
 
-- **The look:** Graphics → *Look* → **Definitive** (default), **Xbox 360** or **PC**. Under Advanced, *Rebuilt
+- **The look:** Definitive is the only look (3.0). Graphics → **Golden colour filter** → On for the Xbox 360's warm
+  colour; under Advanced, wet roads, car reflections, glass, water and rain drops each offer their Xbox 360 version.
+  Under Advanced, *Rebuilt
   effects* turns the glow, auto brightness, motion blur and depth of field on or off together; each has its own
   strength slider.
 - **Anti-aliasing:** Display → *Smooth edges (anti-aliasing)* → **2x** or **4x** if your Mac keeps 60 fps with it.
@@ -83,6 +104,38 @@ Every setting, its default and what it does: [Settings](SETTINGS.md).
   you quit. *HDR: how bright highlights get* adjusts the punch. With HDR on, 4x anti-aliasing runs as 2x.
 - **Day and weather:** Graphics → *Time of day* and *Weather*; the cycle lengths are under Advanced.
 - **Frame rate:** the game simulates at 60 Hz and presents at up to 60 fps. Leave *Game speed* at 60.
+
+### Performance: what costs the most
+
+Measured on an M5 Pro at 4K. With everything on, the game holds 60 fps there: each frame has 16.7 ms, the game's own
+work takes about 12 ms of it on one CPU core and the graphics card about 12 ms in parallel. A frame that misses
+(over 20 ms; at the highest settings about one every five seconds while driving) is mostly the CPU side and rarely
+the graphics card. On a slower Mac both sides take longer, so start with **Graphics → Mac preset**: *Auto* picks for
+your Mac, *Balanced* and *Light* lower the costliest effects in one step and keep your own settings for *Full*.
+
+Graphics card (more pixels = more work for every one of these; they matter most at 4K and on base chips):
+
+| Setting | Where | Cost at 4K |
+|---|---|---|
+| Smooth edges (anti-aliasing) | Display | 2x +1.5 ms, 4x +3.6 ms (with HDR, 4x runs as 2x) |
+| Picture effects (glow, blur, sun rays) | Graphics → Advanced: Camera and colour effects | +1.9 ms |
+| HDR (for HDR TVs) | Display | +1.6–1.9 ms |
+| Scenery fade-in | Graphics → Advanced: Camera and colour effects | +0.2–0.8 ms |
+| Ambient occlusion | Graphics → Advanced: Lighting and shadows | +0.7 ms |
+| Soft particles | Graphics → Advanced: Smoke and sparks | +0.7 ms in a burnout |
+| Light pools from lamps | Graphics → Advanced: Lighting and shadows | +0.4 ms |
+
+CPU (the game's own work; these cause most missed frames on any Mac):
+
+| Setting | Where | Cost |
+|---|---|---|
+| Rain (*Weather*: Weather cycle; *Always rain*) | Graphics → Weather; Advanced: Sky, weather and rain | +1.5–2.6 ms while the road is wet |
+| Mirror: world shadows | Graphics → Advanced: Rear-view mirror | +1.4 ms (off by default) |
+| Rain: drops on the screen | Graphics → Advanced: Sky, weather and rain | about +0.5 ms while it rains |
+
+Big pursuits are the heaviest moments by themselves: up to nine police cars add about 2 ms of CPU work, with no
+setting involved. About free: the HD textures (they use memory, not speed), the HD HUD and the other mirror rows. Every row
+in the menu says its own cost; the full list is in [Settings](SETTINGS.md).
 
 ## Controllers
 
@@ -154,7 +207,8 @@ use of that audio output (other apps' sound moves elsewhere until you quit), and
 
 ## Screenshots and cinematic shots
 
-Turn these on in F10 → PC → *Keys, camera and HUD*, and *Save and load positions* in F10 → Mods (all off by default;
+Turn these on in F10 → Controls → *Keyboard keys*, and *Save and load positions* in F10 → Gameplay → *Unlocks and
+shortcuts* (all off by default;
 restart after turning one on). They work while driving:
 
 - **Pause key freezes the camera** — **Pause/Break** stops the camera where it is while the car drives on; press
@@ -190,9 +244,9 @@ again to let F10 control it. Quit the game before editing.
 
 ## Extra Options
 
-The useful parts of the PC *Extra Options* mod are built in natively (no ASI loader). F10 → Mods → *Career and
-customization* (2.0 adds the fixes, minimap, heat-key, World Map and no catch-up rows there, and *Always rain* and
-*Subtitles* on the PC page):
+The useful parts of the PC *Extra Options* mod are built in natively (no ASI loader). F10 → Gameplay (3.0: career and
+rewards, police and heat, unlocks and shortcuts, fixes; the minimap and World Map rows are on Interface, *Always rain*
+under Graphics → Advanced → Sky, weather and rain, *Subtitles* on Interface):
 
 | Option | Default |
 |---|---|
@@ -270,7 +324,7 @@ from **your own** downloads:
 3. Drag the mod's whole folder into **Mods**. Any `.asi`, `.dll`, `.exe` or `.ini` files in it are Windows files and
    are ignored.
 4. Start the game. Each `.dds` file replaces the game texture with the same name (`RADAR_ICON.dds` replaces
-   RADAR_ICON), in every Look.
+   RADAR_ICON).
 
 **Mods/mods-report.txt** is written at every start and says what happened to each file: **OK** (used), **UNKNOWN
 NAME** (no game texture by that name was found; the file is kept and used if the game ever draws that name),
@@ -280,7 +334,7 @@ NAME** (no game texture by that name was found; the file is kept and used if the
 - **Several mods:** one folder each. They load in A to Z order and the later one wins; put numbers in front of the
   names to choose (`1 HUD`, `2 My fixes`).
 - **Turn a mod off:** rename its folder to start with `_` (for example `_HUD`), or move it out of Mods. **All mods
-  off:** F10 → Graphics → Advanced → **Player mods** (restart).
+  off:** F10 → Mods → **Player mods** (restart).
 - **Works:** `.dds` (DXT1, DXT3, DXT5, BC7 and uncompressed 32-bit), up to 8192 pixels, with or without mip levels.
   **Not yet:** `.png` and `.tga` (save them as `.dds`). **Never:** `.asi`/`.dll` plugins, scripts, Texmod `.tpf`
   packs, and mods that replace whole game files (`.BIN`, `.BUN`).
@@ -312,13 +366,12 @@ Tip: if you can't find a file, open the unzipped download in Finder and type its
 
 After the build:
 
-- **Xbox 360 textures:** F10 → Xbox 360 → **Xbox 360 textures** is on by default. The *PC* look launches without
-  them.
-- **Xbox 360 front end:** F10 → Xbox 360 → **Xbox 360 front end** (on by default; off brings the PC menus back at the
-  next start, and so does the *PC* look). The setup uses only the pack's front-end files, checked one by one, and
+- **Xbox 360 textures:** F10 → Graphics → Advanced → **Xbox 360 textures** is on by default.
+- **Xbox 360 front end:** F10 → Interface → **Xbox 360 front end** (on by default; off brings the PC menus back at the
+  next start). The setup uses only the pack's front-end files, checked one by one, and
   lists what it leaves out (its Windows code, shaders, sound, in-race HUD files and track bundle). If you installed the
   pack into your game folder before, the setup says so: with the switch off the game then uses that changed copy.
-- **Sparks and light trails:** F10 → Xbox 360 → **Sparks and light trails** (on by default).
+- **Sparks and light trails:** F10 → Graphics → Advanced → **Sparks and light trails** (on by default).
 - **Button icons:** F10 → Controls → **PlayStation button icons** (on by default).
 
 If you choose the file in the Setup app instead (*XenonEffects… Choose*), or pass

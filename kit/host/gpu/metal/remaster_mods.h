@@ -1,7 +1,7 @@
-// remaster_mods.h - NFSMW Remaster 2.0.4: the player's Mods folder.
+// remaster_mods.h - NFSMW Remaster R3 run 19 (ROADMAP M, D-127/D-132): the player's Mods folder.
 //
 // Texture mods the player downloads (Windows texture packs, e.g. a HUD mod) are matched to the game's textures by
-// file name and loaded ahead of our packs:
+// file name and loaded ahead of our packs (review/run18/m-design.md; lead changes in review/run19/lead-log.md):
 //   <profile>/Mods/<mod folder>/.../<NAME>.dds   one folder per mod, any depth; loose files in Mods/ count first;
 //                                                folders load in natural A to Z order and the later one wins; a
 //                                                folder whose name starts with "_" or "." (and __MACOSX) is ignored.
@@ -11,7 +11,7 @@
 //                                                and hashes the whole one: the known list maps the stem to every
 //                                                texture whose stored name is that stem.
 //   NAME = 8 hex digits (or 0x + 8)              the hash itself (what texture dumpers write).
-// The known list (Resources/ModNames/known.tsv, tools/setup_kit/mod_names.py, made by Setup from your game files) holds
+// The known list (Resources/ModNames/known.tsv, made by Setup from the app's own game files) holds
 // hashes and sizes only, no names: "k\t<hash8>\t<w>\t<h>" per texture, "t\t<stem hash8>\t<full hash8>" per truncated
 // name. With it the report can say UNKNOWN NAME and WRONG SHAPE at startup; a name it does not hold still gets a row,
 // loaded on demand only (never warmed), so an incomplete list cannot break a mod. Without it nothing is checked.

@@ -79,6 +79,14 @@ def clone_tree(src, dst, exclude):
     unlock(dst)
 
 
+def hd_pack_line(index):
+    """The HD texture pack's index header and row count, or None when the app has no pack."""
+    if not index.is_file():
+        return None
+    lines = index.read_text().splitlines()
+    return [lines[0] if lines else "", sum(1 for line in lines if line and not line.startswith("#"))]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--game", type=Path, required=True)
@@ -88,6 +96,14 @@ def main():
     ap.add_argument("--movies", type=Path, help="the verified Xbox 360 movies (setup.py step 6) for Resources/USA-Movies")
     ap.add_argument("--warm-seed", type=Path, help="the shader warm-up made on this Mac (tools/warm_seed/warmseed.py) for "
                     "Resources/ShaderWarmSeed")
+    ap.add_argument("--hd-pack", type=Path, help="the HD texture pack made on this Mac (tools/hd_pack/hdpack.py) for "
+                    "Resources/RemasterPack")
+    ap.add_argument("--hud-pack", type=Path, help="3.0: the HD HUD made on this Mac (tools/hd_pack/hud_pack.py): its ui/ "
+                    "and ui2/ go to Resources/RemasterPack/ui and ui2")
+    ap.add_argument("--materials", type=Path, help="3.0: the material set made on this Mac (tools/hd_pack/materials.py) "
+                    "for Resources/Materials")
+    ap.add_argument("--relief", type=Path, help="3.0: the wall relief made on this Mac (tools/hd_pack/relief.py) for "
+                    "Resources/PbrPilot")
     ap.add_argument("--mod-names", type=Path, help="the game texture list for the Mods folder (tools/setup_kit/"
                     "mod_names.py) for Resources/ModNames/known.tsv")
     a = ap.parse_args()
@@ -127,6 +143,19 @@ def main():
                 shutil.copyfile(p, t)
     if a.warm_seed and (a.warm_seed / "order.txt").is_file():
         clone_tree(a.warm_seed, res / "ShaderWarmSeed", set())
+    if a.hd_pack and (a.hd_pack / "index.tsv").is_file():
+        # 2.1: the core mod finds Resources/Game/../RemasterPack/index.tsv by itself (remaster_tex.h).
+        clone_tree(a.hd_pack, res / "RemasterPack", set())
+    # 3.0: the packs Setup made beside the HD textures. Each is used only when finished (its index.tsv is written last);
+    # the core mod looks for each one by itself and logs "... but this app has no ... pack" when it is missing.
+    if a.hud_pack and (a.hud_pack / "ui/index.tsv").is_file():
+        clone_tree(a.hud_pack / "ui", res / "RemasterPack/ui", set())
+        if (a.hud_pack / "ui2/index.tsv").is_file():
+            clone_tree(a.hud_pack / "ui2", res / "RemasterPack/ui2", set())
+    if a.materials and (a.materials / "index.tsv").is_file():
+        clone_tree(a.materials, res / "Materials", set())
+    if a.relief and (a.relief / "index.tsv").is_file():
+        clone_tree(a.relief, res / "PbrPilot", set())
     if a.mod_names and a.mod_names.is_file():
         (res / "ModNames").mkdir()
         shutil.copyfile(a.mod_names, res / "ModNames/known.tsv")
@@ -136,10 +165,11 @@ def main():
     game = res / "Game"
     clone_tree(a.game, game, exclude)
     shutil.copyfile(a.image, game / "speed.exe")
+    version = tomllib.loads((ROOT / "mods/core/nfsmw/mod.toml").read_text())["version"]   # 3.0: one version number
     info = tmp / "Contents/Info.plist"
     p = plistlib.loads(info.read_bytes())
     p.update(CFBundleDisplayName=NAME, CFBundleName="NFSMW Native", CFBundleExecutable="Launch",
-             CFBundleIdentifier="io.github.nfsmw-native-mac", CFBundleShortVersionString="2.0.4", CFBundleVersion="9",
+             CFBundleIdentifier="io.github.nfsmw-native-mac", CFBundleShortVersionString=version, CFBundleVersion="10",
              LSMinimumSystemVersion=min_macos(tmp / "Contents/MacOS/SpeedRecomp") or "13.0", NSHighResolutionCapable=True, LSApplicationCategoryType="public.app-category.racing-games")
     p.pop("CFBundleIconFile", None)
     info.write_bytes(plistlib.dumps(p))
@@ -167,6 +197,10 @@ def main():
         if (app / "Contents/Resources/ShaderWarmSeed/stamp.txt").is_file() else None,
         "mod_names": (app / "Contents/Resources/ModNames/known.tsv").read_text().splitlines()[0]
         if (app / "Contents/Resources/ModNames/known.tsv").is_file() else None,
+        "hd_pack": hd_pack_line(app / "Contents/Resources/RemasterPack/index.tsv"),
+        "hud_pack": [hd_pack_line(app / "Contents/Resources/RemasterPack" / n / "index.tsv") for n in ("ui", "ui2")],
+        "materials": hd_pack_line(app / "Contents/Resources/Materials/index.tsv"),
+        "relief": hd_pack_line(app / "Contents/Resources/PbrPilot/index.tsv"),
     }
     (ROOT / "build/package.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"packaged {app}")

@@ -223,6 +223,8 @@ enum HostScriptOp {
     HOST_SCRIPT_PAD,     // button: control index; x: button level or axis value
     HOST_SCRIPT_POKE,    // TEST FIXTURE: write len (1 or 4) bytes of `threshold` at addr
     HOST_SCRIPT_PEEKPTR, // TEST FIXTURE: [[addr]+x]+y, read len bytes (or write when down=1)
+    HOST_SCRIPT_WINDOW,  // TEST (R3 run 17, D-119): resize the app window to x by y points (app runner only)
+    HOST_SCRIPT_KEYUNTIL, // key dik pressed every press_ms until the claim name>threshold holds, within timeout_ms
 };
 
 struct HostScriptStep {
@@ -253,7 +255,7 @@ struct HostScriptStep {
     int32_t w, h, bpp;    // mode: the display mode asked of the game
     int32_t r, g, b;      // probe: the colour the pixel must be, 0..255
     int32_t tol;          // probe: how far off each channel may be
-    uint32_t press_ms;    // guestclick: press to release, on the guest clock
+    uint32_t press_ms;    // guestclick: press to release, on the guest clock; keyuntil: ms between presses
     int32_t altitude;     // click world: world height
     int32_t entity_id;    // landmark, click entity: decoded entity id
     int32_t want_visible; // landmark: 1 expects visible, 0 expects hidden
@@ -380,6 +382,15 @@ int host_script_run_unfinished(int abnormal_exit, int next_step, int step_count)
 
 // Guest globals are authoritative even when the mod runtime is absent. Optional
 // game-view readers only cross-check them; a mismatch never replaces the value.
+// Run 33: the front-end screen that has the player's input, read through guest_u32 (0 and an empty name when the game
+// has no RECOMP_GLOBAL_FE_ROOT_ADDR or no screen has input). The `fe:<part of its name>` claim of await and keyuntil.
+int host_script_fe_screen(uint32_t (*guest_u32)(uint32_t), char *out, size_t cap);
+// Run 33: may a scripted key that went down at down_ms, when the game had read its input down_reads times, go up now?
+// Only once the game has read its input at least twice since (a press and release inside one frozen frame, e.g. a
+// shader compile, never reached the game: J3R) and 160 ms have passed; after 3 s it goes up anyway.
+int host_script_key_release_ready(uint32_t down_ms, uint32_t down_reads, uint32_t now_ms, uint32_t now_reads);
+// 1 when name is "fe:<part>" and that screen has the input, 0 when it is another, -1 when name is not an fe: claim.
+double host_script_fe_metric(const char *name, uint32_t (*guest_u32)(uint32_t));
 double host_script_counter_metric(const char *name, uint32_t (*guest_u32)(uint32_t),
                                   uint32_t (*view_turn)() = nullptr,
                                   uint32_t (*view_command_frame)() = nullptr);

@@ -64,7 +64,7 @@ MOD_TEST_SUITE(classic_page_committed_survivors) {
     mods_settings_reset();
     mods_display_reset();
     mods_host_set_main_thread();
-    MOD_CHECK(mods_display_load_modes("tools/recomp/baseline/classic-modes.json"));
+    MOD_CHECK(mods_display_load_modes(mods_test_source_path("tools/recomp/baseline/classic-modes.json").c_str()));
     mods_page_init();
     mods_page_open(nullptr);
     const char *expected[] = {"640x480",   "800x600",   "1024x768", "1280x720",

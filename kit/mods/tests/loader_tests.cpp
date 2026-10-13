@@ -245,6 +245,7 @@ void two_case_conflict() {
 
 // Keep the existing first-run record test first in reverse registration order.
 MOD_TEST_SUITE(loader_packaged_core_display) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     os_setenv("RECOMP_CORE_MODS_DIR", mods_test_build_path("recomp/mods/core").c_str());
     MOD_CHECK(mods_load_all());
@@ -262,6 +263,7 @@ MOD_TEST_SUITE(loader_packaged_core_display) {
 }
 
 MOD_TEST_SUITE(loader_core_roots) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     const char *user = TREE;
     std::string core = mod_test_dir("core-tree");
@@ -368,6 +370,7 @@ MOD_TEST_SUITE(loader_core_conflict_precedes_lexically_smaller_user) {
 }
 
 MOD_TEST_SUITE(loader_loads_two_and_rolls_back_the_third) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("a", manifest("good.a", "[plugin]\npath = \"" + plug("good_a") + "\"\n"),
             plug("good_a").c_str());
@@ -444,6 +447,7 @@ MOD_TEST_SUITE(loader_loads_two_and_rolls_back_the_third) {
 }
 
 MOD_TEST_SUITE(loader_negative_cases) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     one("bad manifest", "id = \"a.b\"\nnot an assignment\n", nullptr, "not an assignment");
     one("missing dependency", manifest("needs.absent", "requires = [\"nobody.here >= 1.0.0\"]\n"),
         nullptr, "not loaded");
@@ -485,6 +489,7 @@ MOD_TEST_SUITE(loader_negative_cases) {
 }
 
 MOD_TEST_SUITE(loader_rejects_dependents_of_a_failed_init) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("a", manifest("bad.init", "[plugin]\npath = \"" + plug("bad_init") + "\"\n"),
             plug("bad_init").c_str());
@@ -504,6 +509,7 @@ MOD_TEST_SUITE(loader_rejects_dependents_of_a_failed_init) {
 }
 
 MOD_TEST_SUITE(loader_serves_an_old_cpu_layout) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("x", manifest("old.cpu", "[plugin]\npath = \"" + plug("old_cpu") + "\"\n"),
             plug("old_cpu").c_str());
@@ -516,7 +522,9 @@ MOD_TEST_SUITE(loader_serves_an_old_cpu_layout) {
     c->r[R_ESP] -= 4;
     wr32(c->r[R_ESP], 0x00401000u);
     int32_t i = recomp_index_of(0x004ec6f0u);
-    recomp_hook_ptrs[i](c, (uint32_t)i);
+    MOD_CHECK(i >= 0); // -1 indexed the hook table: run 31's SIGBUS
+    if (i >= 0)
+        recomp_hook_ptrs[i](c, (uint32_t)i);
 
     void *h = os_dlopen_noload((std::string(TREE) + "/x/" + plug("old_cpu")).c_str());
     unsigned *size = (unsigned *)os_dlsym(h, "g_old_cpu_size");
@@ -530,6 +538,7 @@ MOD_TEST_SUITE(loader_serves_an_old_cpu_layout) {
 }
 
 MOD_TEST_SUITE(loader_settings_and_shutdown) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("b",
             manifest("good.b",
@@ -575,6 +584,7 @@ MOD_TEST_SUITE(loader_settings_and_shutdown) {
 // is asserted about what survived.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(loader_rollback_undoes_registrations_that_really_happened) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("c",
             manifest("bad.init", "[plugin]\npath = \"" + plug("bad_init") +
@@ -662,6 +672,7 @@ MOD_TEST_SUITE(loader_absent_and_empty_directories) {
 // to contain the word.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(loader_abi_rejection_is_typed) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("x", manifest("bad.abi", "[plugin]\npath = \"" + plug("bad_abi") + "\"\n"),
             plug("bad_abi").c_str());
@@ -720,6 +731,7 @@ MOD_TEST_SUITE(loader_abi_rejection_is_typed) {
 // Shutdown is two steps, because it cannot always happen when it is asked for.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(loader_shutdown_waits_for_quiescence) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("a", manifest("good.a", "[plugin]\npath = \"" + plug("good_a") + "\"\n"),
             plug("good_a").c_str());
@@ -801,6 +813,7 @@ MOD_TEST_SUITE(loader_retired_rumble_api_refuses_calls) {
 // API it kept refuses everything.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(loader_rollback_is_observable_from_every_side) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     // A value the failing mod will try to change, written by a mod that loads.
     install("b",
@@ -884,6 +897,7 @@ static bool g_complete_during_callback = true;
 static uint32_t g_allocs_during_callback = 0;
 
 MOD_TEST_SUITE(loader_retained_api_and_in_flight_teardown) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("b",
             manifest("good.b",
@@ -943,6 +957,7 @@ MOD_TEST_SUITE(loader_retained_api_and_in_flight_teardown) {
 // for.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(loader_api_is_live_through_pop_mod_exit) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("b",
             manifest("good.b",
@@ -1012,6 +1027,7 @@ uint32_t g_outer_esp = 0;
 } // namespace
 
 MOD_TEST_SUITE(loader_a_guard_unwound_past_leaves_no_count_behind) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("b", manifest("good.b", "[plugin]\npath = \"" + plug("good_b") + "\"\n"),
             plug("good_b").c_str());
@@ -1060,6 +1076,7 @@ MOD_TEST_SUITE(loader_a_guard_unwound_past_leaves_no_count_behind) {
 }
 
 MOD_TEST_SUITE(loader_loads_once_per_process) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("b", manifest("good.b", "[plugin]\npath = \"" + plug("good_b") + "\"\n"),
             plug("good_b").c_str());
@@ -1082,6 +1099,7 @@ MOD_TEST_SUITE(loader_loads_once_per_process) {
 }
 
 MOD_TEST_SUITE(loader_refuses_a_mod_when_owner_ids_run_out) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     const uint32_t saved = mods_test_next_owner();
 
     // None left. Owner 0 is the runtime's and 1 is Lua's, so a counter that
@@ -1110,6 +1128,7 @@ MOD_TEST_SUITE(loader_refuses_a_mod_when_owner_ids_run_out) {
 }
 
 MOD_TEST_SUITE(loader_the_pre_entry_pump_refuses_once_the_guest_is_running) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh(); // this thread is the run thread: entry has begun
     auto nop = [](const PopModApi *, pop_cpu_v1 *, PopHookInvocation *, void *) {};
     const uint32_t TURN = 0x004ec6f0u;
@@ -1191,6 +1210,7 @@ MOD_TEST_SUITE(loader_a_failed_mod_keeps_a_pointer_that_refuses) {
 }
 
 MOD_TEST_SUITE(loader_a_retained_guard_survives_the_teardown_that_races_it) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("b", manifest("good.b", "[plugin]\npath = \"" + plug("good_b") + "\"\n"),
             plug("good_b").c_str());
@@ -1255,6 +1275,7 @@ MOD_TEST_SUITE(loader_a_retained_guard_survives_the_teardown_that_races_it) {
 // miss the first frame.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(loader_publishes_init_time_hooks_before_the_entry_point) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("e", manifest("entry.hook", "[plugin]\npath = \"" + plug("entry_hook") + "\"\n"),
             plug("entry_hook").c_str());
@@ -1330,6 +1351,7 @@ MOD_TEST_SUITE(loader_a_failed_init_leaves_the_page_alone) {
 // removal that succeeded across owners would be undone by nothing.
 // ---------------------------------------------------------------------------
 MOD_TEST_SUITE(loader_a_failed_init_cannot_remove_another_mods_hook) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     install("a", manifest("good.a", "[plugin]\npath = \"" + plug("good_a") + "\"\n"),
             plug("good_a").c_str());
@@ -1392,6 +1414,7 @@ MOD_TEST_SUITE(loader_record_accessors_are_safe_before_and_after) {
 // stays below the empty-run suite, whose record the process-wide
 // already-written guard would otherwise refuse.
 MOD_TEST_SUITE(loader_plugin_extension_substitution) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // its plugin fixtures resolve Populous symbols
     fresh();
     // The manifest names a suffix from another platform; the shipped file has
     // this platform's. The loader must find it by stem.

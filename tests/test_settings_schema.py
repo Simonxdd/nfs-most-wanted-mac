@@ -30,14 +30,22 @@ def test_antialiasing_is_off_2x_4x():
 
 
 def test_retired_settings_are_hidden():
-    """Owner 10 Oct (D-117): retired settings are hidden from the menu and fixed in nfsmw.c k_retired."""
-    import re, tomllib
+    """Owner 10 Oct (D-117): retired settings are hidden from the menu; run 29 (D-167): no mod source reads them any
+    more (their code runs at the value that works), so a saved value changes nothing."""
+    import tomllib
     root = Path(__file__).resolve().parents[1]
     s = tomllib.loads((root / 'mods/core/nfsmw/mod.toml').read_text())['settings']
-    src = (root / 'mods/core/nfsmw/nfsmw.c').read_text()
-    body = src[src.index('k_retired[] = {'):]
-    keys = re.findall(r'\{"([a-z0-9_]+)", -?\d+\}', body[:body.index('};')])
-    assert sorted(keys) == ['dof_scene_depth', 'grass', 'upscale_temporal', 'x360_exposure']
-    for k in keys:
+    srcs = ''.join(p.read_text() for p in (root / 'mods/core/nfsmw').glob('*.[ch]'))
+    for k in ('grass', 'dof_scene_depth', 'x360_exposure', 'upscale_temporal', 'spray_fill'):
         assert s[k]['group'] == 'hidden', k
-    assert '{"grass",' not in src[src.index('k_look_follow[] = {'):src.index('k_retired[] = {')]
+        assert f'"{k}"' not in srcs, f'{k} is still read'
+
+
+def test_help_fits_the_menu():
+    """Run 30 (review/run30/settings-ia-design.md): the kit keeps a help text only up to 400 bytes and drops a longer
+    one silently (manifest.cpp), so the F10 footer showed nothing for mac_preset and data_mods. Every help must fit."""
+    import tomllib
+    root = Path(__file__).resolve().parents[1]
+    sets = tomllib.loads((root / 'mods/core/nfsmw/mod.toml').read_text())['settings']
+    long = {k: len(v.get('help', '').encode()) for k, v in sets.items() if len(v.get('help', '').encode()) > 400}
+    assert not long, long

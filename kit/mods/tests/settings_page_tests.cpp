@@ -362,8 +362,8 @@ MOD_TEST_SUITE(menu_tab_key_and_pointer_lines) {
     // Remaster run 15: seven pages, in this order.
     MOD_CHECK_EQ(int(m.tabs.size()), int(MENU_TAB_COUNT));
     MOD_CHECK(m.tabs[MENU_TAB_GRAPHICS] == "Graphics" && m.tabs[MENU_TAB_DISPLAY] == "Display" &&
-              m.tabs[MENU_TAB_AUDIO] == "Audio" && m.tabs[MENU_TAB_XBOX360] == "Xbox 360" &&
-              m.tabs[MENU_TAB_PC] == "PC" && m.tabs[MENU_TAB_MODS] == "Mods" && m.tabs[MENU_TAB_CONTROLS] == "Controls");
+              m.tabs[MENU_TAB_AUDIO] == "Audio" && m.tabs[MENU_TAB_XBOX360] == "Interface" &&
+              m.tabs[MENU_TAB_PC] == "Gameplay" && m.tabs[MENU_TAB_MODS] == "Mods" && m.tabs[MENU_TAB_CONTROLS] == "Controls");
     // Tab walks the pages and wraps (Page Up back); a page can be chosen directly (a click on its name).
     MOD_CHECK(mods_menu_key(MENU_KEY_TAB));
     MOD_CHECK(mods_menu_snapshot(&m));
@@ -495,19 +495,19 @@ MOD_TEST_SUITE(menu_restore_defaults) {
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "look", "Look", POP_SETTING_INT, 0, 0, 2);
     mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "look", "graphics", "help", "renderer", "Definitive|Xbox|PC");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "glow", "Glow %", POP_SETTING_INT, 40, 0, 100);
-    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "glow", "graphics.effects", "help", "live", "");
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "glow", "graphics.lighting", "help", "live", "");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "width", "Width", POP_SETTING_INT, 0, 0, 9999);
     mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "width", "display", "help", "restart", "");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "day", "Day length", POP_SETTING_INT, 24, 1, 120);
-    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "day", "graphics.cycle", "help", "restart", "");
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "day", "graphics.weather", "help", "restart", "");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "hdrpeak", "HDR peak %", POP_SETTING_INT, 50, 0, 100);
     mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "hdrpeak", "display.hdr", "help", "live", "");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "pools", "Pools %", POP_SETTING_INT, 100, 0, 200);
-    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "pools", "xbox360.pools", "help", "live", "");
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "pools", "ui", "help", "live", "");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "lod", "Car detail", POP_SETTING_INT, -1, -1, 3);
-    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "lod", "pc", "help", "restart", "");
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "lod", "game", "help", "restart", "");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "keys", "Light keys", POP_SETTING_BOOL, 0, 0, 1);
-    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "keys", "pc.unheard", "help", "live", "");
+    mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "keys", "game.unheard", "help", "live", "");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "surround", "Surround", POP_SETTING_BOOL, 0, 0, 1);
     mods_settings_set_meta(MODS_OWNER_FIRST_MOD, "surround", "audio", "help", "next_screen", "");
     mods_settings_declare(MODS_OWNER_FIRST_MOD, "a.mod", "shake", "Shake %", POP_SETTING_INT, 100, 0, 200);
@@ -547,9 +547,9 @@ MOD_TEST_SUITE(menu_restore_defaults) {
     };
     for (const PageRows &p : {PageRows{MENU_TAB_DISPLAY, "Screen", "Width"}, PageRows{MENU_TAB_DISPLAY, "HDR", "HDR peak %"},
                               PageRows{MENU_TAB_AUDIO, "Audio", "Surround"},
-                              PageRows{MENU_TAB_XBOX360, "Light pools", "Pools %"},
+                              PageRows{MENU_TAB_XBOX360, "HUD and minimap", "Pools %"},
                               PageRows{MENU_TAB_CONTROLS, "Controller rumble", "Shake %"},
-                              PageRows{MENU_TAB_PC, "Extra Options", "Car detail"}, PageRows{MENU_TAB_PC, "Other", "Light keys"}}) {
+                              PageRows{MENU_TAB_PC, "Career and rewards", "Car detail"}, PageRows{MENU_TAB_PC, "Other", "Light keys"}}) {
         mods_menu_set_tab(p.tab);
         MOD_CHECK(mods_menu_snapshot(&m));
         const size_t head = menu_line(m, p.head), row = menu_line(m, p.row);
@@ -566,14 +566,14 @@ MOD_TEST_SUITE(menu_restore_defaults) {
     MOD_CHECK(mods_menu_pointer_line(0, advanced, MENU_POINT_PRESS));
     MOD_CHECK(mods_menu_snapshot(&m));
     MOD_CHECK(m.lines[advanced].value == "Hide");
-    const size_t effects = menu_line(m, "Effects"), setup_head = menu_line(m, "Day and weather cycle"),
+    const size_t effects = menu_line(m, "Lighting and shadows"), setup_head = menu_line(m, "Sky, weather and rain"),
                  other = menu_line(m, "Other");
     MOD_CHECK(effects != size_t(-1) && setup_head != size_t(-1) && other != size_t(-1));
     MOD_CHECK(effects < menu_line(m, "Glow %") && setup_head < menu_line(m, "Day length") &&
               other < menu_line(m, "Odd one"));
     MOD_CHECK(effects < setup_head && setup_head < other);
     MOD_CHECK(menu_line(m, "Width") == size_t(-1) && menu_line(m, "Pools %") == size_t(-1));
-    MOD_CHECK(menu_line(m, "Mirror") == size_t(-1)); // an empty part shows no header
+    MOD_CHECK(menu_line(m, "Rear-view mirror") == size_t(-1)); // an empty part shows no header
     MOD_CHECK(menu_line(m, "Secret") == size_t(-1));
     mods_menu_set_tab(1);
     MOD_CHECK(mods_menu_snapshot(&m));
@@ -592,7 +592,7 @@ MOD_TEST_SUITE(menu_restore_defaults) {
                  apply = menu_line(m, "Apply");
     MOD_CHECK(all_restore != size_t(-1) && menu_line(m, "Restore appearance defaults") == size_t(-1));
     MOD_CHECK(mods_menu_pointer_line(0, all_restore, MENU_POINT_PRESS));
-    MOD_CHECK(mods_menu_pending_count() >= 6); // aa, look, glow, hdrpeak, pools, keys (+ World filtering)
+    MOD_CHECK(mods_menu_pending_count() >= 4); // aa, look, glow, hdrpeak (+ World filtering); run 30: not pools, keys
     int64_t v = -1;
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "glow", &v), POP_OK);
     MOD_CHECK_EQ(v, 90); // drafted, not yet applied
@@ -613,21 +613,22 @@ MOD_TEST_SUITE(menu_restore_defaults) {
     MOD_CHECK_EQ(v, 1920); // a restart-only setting is the player's setup, not restored
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "secret", &v), POP_OK);
     MOD_CHECK_EQ(v, 2); // a hidden setting is never touched by the page
-    // Picture settings on the Display, Xbox 360 and PC pages are graphics defaults too; rumble and audio are not.
+    // Picture settings on the Display page are graphics defaults too; rumble and audio are not, and since run 30
+    // (NFSMW D-174) neither are the Interface and Gameplay pages (HUD and game choices: their own section restores).
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "hdrpeak", &v), POP_OK);
     MOD_CHECK_EQ(v, 50);
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "pools", &v), POP_OK);
-    MOD_CHECK_EQ(v, 100);
+    MOD_CHECK_EQ(v, 150);
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "keys", &v), POP_OK);
-    MOD_CHECK_EQ(v, 0);
+    MOD_CHECK_EQ(v, 1);
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "shake", &v), POP_OK);
     MOD_CHECK_EQ(v, 30);
     MOD_CHECK_EQ(mods_settings_get(MODS_OWNER_FIRST_MOD, "surround", &v), POP_OK);
     MOD_CHECK_EQ(v, 1);
     // Run 16: Apply of a Restore removes the overrides (the keys follow later default changes); out of scope stay.
-    for (const char *k : {"a.mod/aa", "a.mod/look", "a.mod/glow", "a.mod/hdrpeak", "a.mod/pools", "a.mod/keys"})
+    for (const char *k : {"a.mod/aa", "a.mod/look", "a.mod/glow", "a.mod/hdrpeak"})
         MOD_CHECK(!mods_settings_is_override(k));
-    for (const char *k : {"a.mod/width", "a.mod/secret", "a.mod/shake", "a.mod/surround"})
+    for (const char *k : {"a.mod/width", "a.mod/secret", "a.mod/shake", "a.mod/surround", "a.mod/pools", "a.mod/keys"})
         MOD_CHECK(mods_settings_is_override(k));
     // A live setting edited after a Restore draft takes the edit, and its draft goes.
     mods_settings_set(MODS_OWNER_FIRST_MOD, "glow", 70);

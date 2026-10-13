@@ -75,6 +75,7 @@ void translated_leaf(pop_cpu_v1 &cpu, uint8_t *arena, size_t, pop_replay::Seams 
 }
 } // namespace
 MOD_TEST_SUITE(replay_real_translated_leaf) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // runs Populous's leaf at 0x00401000 (100 - 40)
     sched_set_guest_thread(true);
     mods_hooks_reset();
     pop_replay::Capture c;
@@ -109,6 +110,7 @@ MOD_TEST_SUITE(replay_real_translated_leaf) {
 // the dispatcher, which is the only evidence that what a capture discovers is
 // what a replay needs.
 MOD_TEST_SUITE(capture_a_real_call_and_replay_it) {
+    MOD_TEST_NEEDS_POPULOUS_IMAGE(); // runs Populous's leaf at 0x00401000 (100 - 40)
     os_setenv("RECOMP_TESTING", "1");
     sched_set_guest_thread(true);
     mods_hooks_reset();
