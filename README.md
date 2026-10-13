@@ -50,9 +50,9 @@ also build in Terminal with `./setup.sh`.
   takedown bounty, skip the music track while driving (T or L3), the bounty, prologue and Busted-scene fixes, the
   World Map in races, subtitles, always rain, and optional unlock-everything, barrier removal and no catch-up.
 - Optional community packs you already own work too: the Xbox 360 Stuff Pack's **textures** and the
-  **XenonEffects** sparks and light trails. See the [companion guide](docs/COMPANION_GUIDE.md).
+  **XenonEffects** sparks and light trails.
 
-What's new in 2.0 and the known issues: [companion guide](docs/COMPANION_GUIDE.md#whats-new-in-20).
+  What's new in 3.0 - See the [companion guide](docs/COMPANION_GUIDE.md).
 
 ## Get started
 
@@ -91,8 +91,8 @@ Community mods this port learned from or works with, and the people their readme
 - **NFS Most Wanted Widescreen Fix** — ThirteenAG
 - **TexWizard** — R-033; thanks to nlgxzef
 
-No code from these mods is included; their behaviour is reimplemented natively. Licence notices are in [NOTICE](NOTICE).
+No code from these mods is included; their behaviour is reimplemented natively. License notices are in [NOTICE](NOTICE).
 
-## Licence
+## License
 
-MIT licence (see [LICENSE](LICENSE)).
+MIT license (see [LICENSE](LICENSE)).
