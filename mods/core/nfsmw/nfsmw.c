@@ -263,6 +263,7 @@ static void cop_numbers_poll(const PopModApi *api); /* cop_numbers.h */
 #include "position_log.h"   /* Test136; needs setting/get_u32/get_float above */
 #include "preculler_switch.h" /* Test149: optional preculler off (experimental) */
 #include "memory_log.h"       /* Test151: game footprint + Mac swap once a minute (crash evidence) */
+#include "discord_status.h"   /* run 34 (D-181, PR 9): Discord status, opt-in; its worker starts when switched on */
 static void lamp_daylight_tick(const PopModApi *api);
 static void vehicle_lights_tick(const PopModApi *api);  /* vehicle_lights.h */    /* lamp_daylight.h */
 /* Owner 7 Oct: the keyboard T (the game's row 14, FE_ACTION_B2) did not skip the music track in free roam; the pad
@@ -319,6 +320,7 @@ static void game_device_update(const PopModApi *api, pop_cpu_v1 *cpu,
     position_log(api);  /* diagnostics: time + world position every 2 s while driving (Test136) */
     preculler_switch(api); /* Test149: only acts when the switch is off, or to restore */
     memory_log(api);       /* Test151: one line a minute */
+    discord_status_tick(api); /* menus or driving, for the Discord worker; no socket work here */
     /* Driving rows are the player's (Options -> Controls); the layout is their default (pad_mapping.h). */
     pad_settings_poll();
     if (setting("ps2_controls", 1)) pad_frontend_rows();
@@ -819,6 +821,7 @@ PopModStatus pop_mod_init(const PopModApi *api) {
 }
 
 PopModStatus pop_mod_exit(void) {
+    discord_status_stop();   /* never waits on Discord: a hung socket is shut down */
     scenery_lod_probe_exit(g_api);
     scenery_fade_exit(g_api);
     mirror_car_shadows_exit(g_api);

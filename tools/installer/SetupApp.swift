@@ -124,8 +124,26 @@ func failureSummary(_ lines: [String]) -> String {
 
 /// 3.0 (run 33, measured on an M5 Pro in the release test): the app about 10 minutes, the HD textures about 75, the
 /// shader warm-up about 35.
-func firstBuildEstimate(hd: Bool, shaders: Bool) -> String {
-    let minutes = 10 + (hd ? 75 : 0) + (shaders ? 35 : 0)
+/// 3.0.1: what an earlier Setup already made on this Mac, so an update ticks it again and reuses it instead of building
+/// an app without it: a finished HD pack in the cache (hd/pack/index.tsv) and a shader warm-up seed in the kept build
+/// (build/warm/seed; the update keeps build/). The player can untick either.
+func earlierWork(support: URL, work: URL) -> (hd: Bool, seed: Bool) {
+    let fm = FileManager.default
+    return (fm.fileExists(atPath: support.appendingPathComponent("hd/pack/index.tsv").path),
+            fm.fileExists(atPath: work.appendingPathComponent("build/warm/seed/order.txt").path))
+}
+
+/// The boxes a Setup starts with: the player's choice at their last build when this Mac has one (an untick stays
+/// unticked), else what an earlier build made (a Setup before 3.0.1 saved no choice).
+func startingTicks(saved: (hd: Bool?, seed: Bool?), found: (hd: Bool, seed: Bool)) -> (hd: Bool, seed: Bool) {
+    (saved.hd ?? found.hd, saved.seed ?? found.seed)
+}
+
+/// Made before: the HD stages resume (a few minutes for the material set and the wall relief). The shader warm-up is
+/// counted in full: a new version clears the earlier warm-up (setup.py source_stamp, run 28 review F1), so an update
+/// prepares the shaders again; only a rerun of the same version reuses its drives.
+func firstBuildEstimate(hd: Bool, shaders: Bool, hdMade: Bool = false, seedMade: Bool = false) -> String {
+    let minutes = 10 + (hd ? (hdMade ? 10 : 75) : 0) + (shaders ? 35 : 0)
     if minutes < 60 { return "\(minutes) minutes" }
     let quarters = Int((Double(minutes) / 15).rounded())
     let hours = quarters / 4, rest = ["", "¼", "½", "¾"][quarters % 4]
@@ -229,6 +247,8 @@ final class Setup: ObservableObject {
     private var timer: Timer?
     private var partial = ""
     private var cancelled = false
+    let madeBefore = earlierWork(support: supportDir, work: workDir)
+    var fromEarlierWork = false
 
     init() {
         let apps = URL(fileURLWithPath: "/Applications")
@@ -237,6 +257,12 @@ final class Setup: ObservableObject {
         } else {
             dest = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")
         }
+        let d = UserDefaults.standard
+        let saved = (hd: d.object(forKey: "builtHdTextures") as? Bool, seed: d.object(forKey: "builtShaderSeed") as? Bool)
+        fromEarlierWork = saved.hd == nil && saved.seed == nil && (madeBefore.hd || madeBefore.seed)
+        let start = startingTicks(saved: saved, found: madeBefore)
+        hdTextures = start.hd
+        shaderSeed = start.seed
     }
 
     var builtApp: URL { dest.appendingPathComponent(gameAppName + ".app") }
@@ -351,6 +377,8 @@ final class Setup: ObservableObject {
         }
         phase = .building
         cancelled = false
+        UserDefaults.standard.set(hdTextures, forKey: "builtHdTextures")   // the next Setup starts from this choice
+        UserDefaults.standard.set(shaderSeed, forKey: "builtShaderSeed")
         lines = []
         partial = ""
         step = 0
@@ -541,6 +569,12 @@ struct ContentView: View {
                            isOn: $s.hdTextures).disabled(s.busy)
                     Toggle("Make the HD HUD (a few minutes: sharper gauges, minimap and fonts)",
                            isOn: $s.hdHud).disabled(s.busy)
+                    if s.fromEarlierWork {
+                        Text("Ticked because an earlier build made \(s.madeBefore.hd ? "the HD textures" : "")"
+                             + "\(s.madeBefore.hd && s.madeBefore.seed ? " and " : "")\(s.madeBefore.seed ? "the shaders" : ""): "
+                             + "the HD textures are reused (minutes, not hours); the shaders are prepared again for this version (about 35 minutes). Untick to leave them out.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     HStack {
                         Text("Put the game in:")
                         Text(s.dest.path).lineLimit(1).truncationMode(.middle)
@@ -590,7 +624,7 @@ struct ContentView: View {
                     TimelineView(.periodic(from: .now, by: 1)) { _ in Text(s.elapsedText()).monospacedDigit() }
                 }
                 if !s.detail.isEmpty { Text(s.detail).font(.caption).foregroundStyle(.secondary) }
-                Text("The first build takes about \(firstBuildEstimate(hd: s.hdTextures, shaders: s.shaderSeed)) on an M5 Pro, longer on older Macs. Keep the Mac plugged in; it stays awake while this runs.")
+                Text("The first build takes about \(firstBuildEstimate(hd: s.hdTextures, shaders: s.shaderSeed, hdMade: s.madeBefore.hd, seedMade: s.madeBefore.seed)) on an M5 Pro, longer on older Macs. Keep the Mac plugged in; it stays awake while this runs.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 logView
                 HStack { Spacer(); Button("Stop") { s.cancel() } }

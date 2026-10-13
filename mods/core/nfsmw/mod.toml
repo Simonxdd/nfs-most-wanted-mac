@@ -5,7 +5,7 @@
 # recompiled game. See NOTICE and docs/analysis.md.
 id = "core.nfsmw"
 name = "Most Wanted native controls, graphics and Extra Options"
-version = "3.0.0"
+version = "3.0.1"
 api = 1
 game = "80774c2e5d619b4f120b48d4462896fd504c263399d203a238769cffde1d253c"
 requires = ["core.hooks >= 1.0.0"]
@@ -95,6 +95,7 @@ hud_on_look_back = { type = "bool", default = false, apply = "restart", label = 
 show_nonpursuit_cops = { type = "bool", default = false, apply = "restart", label = "Minimap: show all police", group = "ui", help = "The minimap also shows police cars that are not chasing you. Off shows only your pursuers. From Extra Options." }
 percent_1lap = { type = "bool", default = true, apply = "restart", label = "One-lap races show percent", group = "ui", help = "One-lap races show COMPLETED percent instead of LAP 1/1. From Extra Options." }
 world_map_anywhere = { type = "bool", default = true, apply = "restart", label = "World Map in races", group = "ui", help = "Lets you open the World Map from the pause menu during races and pursuits too, not only while roaming. From Extra Options." }
+discord_status = { type = "bool", default = false, apply = "live", label = "Discord status", group = "ui", help = "Shows on your Discord profile that you are playing, whether you are driving or in the menus, and your time played, for your friends to see, while the Discord app is open. Off (the default) shares nothing; switching off clears it at once. Cost: none." }
 x360_frontend = { type = "bool", default = true, apply = "restart", label = "Xbox 360 front end", group = "ui.menus", help = "The Xbox 360 menus, title and loading art and garages from the Xbox 360 Stuff Pack, when Setup added it. Off: the PC menus (and any menu mod in your game folder)." }
 splash_xbox = { type = "bool", default = true, apply = "restart", label = "Xbox 360 start screen", group = "ui.menus", help = "Shows the Xbox 360 start screen with the EA and HD logos, when the USA videos are installed. Off: the PC start screen." }
 movie_fit = { type = "bool", default = true, apply = "next_screen", label = "Fit movies to the screen", group = "ui.menus", help = "Shows the full widescreen movies without cutting off the sides." }

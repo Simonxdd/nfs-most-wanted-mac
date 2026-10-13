@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.0.1 — Discord status
+
+- **Discord status** (Interface → Discord status, **off** by default): while the Discord app is open, your Discord
+  profile shows "Playing NFS Most Wanted Native", whether you are driving or in the menus, your time played and a
+  "Play it on a Mac" button for your friends. It talks only to the Discord app on your Mac; off shares nothing, and
+  switching it off clears the status at once. Quitting never waits on Discord. Thanks to **prex-xo**, whose pull
+  request (#9) this is ported from.
+- **Updates keep your HD textures and prepared shaders:** the Setup app ticks *Make HD textures* and *Prepare the
+  shaders* when an earlier build made them, and remembers your last choice (an untick stays unticked). The HD textures
+  are reused; the shaders are prepared again for the new version. Before, an update with the boxes unticked built the
+  game without them.
+- **Security updates for the build tools**: Pillow 12.3.0 and pytest 9.0.3 (the GitHub security alerts on Pillow
+  11.3.0 and pytest 8.4.2). Setup downloads the new versions the next time it runs; nothing else changes.
+
 ## 3.0.0 — HD textures made on your Mac
 
 - **One look:** the *Look* setting is retired; Definitive is the only look. F10 → Graphics → **Golden colour filter**

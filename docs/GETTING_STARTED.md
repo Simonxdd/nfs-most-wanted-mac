@@ -75,6 +75,10 @@ where the *Remaster HD textures* setting uses it. With the Xbox 360 Stuff Pack, 
 
 - **Turn it on:** tick *Make HD textures now* in the Setup app, or pass `--hd-textures` (`--no-hd-textures` skips it).
   It is off unless you turn it on.
+- **Updates keep it (3.0.1):** when you open a newer Setup, *Make HD textures now* and *Prepare the shaders now*
+  start ticked if an earlier build made them. The HD textures are reused (minutes, not hours); the shaders are
+  prepared again for the new version (about 35 minutes). Untick to leave them out.
+  From the command line, pass `--hd-textures` / `--shader-seed` again.
 - **Time:** about 1¼ hours on an M5 Pro the first time (measured, including the one-time downloads), much longer on a
   base M1. The Mac stays awake.
 - **Disk and downloads:** the app grows by about 2 GB, and the work folder `~/Library/NFSMW-Native-Setup/hd`

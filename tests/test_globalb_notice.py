@@ -1,6 +1,8 @@
 """tools/setup_kit/setup.py global_b_line (2.0.4, run 28 review S3): the Stuff Pack front end overlays GlobalB.lzc,
 which also holds car and gameplay tables; a player's own modded GlobalB gets a notice, the original or the Stuff
 Pack's own copy (installed into the game folder) does not, and nothing is said without the overlay."""
+import os
+import pytest
 import importlib.util
 from pathlib import Path
 
@@ -40,6 +42,8 @@ def test_changed_attributes_gets_the_saves_notice(tmp_path):
 
 
 def test_original_attributes_is_quiet():
-    vanilla = Path('/Users/damian/Documents/Codex/NFSMW-Remaster/native/native/inputs/game-vanilla')
-    if (vanilla / 'GLOBAL/attributes.bin').is_file():
-        assert setup.attributes_line(vanilla) is None
+    # a developer's own unmodded game folder, when given (NFSMW_VANILLA_GAME); skipped otherwise
+    vanilla = Path(os.environ.get('NFSMW_VANILLA_GAME', '/nonexistent'))
+    if not (vanilla / 'GLOBAL/attributes.bin').is_file():
+        pytest.skip('set NFSMW_VANILLA_GAME to an unmodded game folder')
+    assert setup.attributes_line(vanilla) is None

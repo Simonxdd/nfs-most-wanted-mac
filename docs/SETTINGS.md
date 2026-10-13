@@ -168,6 +168,7 @@ If the game does not keep a smooth 60 fps, change these first, in this order:
 | **Minimap: show all police** `show_nonpursuit_cops` | Off / On | off | after a restart | The minimap also shows police cars that are not chasing you. Off shows only your pursuers. From Extra Options. |
 | **One-lap races show percent** `percent_1lap` | Off / On | on | after a restart | One-lap races show COMPLETED percent instead of LAP 1/1. From Extra Options. |
 | **World Map in races** `world_map_anywhere` | Off / On | on | after a restart | Lets you open the World Map from the pause menu during races and pursuits too, not only while roaming. From Extra Options. |
+| **Discord status** `discord_status` | Off / On | off | at once | Shows on your Discord profile that you are playing, whether you are driving or in the menus, and your time played, for your friends to see, while the Discord app is open. Off (the default) shares nothing; switching off clears it at once. Cost: none. |
 
 ### Menus, movies and subtitles
 
