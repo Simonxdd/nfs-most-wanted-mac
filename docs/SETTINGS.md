@@ -250,7 +250,7 @@ If the game does not keep a smooth 60 fps, change these first, in this order:
 | **PlayStation-style buttons** `ps2_controls` | Off / On | on | at once | The default controller layout: Cross accelerates and Triangle goes back, like the PlayStation version. Change any driving button in the game's Options, Controls. |
 | **Triggers as pedals** `trigger_pedals` | Off / On | off | at once | R2 accelerates and L2 brakes, both analog, like most modern racing games. Off: the face-button layout. |
 | **L3 skips music track** `l3_skip_track` | Off / On | on | at once | Clicking the left stick skips to the next music track, like the T key. |
-| **PlayStation button icons** `ps_icons` | Off / On | on | after a restart | Shows PlayStation button symbols in the menus. Off: the PC game's prompts. |
+| **PlayStation button icons** `ps_icons` | Off / On | on | after a restart | Shows PlayStation button symbols in the menus when you use a controller. Needs XtendedInputButtons.tpk (the XtendedInput mod) in your game folder's GLOBAL folder; without it, or Off, the PC game's prompts show. |
 | **Shift up button** `shift_up` | -1 to 11 | 7 | at once | Controller button for shifting up with manual gears. 7 is R2; -1 turns it off. The settings guide lists the other numbers. |
 | **Shift down button** `shift_down` | -1 to 11 | 6 | at once | Controller button for shifting down with manual gears. 6 is L2; -1 turns it off. The settings guide lists the other numbers. |
 | **Shift up: second button** `shift_up_secondary` | -1 to 11 | -1 | at once | An extra controller button for shifting up. -1 turns it off. |

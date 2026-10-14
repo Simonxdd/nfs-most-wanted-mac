@@ -346,7 +346,10 @@ void drop_block(std::map<uint32_t, Blk>::iterator it) {
     g_blocks->erase(it);
 }
 
+void guard_reset(); // the guarded-block registry, below
+
 void heap_reset() {
+    guard_reset();
     if (!g_blocks)
         g_blocks = new std::map<uint32_t, Blk>();
     if (!g_free)
@@ -390,6 +393,7 @@ void mem_shutdown() {
         delete g_free;
         g_free = nullptr;
     }
+    guard_reset();
 }
 
 uint32_t heap_alloc(uint32_t size, bool zero, uint32_t align) {
@@ -511,6 +515,163 @@ bool heap_free(uint32_t addr) {
         }
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Guarded blocks (NFSMW GitHub issue 8). A player's game crashed two seconds
+// in, every time, because the 16-byte COM view of its first DirectSound buffer
+// had been written over: the view sat between the end of that buffer's sample
+// ring and the bottom of the sound thread's stack, both regions the guest
+// writes in bulk, and the first-fit heap packs them edge to edge. On Windows
+// each lives in its own allocation with slack around it, so the same stray
+// write lands on nothing. The gaps give it something harmless to land on here
+// and say where it went.
+// ---------------------------------------------------------------------------
+namespace {
+const uint8_t kGuardFill = 0xfd;
+struct GuardRec {
+    uint32_t size;  // usable bytes
+    uint32_t guard; // bytes on each side
+    const char *what;
+    uint32_t tag;
+    uint32_t hits;
+};
+std::map<uint32_t, GuardRec> *g_guards;
+uint64_t g_guard_hits;
+
+void guard_reset() {
+    delete g_guards;
+    g_guards = nullptr;
+    g_guard_hits = 0;
+}
+
+bool guard_enabled() {
+    static const bool on = [] {
+        const char *v = recomp_env("HEAP_GUARD");
+        return !(v && v[0] == '0');
+    }();
+    return on;
+}
+
+// First and last damaged byte of [p, p+n), or false when all hold the fill.
+bool guard_damage(const uint8_t *p, uint32_t n, uint32_t *first, uint32_t *last,
+                  uint32_t *count) {
+    uint32_t f = n, l = 0, k = 0;
+    for (uint32_t i = 0; i < n; i += 8) {
+        uint64_t w;
+        if (n - i >= 8) {
+            memcpy(&w, p + i, 8);
+            if (w == 0xfdfdfdfdfdfdfdfdull)
+                continue;
+        }
+        for (uint32_t j = i; j < n && j < i + 8; ++j)
+            if (p[j] != kGuardFill) {
+                if (f == n)
+                    f = j;
+                l = j;
+                ++k;
+            }
+    }
+    *first = f;
+    *last = l;
+    *count = k;
+    return k != 0;
+}
+
+bool guard_check_rec(uint32_t user, GuardRec &r) {
+    const uint8_t *below = g_mem + user - r.guard;
+    const uint8_t *above = g_mem + user + r.size;
+    uint32_t bf, bl, bn, af, al, an;
+    bool hit_below = guard_damage(below, r.guard, &bf, &bl, &bn);
+    bool hit_above = guard_damage(above, r.guard, &af, &al, &an);
+    if (!hit_below && !hit_above)
+        return true;
+    ++r.hits;
+    ++g_guard_hits;
+    if (r.hits == 1) {
+        char bytes[3 * 16 + 1] = "";
+        const uint8_t *s = hit_above ? above + af : below + bf;
+        uint32_t avail = hit_above ? r.guard - af : r.guard - bf;
+        for (uint32_t i = 0; i < 16 && i < avail; ++i)
+            snprintf(bytes + 3 * i, 4, "%02x ", s[i]);
+        char sides[160] = "";
+        int n = 0;
+        if (hit_above)
+            n += snprintf(sides + n, sizeof sides - n, "%u bytes after its end (+%u..+%u)", an, af, al);
+        if (hit_below)
+            snprintf(sides + n, sizeof sides - n, "%s%u bytes before its start (-%u..-%u)",
+                     hit_above ? ", " : "", bn, r.guard - bl, r.guard - bf);
+        LOGW("heap guard: %s %u at %08x (%u bytes) was written outside its span: %s; first bytes %s"
+             "; the gap took them, nothing next to it was touched",
+             r.what, r.tag, user, r.size, sides, bytes);
+        if (const X86 *c = guest_current_context())
+            LOGW("heap guard: seen by guest code at EIP=%08x ESP=%08x", c->eip, c->r[R_ESP]);
+    }
+    memset(g_mem + user - r.guard, kGuardFill, r.guard);
+    memset(g_mem + user + r.size, kGuardFill, r.guard);
+    return false;
+}
+} // namespace
+
+uint32_t heap_alloc_guarded(uint32_t size, bool zero, uint32_t guard, const char *what,
+                            uint32_t tag) {
+    if (!guard_enabled() || !guard)
+        return heap_alloc(size, zero, 16);
+    guard = align_up(guard, 16);
+    uint64_t total = (uint64_t)size + 2ull * guard;
+    if (!size_is_sane(size) || total > 0xffffffffull)
+        return heap_alloc(size, zero, 16); // refused there, with its diagnostics
+    uint32_t base = heap_alloc((uint32_t)total, false, 16);
+    if (!base)
+        return 0;
+    uint32_t user = base + guard;
+    memset(g_mem + base, kGuardFill, guard);
+    if (zero)
+        memset(g_mem + user, 0, size);
+    memset(g_mem + user + size, kGuardFill, guard);
+    if (!g_guards)
+        g_guards = new std::map<uint32_t, GuardRec>();
+    (*g_guards)[user] = GuardRec{size, guard, what, tag, 0};
+    return user;
+}
+
+bool heap_free_guarded(uint32_t addr) {
+    if (!addr)
+        return false;
+    if (g_guards) {
+        auto it = g_guards->find(addr);
+        if (it != g_guards->end()) {
+            guard_check_rec(addr, it->second);
+            if (it->second.hits > 1)
+                LOGW("heap guard: %s %u at %08x: its gaps were found written %u times in all",
+                     it->second.what, it->second.tag, addr, it->second.hits);
+            uint32_t base = addr - it->second.guard;
+            g_guards->erase(it);
+            return heap_free(base);
+        }
+    }
+    return heap_free(addr);
+}
+
+bool heap_guard_check(uint32_t addr) {
+    if (!g_guards || !addr)
+        return true;
+    auto it = g_guards->find(addr);
+    return it == g_guards->end() || guard_check_rec(addr, it->second);
+}
+
+uint32_t heap_guard_check_all() {
+    if (!g_guards)
+        return 0;
+    uint32_t bad = 0;
+    for (auto &e : *g_guards)
+        if (!guard_check_rec(e.first, e.second))
+            ++bad;
+    return bad;
+}
+
+uint64_t heap_guard_hits() {
+    return g_guard_hits;
 }
 
 // Resize a guest heap allocation in place when possible, otherwise copy into a new block.

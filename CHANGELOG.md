@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.0.2 — a start-up crash, steadier 60 fps and controller prompts
+
+- **Start-up crash (#8):** on some Macs the game quit about two seconds after it started (seen with a monitor that is
+  also the sound output). While the game's sound starts, a few bytes are written just outside the memory they belong
+  to, and here that memory sat right against the sound buffer's own record. Every sound buffer and game thread stack
+  now has a spare margin around it, so those bytes land on nothing. If it happens, the log says where (a line starting
+  "heap guard").
+- **Steadier frame pacing:** with a 60 fps limit on a 120 Hz or 60 Hz display, the game now hands the display one new
+  frame per refresh slot, on the display's own clock. Before, its separate timer drifted against the display, so now
+  and then two frames met in one slot and one was dropped (about one every few seconds): a reading just under 60 and
+  a slight unevenness. The log notes once a minute how many frames were shown, dropped and repeated.
+- **Controller prompts no longer blank:** with a controller, the menus switched to PlayStation button symbols, which
+  come from the optional XtendedInput file (`XtendedInputButtons.tpk` in the game's GLOBAL folder). Without that file
+  the button bar was empty; now the PC prompts stay, and the symbols show when the file is there (or in DataMods).
+
 ## 3.0.1 — Discord status
 
 - **Discord status** (Interface → Discord status, **off** by default): while the Discord app is open, your Discord

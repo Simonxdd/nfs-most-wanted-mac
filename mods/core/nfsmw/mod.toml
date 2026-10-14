@@ -5,7 +5,7 @@
 # recompiled game. See NOTICE and docs/analysis.md.
 id = "core.nfsmw"
 name = "Most Wanted native controls, graphics and Extra Options"
-version = "3.0.1"
+version = "3.0.2"
 api = 1
 game = "80774c2e5d619b4f120b48d4462896fd504c263399d203a238769cffde1d253c"
 requires = ["core.hooks >= 1.0.0"]
@@ -131,7 +131,7 @@ input_trace = { type = "bool", default = false, apply = "live", label = "Log con
 ps2_controls = { type = "bool", default = true, apply = "live", label = "PlayStation-style buttons", group = "controls", help = "The default controller layout: Cross accelerates and Triangle goes back, like the PlayStation version. Change any driving button in the game's Options, Controls." }
 trigger_pedals = { type = "bool", default = false, apply = "live", label = "Triggers as pedals", group = "controls", help = "R2 accelerates and L2 brakes, both analog, like most modern racing games. Off: the face-button layout." }
 l3_skip_track = { type = "bool", default = true, apply = "live", label = "L3 skips music track", group = "controls", help = "Clicking the left stick skips to the next music track, like the T key." }
-ps_icons = { type = "bool", default = true, apply = "restart", label = "PlayStation button icons", group = "controls", help = "Shows PlayStation button symbols in the menus. Off: the PC game's prompts." }
+ps_icons = { type = "bool", default = true, apply = "restart", label = "PlayStation button icons", group = "controls", help = "Shows PlayStation button symbols in the menus when you use a controller. Needs XtendedInputButtons.tpk (the XtendedInput mod) in your game folder's GLOBAL folder; without it, or Off, the PC game's prompts show." }
 shift_up = { type = "int", default = 7, min = -1, max = 11, apply = "live", label = "Shift up button", group = "controls", help = "Controller button for shifting up with manual gears. 7 is R2; -1 turns it off. The settings guide lists the other numbers." }
 shift_down = { type = "int", default = 6, min = -1, max = 11, apply = "live", label = "Shift down button", group = "controls", help = "Controller button for shifting down with manual gears. 6 is L2; -1 turns it off. The settings guide lists the other numbers." }
 shift_up_secondary = { type = "int", default = -1, min = -1, max = 11, apply = "live", label = "Shift up: second button", group = "controls", help = "An extra controller button for shifting up. -1 turns it off." }

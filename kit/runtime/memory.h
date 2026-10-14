@@ -23,6 +23,26 @@ bool heap_free(uint32_t addr);
 uint32_t heap_size(uint32_t addr);
 bool heap_owns(uint32_t addr);
 
+// Guarded blocks: `guard` bytes of a known fill on each side of the usable
+// span, so a guest write that runs off either end lands in the gap instead of
+// on the neighbouring allocation, and is reported once with where it landed.
+// Used for memory the guest writes in bulk next to kit objects (DirectSound
+// sample rings, guest thread stacks). Returns the usable address (0 on
+// failure); `what` must be a string literal. RECOMP_HEAP_GUARD=0 allocates
+// without the gaps (the old layout).
+uint32_t heap_alloc_guarded(uint32_t size, bool zero, uint32_t guard, const char *what,
+                            uint32_t tag);
+// Checks the gaps, then frees. A plain block is freed as heap_free would.
+bool heap_free_guarded(uint32_t addr);
+// Checks one guarded block's gaps; true when both are intact (or `addr` is not
+// a guarded block). Damage is logged the first time, counted, and the gap is
+// filled again so a later write is seen too.
+bool heap_guard_check(uint32_t addr);
+// Checks every guarded block; returns the number found damaged.
+uint32_t heap_guard_check_all();
+// Times any gap has been found written (all blocks, since mem_init).
+uint64_t heap_guard_hits();
+
 struct HeapStats {
     uint32_t used_blocks;
     uint32_t free_blocks;

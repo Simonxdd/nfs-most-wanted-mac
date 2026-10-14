@@ -1093,6 +1093,46 @@ static void test_allocator() {
     }
 }
 
+// NFSMW issue 8: a guest write that runs off the end of a bulk-written block
+// (a DirectSound ring, a thread stack) must land in the block's gap, not on the
+// small kit object the first-fit heap puts next to it.
+static void test_heap_guard() {
+    section("heap guard");
+    uint32_t hits0 = heap_guard_hits();
+    // Control: the old layout, where the first-fit heap put the 16-byte view
+    // straight after its ring (264576 bytes, a multiple of 16, so no slack).
+    uint32_t ring = heap_alloc(264576 + 16, true, 16);
+    uint32_t view = ring + 264576;
+    check(ring != 0, "control: an unguarded ring with the object against its end (%08x)", ring);
+    wr32(view + 4, 0x504f504du);
+    for (uint32_t i = 0; i < 16; i += 2)
+        wr16(ring + 264576 + i, 0x6a29);
+    check(rd32(view + 4) != 0x504f504du, "control: a write past the unguarded ring's end lands on the object");
+    heap_free(ring);
+
+    uint32_t g = heap_alloc_guarded(264576, true, 0x4000, "dsound buffer", 164);
+    uint32_t v = heap_alloc(16, true, 16);
+    check(g && v, "a guarded ring and the next object: %08x, %08x", g, v);
+    check(v >= g + 264576 + 0x4000 || v + 16 <= g - 0x4000, "the next object is outside the ring's gaps");
+    check(rd32(g) == 0 && rd32(g + 264572) == 0, "the guarded ring is zeroed");
+    check(heap_guard_check(g), "an untouched guarded ring checks clean");
+    wr32(v + 4, 0x504f504du);
+    for (uint32_t i = 0; i < 16; i += 2)
+        wr16(g + 264576 + i, 0x6a29);
+    check(rd32(v + 4) == 0x504f504du, "a write past the guarded ring's end leaves the next object alone");
+    check(!heap_guard_check(g) && heap_guard_hits() == hits0 + 1, "the write is found and counted once");
+    check(heap_guard_check(g), "the gap is filled again after the report");
+    wr8(g - 1, 0x00);
+    check(heap_guard_check_all() == 1 && heap_guard_hits() == hits0 + 2,
+          "a write just before the start is found by the sweep");
+    check(heap_free_guarded(g), "a guarded block frees");
+    check(heap_guard_check(g), "a freed guarded block is no longer tracked");
+    heap_free(v);
+    uint32_t plain = heap_alloc(64);
+    check(heap_free_guarded(plain), "heap_free_guarded frees a plain block too");
+    check(heap_check().empty(), "the heap is consistent after the guard checks");
+}
+
 static void test_heap_shims(X86 *c) {
     section("HeapAlloc / GlobalAlloc / VirtualAlloc shims");
     uint32_t h = call_import(c, "KERNEL32.dll", "HeapCreate", {0, 0x1000, 0});
@@ -7038,6 +7078,7 @@ int main(int argc, char **argv) {
     scratch = 0x0ee00000; // scratch area below the stack, inside the arena
 
     test_allocator();
+    test_heap_guard();
     test_heap_shims(c);
     test_memory_shims_2(c);
     test_files(c);

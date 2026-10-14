@@ -3,6 +3,9 @@
  * 00516230 hides console objects; 005b85f0 visits objects during update;
  * 00514cc0/00514c70 recursively change group visibility; 005a45b0 renders.
  * No Windows input plugin or replacement input device is used. */
+#include <dirent.h>
+#include <limits.h>
+#include <strings.h>
 #define FE_PC 0x8u
 #define FE_CONSOLE 0x40u
 #define FE_SAVED_VISIBLE 0x01000000u /* XtendedInput's UserParam marker */
@@ -187,11 +190,51 @@ static void frontend_pad_load(const PopModApi *api) {
         api->log(api, "core.nfsmw: PlayStation button texture resource requested");
     }
 }
+/* 3.0.2: the PlayStation symbols come from GLOBAL/XtendedInputButtons.tpk (the XtendedInput community file; Setup
+ * copies it only when the player's game folder has it). Without it, switching to the console prompts hid the PC
+ * prompts and drew nothing in their place (every menu's button bar blank with a controller), so the console prompts
+ * are used only when the file is in the game folder (the working folder) or in a DataMods layer. */
+static int frontend_pad_find(const char *dir, int depth) {
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    struct dirent *e;
+    int found = 0;
+    while (!found && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char sub[PATH_MAX];
+        snprintf(sub, sizeof sub, "%s/%s", dir, e->d_name);
+        if (!strcasecmp(e->d_name, "GLOBAL")) {
+            DIR *g = opendir(sub);
+            struct dirent *f;
+            while (g && !found && (f = readdir(g))) found = !strcasecmp(f->d_name, "XtendedInputButtons.tpk");
+            if (g) closedir(g);
+        } else if (depth > 0) {
+            found = frontend_pad_find(sub, depth - 1);   /* DataMods/<mod>/GLOBAL */
+        }
+    }
+    closedir(d);
+    return found;
+}
+static int frontend_pad_pack_present(void) {
+    if (frontend_pad_find(".", 0)) return 1;
+    const char *dd = getenv("RECOMP_DATAMODS_DIR"), *pd = getenv("RECOMP_PROFILE_DIR");
+    char dm[PATH_MAX];
+    if (dd && *dd) snprintf(dm, sizeof dm, "%s", dd);
+    else if (pd && *pd) snprintf(dm, sizeof dm, "%s/DataMods", pd);
+    else return 0;
+    return frontend_pad_find(dm, 1);
+}
 static void frontend_pad_init(const PopModApi *api) {
     static const char path[] = "GLOBAL\\XtendedInputButtons.tpk";
     void *data = NULL;
     g_pad_icons_enabled = (int)setting("ps_icons", 1);
     if (!g_pad_icons_enabled) return;
+    if (!frontend_pad_pack_present()) {
+        g_pad_icons_enabled = 0;
+        api->log(api, "core.nfsmw: PlayStation button icons: GLOBAL/XtendedInputButtons.tpk is not in the game folder "
+                      "or DataMods; the PC prompts show with a controller too");
+        return;
+    }
     api->on_key(api, frontend_key, NULL, &g_pad_key_hook);
     if (api->guest_alloc(api, sizeof path, &g_pad_pack_path) == POP_OK &&
         api->guest_ptr(api, g_pad_pack_path, sizeof path, &data) == POP_OK)
